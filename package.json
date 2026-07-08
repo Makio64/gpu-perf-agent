@@ -1,0 +1,57 @@
+{
+  "name": "webgpu-optimizer-report",
+  "version": "0.1.0",
+  "description": "Node-callable WebGPU/WebGL2 performance, trace, and memory reporting tools for regression testing. Ships an agent skill for automated GPU profiling.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "webgpu",
+    "webgl2",
+    "performance",
+    "profiling",
+    "benchmark",
+    "gpu",
+    "vram",
+    "chrome-devtools-protocol",
+    "cdp",
+    "regression-testing",
+    "agent-skill",
+    "skill"
+  ],
+  "bin": {
+    "webgpu-report": "./src/cli.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./browser/allocation-tracker": "./src/browser/allocation-tracker.js",
+    "./browser/timing": "./src/browser/timing.js"
+  },
+  "files": [
+    "src",
+    "skill",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "doctor": "node ./src/cli.js doctor",
+    "test": "node --test",
+    "prepublishOnly": "node --test",
+    "example:webgl2": "node ./src/cli.js run --file examples/webgl2-draw.html --samples 3 --duration-ms 600 --out reports/webgl2.json",
+    "example:webgpu": "node ./src/cli.js run --file examples/webgpu-clear.html --samples 3 --duration-ms 600 --out reports/webgpu.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "playwright": ">=1.40.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}

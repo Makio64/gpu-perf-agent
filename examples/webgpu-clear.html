@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WebGPU Report Example</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #111416;
+        overflow: hidden;
+      }
+
+      canvas {
+        display: block;
+        height: 100%;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <script type="module">
+      import { trackWebGPUDevice } from "../src/browser/allocation-tracker.js";
+      import { requestTimedWebGPUDevice } from "../src/browser/timing.js";
+
+      if (!navigator.gpu) {
+        throw new Error("WebGPU is not available.");
+      }
+
+      const canvas = document.querySelector("#stage");
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+      const { device, timer, timestampQueryAvailable } = await requestTimedWebGPUDevice(adapter);
+      const tracker = trackWebGPUDevice(device);
+      globalThis.__gpuMemoryTracker = tracker;
+
+      const context = canvas.getContext("webgpu");
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      context.configure({ alphaMode: "opaque", device, format });
+
+      const scratch = device.createBuffer({
+        label: "scratch-16mb",
+        size: 16 * 1024 * 1024,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
+      });
+
+      function resize() {
+        const width = Math.max(1, Math.floor(innerWidth * devicePixelRatio));
+        const height = Math.max(1, Math.floor(innerHeight * devicePixelRatio));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+      }
+
+      function renderPassDescriptor(time) {
+        return {
+          colorAttachments: [
+            {
+              clearValue: {
+                a: 1,
+                b: 0.25 + Math.sin(time * 0.001) * 0.1,
+                g: 0.25,
+                r: 0.08
+              },
+              loadOp: "clear",
+              storeOp: "store",
+              view: context.getCurrentTexture().createView()
+            }
+          ]
+        };
+      }
+
+      function encodeFrame(encoder, time, passStarter = (item, descriptor) => item.beginRenderPass(descriptor)) {
+        const pass = passStarter(encoder, renderPassDescriptor(time));
+        pass.end();
+      }
+
+      function draw(time) {
+        resize();
+        const encoder = device.createCommandEncoder();
+        encodeFrame(encoder, time);
+        device.queue.submit([encoder.finish()]);
+      }
+
+      function nextFrame() {
+        return new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+
+      globalThis.__gpuReportBench = async ({ durationMs, phase }) => {
+        const started = performance.now();
+        const frames = [];
+        while (performance.now() - started < durationMs) {
+          const time = await nextFrame();
+          draw(time);
+          frames.push(time);
+        }
+        await device.queue.onSubmittedWorkDone();
+
+        const gpuTimeNs = timer
+          ? await timer.measure((encoder, gpuTimer) => {
+              resize();
+              encodeFrame(encoder, performance.now(), gpuTimer.beginRenderPass);
+            })
+          : null;
+
+        const deltas = [];
+        for (let index = 1; index < frames.length; index += 1) {
+          deltas.push(frames[index] - frames[index - 1]);
+        }
+
+        const elapsedMs = Math.max(0.001, frames[frames.length - 1] - frames[0]);
+        return {
+          api: "webgpu",
+          fps: (frames.length - 1) / (elapsedMs / 1000),
+          frameCount: frames.length,
+          frameTimeMs: sampleStats(deltas),
+          gpuTimeNs,
+          phase,
+          scratchBufferSize: scratch.size,
+          timestampQueryAvailable,
+          trackedGpuMemory: tracker.snapshot()
+        };
+      };
+
+      function sampleStats(values) {
+        const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+        const mean = sorted.reduce((total, value) => total + value, 0) / Math.max(1, sorted.length);
+        return {
+          count: sorted.length,
+          max: sorted.at(-1) || 0,
+          mean,
+          min: sorted[0] || 0
+        };
+      }
+
+      requestAnimationFrame(draw);
+    </script>
+  </body>
+</html>

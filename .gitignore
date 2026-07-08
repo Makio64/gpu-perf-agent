@@ -1,0 +1,7 @@
+.DS_Store
+node_modules/
+reports/
+*.trace
+*.trace.zip
+playwright-report/
+test-results/
