@@ -300,7 +300,7 @@ async function serveCommand(args) {
     viewport: values.viewport
   });
 
-  console.log(`webgpu-report server listening: ${server.url}`);
+  console.log(`gpu-perf-agent server listening: ${server.url}`);
   console.log("POST /run with the same options as the CLI run command. POST /close to stop.");
 
   const close = async () => {
@@ -354,15 +354,15 @@ function printRunSummary(report) {
 }
 
 function printHelp() {
-  console.log(`webgpu-report
+  console.log(`gpu-perf-agent
 
 Usage:
-  webgpu-report doctor [--quick]
-  webgpu-report run --url http://localhost:5173/bench.html --out reports/run.json [--trace]
-  webgpu-report run --file examples/webgl2-draw.html --samples 5 --duration-ms 1000
-  webgpu-report serve --port 9099
-  webgpu-report compare --base reports/base.json --candidate reports/candidate.json [--budget budget.json]
-  webgpu-report xctrace --url http://localhost:5173/bench.html --time-limit 15s
+  gpu-perf-agent doctor [--quick]
+  gpu-perf-agent run --url http://localhost:5173/bench.html --out reports/run.json [--trace]
+  gpu-perf-agent run --file examples/webgl2-draw.html --samples 5 --duration-ms 1000
+  gpu-perf-agent serve --port 9099
+  gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json [--budget budget.json]
+  gpu-perf-agent xctrace --url http://localhost:5173/bench.html --time-limit 15s
 
 Key run options:
   --api webgpu|webgl2|auto     Label passed to the page hook.
@@ -387,15 +387,15 @@ Default runner:
   from the package only when you need Playwright compatibility.
 
 Persistent mode:
-  webgpu-report serve launches Chrome once and accepts POST /run JSON jobs.
+  gpu-perf-agent serve launches Chrome once and accepts POST /run JSON jobs.
   This is the fastest path for agents running optimization loops.
 
 Agent loop recipe:
-  1. webgpu-report doctor --quick
-  2. webgpu-report run --url URL --auto-instrument --out reports/base.json --json
+  1. gpu-perf-agent doctor --quick
+  2. gpu-perf-agent run --url URL --auto-instrument --out reports/base.json --json
   3. (apply an optimization)
-  4. webgpu-report run --url URL --auto-instrument --out reports/candidate.json --json
-  5. webgpu-report compare --base reports/base.json --candidate reports/candidate.json --json
+  4. gpu-perf-agent run --url URL --auto-instrument --out reports/candidate.json --json
+  5. gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --json
   Every report contains a top-level "summary" with a verdict
   (excellent | good | needs-work | poor) plus warnings to act on.
 `);

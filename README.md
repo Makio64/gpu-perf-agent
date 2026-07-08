@@ -1,8 +1,49 @@
-# WebGPU Optimizer Report
+# gpu-perf-agent
 
-Node-callable reporting for WebGPU/WebGL2 optimization work. The stack is designed for agents and CI jobs that need repeatable performance/memory artifacts while tuning browser GPU workloads.
+An agent-ready WebGPU/WebGL2 performance profiler. It ships as an npm CLI **plus a drop-in agent skill**, so AI coding assistants (Claude, Gemini, Codex, Copilot, Cursor, ...) can profile a page, read a one-word verdict, apply an optimization, and prove the win with a regression-checked compare — autonomously.
+
+Humans and CI get the same thing: repeatable performance/memory artifacts for tuning browser GPU workloads.
 
 The default runner is a fast direct Chrome DevTools Protocol harness. It launches Chrome/Chromium itself and talks CDP over WebSocket, avoiding Playwright's context and driver layers. A Playwright runner remains exported as `runPlaywrightReport()` for compatibility.
+
+## Give the Skill to Your Agent
+
+The skill definition lives in [skill/SKILL.md](skill/SKILL.md) and is included in the npm tarball (`node_modules/gpu-perf-agent/skill/SKILL.md`). Install the package, then drop the skill where your agent discovers skills:
+
+```bash
+npm install -D gpu-perf-agent
+```
+
+**Claude Code** — project-scoped (recommended, travels with the repo):
+```bash
+mkdir -p .claude/skills/webgpu-performance-profiling
+cp node_modules/gpu-perf-agent/skill/SKILL.md .claude/skills/webgpu-performance-profiling/SKILL.md
+```
+Or user-wide with `~/.claude/skills/webgpu-performance-profiling/`.
+
+**OpenAI Codex CLI**:
+```bash
+mkdir -p ~/.codex/skills/webgpu-performance-profiling
+cp node_modules/gpu-perf-agent/skill/SKILL.md ~/.codex/skills/webgpu-performance-profiling/SKILL.md
+```
+Or reference the skill from your `AGENTS.md`: "For GPU performance profiling, follow node_modules/gpu-perf-agent/skill/SKILL.md".
+
+**Gemini CLI / Antigravity**:
+```bash
+mkdir -p ~/.gemini/skills/webgpu-performance-profiling
+cp node_modules/gpu-perf-agent/skill/SKILL.md ~/.gemini/skills/webgpu-performance-profiling/SKILL.md
+```
+Or reference it from `GEMINI.md` the same way as AGENTS.md.
+
+**GitHub Copilot (VS Code)** — project-scoped:
+```bash
+mkdir -p .github/skills/webgpu-performance-profiling
+cp node_modules/gpu-perf-agent/skill/SKILL.md .github/skills/webgpu-performance-profiling/SKILL.md
+```
+
+**Cline / Roo Code / Cursor** — paste the contents of `skill/SKILL.md` into your rules file (`.clinerules`, `.cursorrules`, or custom instructions).
+
+Once installed, ask your agent things like *"profile http://localhost:5173 and fix the biggest GPU bottleneck"* — the skill teaches it the full baseline → optimize → compare loop.
 
 ## What It Captures
 
@@ -22,14 +63,14 @@ Important limitation: the web platform does not expose exact VRAM residency for 
 From npm:
 
 ```bash
-npm install -D webgpu-optimizer-report
-npx webgpu-report doctor
+npm install -D gpu-perf-agent
+npx gpu-perf-agent doctor
 ```
 
 Or run one-off without installing:
 
 ```bash
-npx -p webgpu-optimizer-report webgpu-report doctor
+npx gpu-perf-agent doctor
 ```
 
 From a checkout of this repository:
@@ -132,7 +173,7 @@ node ./src/cli.js xctrace --url http://localhost:5173/bench.html --template "Met
 ## Node API
 
 ```js
-import { runReport, compareReports } from "webgpu-optimizer-report";
+import { runReport, compareReports } from "gpu-perf-agent";
 
 const report = await runReport({
   url: "http://localhost:5173/bench.html",
@@ -145,7 +186,7 @@ const report = await runReport({
 For repeated runs inside one Node process, keep Chrome alive:
 
 ```js
-import { FastCDPHarness } from "webgpu-optimizer-report";
+import { FastCDPHarness } from "gpu-perf-agent";
 
 const harness = await FastCDPHarness.launch({ channel: "chrome" });
 try {
@@ -179,7 +220,7 @@ Without the hook, the runner still records capability, memory, and `requestAnima
 Use the browser helper to track resources your app creates. This is not exact VRAM residency; it is a deterministic estimate from API descriptors, which is ideal for regression checks.
 
 ```js
-import { trackWebGPUDevice } from "webgpu-optimizer-report/browser/allocation-tracker";
+import { trackWebGPUDevice } from "gpu-perf-agent/browser/allocation-tracker";
 
 const device = await adapter.requestDevice();
 globalThis.__gpuMemoryTracker = trackWebGPUDevice(device);
@@ -188,7 +229,7 @@ globalThis.__gpuMemoryTracker = trackWebGPUDevice(device);
 For WebGL2:
 
 ```js
-import { trackWebGL2Context } from "webgpu-optimizer-report/browser/allocation-tracker";
+import { trackWebGL2Context } from "gpu-perf-agent/browser/allocation-tracker";
 
 const gl = canvas.getContext("webgl2");
 globalThis.__gpuMemoryTracker = trackWebGL2Context(gl);
@@ -199,7 +240,7 @@ globalThis.__gpuMemoryTracker = trackWebGL2Context(gl);
 For precise GPU command timing, instrument the benchmark page. WebGPU timestamp query results are nanoseconds, but the exact timestamp source is implementation-defined by the browser/GPU stack. The runner records these as custom metrics, so `compare` can gate on them.
 
 ```js
-import { requestTimedWebGPUDevice } from "webgpu-optimizer-report/browser/timing";
+import { requestTimedWebGPUDevice } from "gpu-perf-agent/browser/timing";
 
 const adapter = await navigator.gpu.requestAdapter();
 const { device, timer } = await requestTimedWebGPUDevice(adapter);
@@ -214,7 +255,7 @@ const gpuTimeNs = await timer.measure((encoder, gpuTimer) => {
 For WebGL2, use `EXT_disjoint_timer_query_webgl2` when available:
 
 ```js
-import { createWebGL2Timer } from "webgpu-optimizer-report/browser/timing";
+import { createWebGL2Timer } from "gpu-perf-agent/browser/timing";
 
 const timer = createWebGL2Timer(gl);
 const gpuTimeNs = timer ? await timer.measure(() => draw()) : null;
@@ -223,35 +264,9 @@ const gpuTimeNs = timer ? await timer.measure(() => draw()) : null;
 ## Suggested Stack
 
 1. Use the allocation tracker in benchmarks to catch declared buffer/texture growth.
-2. Use `webgpu-report run --trace` for repeatable browser traces and CDP metrics.
-3. Use `webgpu-report compare` in CI or agent loops to catch regressions.
-4. Use `webgpu-report xctrace` when Chrome-level signals are not enough and you need Metal/GPU-driver level evidence on macOS.
-
-## Reusable Agent Skill (Claude / Gemini / Codex / Copilot)
-
-This package ships a pre-packaged agent skill definition in [skill/SKILL.md](skill/SKILL.md) (included in the npm tarball under `node_modules/webgpu-optimizer-report/skill/SKILL.md`). It teaches AI coding assistants to discover, load, and run this performance profiler on demand.
-
-### How to install the skill:
-
-#### 1. Claude Code / agents supporting the skills convention
-Copy the skill folder into your skills directory:
-```bash
-mkdir -p ~/.agents/skills/webgpu-performance-profiling
-cp node_modules/webgpu-optimizer-report/skill/SKILL.md ~/.agents/skills/webgpu-performance-profiling/SKILL.md
-```
-For project-scoped skills, use `.claude/skills/` (Claude Code) or `.github/skills/` (GitHub Copilot) instead.
-
-#### 2. Gemini / Antigravity
-```bash
-mkdir -p ~/.gemini/config/plugins/science/skills/webgpu_performance_profiling
-cp node_modules/webgpu-optimizer-report/skill/SKILL.md ~/.gemini/config/plugins/science/skills/webgpu_performance_profiling/SKILL.md
-```
-
-#### 3. Cline / Roo Code / Cursor
-Copy the contents of `skill/SKILL.md` into your custom rules or instruction files (e.g., `.clinerules`, `.cursorrules`, or system instructions).
-
-#### 4. General sharing
-Anyone who installs `webgpu-optimizer-report` from npm gets the skill alongside the CLI, so their AI coding assistant can immediately run zero-setup, on-demand automated performance testing.
+2. Use `gpu-perf-agent run --trace` for repeatable browser traces and CDP metrics.
+3. Use `gpu-perf-agent compare` in CI or agent loops to catch regressions.
+4. Use `gpu-perf-agent xctrace` when Chrome-level signals are not enough and you need Metal/GPU-driver level evidence on macOS.
 
 ## License
 

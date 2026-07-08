@@ -37,7 +37,7 @@ export async function recordMacOSXctrace(options = {}) {
 
   const chrome = options.app || defaultChromeBinary();
   const output = path.resolve(options.out || path.join("reports", `xctrace-${timestamp()}.trace`));
-  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "webgpu-report-chrome-"));
+  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "gpu-perf-agent-chrome-"));
   await mkdir(path.dirname(output), { recursive: true });
 
   const chromeArgs = [

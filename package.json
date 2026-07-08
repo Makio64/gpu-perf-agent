@@ -1,7 +1,7 @@
 {
-  "name": "webgpu-optimizer-report",
+  "name": "gpu-perf-agent",
   "version": "0.1.0",
-  "description": "Node-callable WebGPU/WebGL2 performance, trace, and memory reporting tools for regression testing. Ships an agent skill for automated GPU profiling.",
+  "description": "Agent-ready WebGPU/WebGL2 performance profiler: Node-callable benchmark, trace, and memory reports with verdicts for automated optimization loops. Ships an agent skill.",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -19,7 +19,7 @@
     "skill"
   ],
   "bin": {
-    "webgpu-report": "./src/cli.js"
+    "gpu-perf-agent": "./src/cli.js"
   },
   "exports": {
     ".": "./src/index.js",

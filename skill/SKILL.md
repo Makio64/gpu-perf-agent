@@ -14,27 +14,27 @@ description: >-
 Profile any WebGPU or WebGL2 web application to capture declared VRAM footprints (textures/buffers), frame metrics (average FPS, frame-time p95/variance), and CPU memory behavior (JS heap growth rate). The tool prints automated performance recommendations and supports comparative regression checks between a base and a candidate run.
 
 ## Setup
-The CLI ships in the `webgpu-optimizer-report` npm package as the `webgpu-report` binary.
+The CLI ships in the `gpu-perf-agent` npm package (binary has the same name).
 
 ```bash
 # One-off (no install):
-npx -p webgpu-optimizer-report webgpu-report doctor
+npx gpu-perf-agent doctor
 
 # Or install into the project:
-npm install -D webgpu-optimizer-report
-npx webgpu-report doctor
+npm install -D gpu-perf-agent
+npx gpu-perf-agent doctor
 ```
 
 The fast runner uses an installed Chrome/Chromium directly. If none is found, install one via `npx playwright install chromium` or point at a binary with `--executable-path` / `CHROME_PATH`.
 
-All commands below assume `webgpu-report` is on the path (via `npx webgpu-report ...`). When working inside a checkout of the tool itself, `node src/cli.js ...` is equivalent.
+All commands below assume `gpu-perf-agent` is on the path (via `npx gpu-perf-agent ...`). When working inside a checkout of the tool itself, `node src/cli.js ...` is equivalent.
 
 ## Commands
 
 ### 1. `doctor`
 Checks that the local system and headless Chrome support WebGPU/WebGL2. Always run this first.
 ```bash
-npx webgpu-report doctor
+npx gpu-perf-agent doctor
 ```
 
 ### 2. `run`
@@ -49,27 +49,27 @@ Profiles a local file or live URL.
 *   `--screenshot`: capture a screenshot for visual validation.
 
 ```bash
-npx webgpu-report run --url http://localhost:8080 --auto-instrument --samples 3 --out reports/run-1.json --json
+npx gpu-perf-agent run --url http://localhost:8080 --auto-instrument --samples 3 --out reports/run-1.json --json
 ```
 
 ### 3. `compare`
 Compares a base and candidate report; exits `1` when a metric regresses beyond the threshold (percent, default `5`).
 ```bash
-npx webgpu-report compare --base reports/base.json --candidate reports/candidate.json --threshold 5 --json
+npx gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --threshold 5 --json
 ```
 With `--json`, the output includes `diagnostics.resolvedWarnings` / `diagnostics.remainingWarnings` and both verdicts, so you can verify an optimization actually removed the bottleneck.
 
 ### 4. `serve`
 For repeated agent loops, launch Chrome once and POST jobs to a local server:
 ```bash
-npx webgpu-report serve --port 9099
+npx gpu-perf-agent serve --port 9099
 # then: POST http://127.0.0.1:9099/run with {"url": "...", "samples": 5, "durationMs": 1000}
 ```
 
 ### 5. `xctrace` (macOS only)
 Records an Xcode Instruments trace (e.g. `Metal System Trace`) for native GPU analysis:
 ```bash
-npx webgpu-report xctrace --url http://localhost:8080 --template "Metal System Trace" --time-limit 15s --out reports/metal.trace
+npx gpu-perf-agent xctrace --url http://localhost:8080 --template "Metal System Trace" --time-limit 15s --out reports/metal.trace
 ```
 
 ## Reading the Report
@@ -90,21 +90,21 @@ Deeper data when needed: `inPage.samples[*]` (per-sample measurements and per-fr
 
 ## Optimization Loop (recommended agent workflow)
 
-1. **Health check** — `npx webgpu-report doctor` (use `--quick` to skip the browser probe on repeat runs). If WebGPU is unsupported or the browser fails to initialize, stop and report the environment limitation.
+1. **Health check** — `npx gpu-perf-agent doctor` (use `--quick` to skip the browser probe on repeat runs). If WebGPU is unsupported or the browser fails to initialize, stop and report the environment limitation.
 2. **Target verification** — confirm the target server is responsive before profiling. If it is down, fail loudly with the network error.
 3. **Baseline** — profile the unmodified code:
    ```bash
-   npx webgpu-report run --url <url> --auto-instrument --out reports/base.json --json
+   npx gpu-perf-agent run --url <url> --auto-instrument --out reports/base.json --json
    ```
 4. **Diagnose** — read `summary.verdict` and `summary.warnings` from stdout. Each warning names the bottleneck (VRAM, heap churn, stutter, GPU-bound, draw-call count) and the standard fix.
 5. **Optimize** — apply ONE targeted change to the app code addressing the highest-impact warning.
 6. **Candidate** — re-profile with identical flags to `reports/candidate.json`.
 7. **Verify** —
    ```bash
-   npx webgpu-report compare --base reports/base.json --candidate reports/candidate.json --json
+   npx gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --json
    ```
    Exit code `1` means a metric regressed. Check `diagnostics.resolvedWarnings` to confirm the bottleneck is gone. Repeat from step 5 until the verdict is `good` or `excellent`.
-8. **Many iterations?** — start `npx webgpu-report serve --port 9099` once and POST `/run` jobs instead of relaunching Chrome each time; it is much faster per iteration and returns the same report JSON.
+8. **Many iterations?** — start `npx gpu-perf-agent serve --port 9099` once and POST `/run` jobs instead of relaunching Chrome each time; it is much faster per iteration and returns the same report JSON.
 
 ## Common Mistakes
 *   **Forgetting `--auto-instrument`** — tracked VRAM will read `0.00 MiB` because allocations are not hooked.

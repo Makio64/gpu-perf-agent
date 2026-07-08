@@ -255,7 +255,7 @@ async function createFastTarget(options = {}) {
 
 async function launchChromeForCDP(options, viewport) {
   const executablePath = await resolveChromeExecutable(options);
-  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "webgpu-report-cdp-"));
+  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "gpu-perf-agent-cdp-"));
   const args = [
     ...chromiumArgs(options),
     `--user-data-dir=${userDataDir}`,
