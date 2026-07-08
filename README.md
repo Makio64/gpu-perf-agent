@@ -6,42 +6,107 @@ Humans and CI get the same thing: repeatable performance/memory artifacts for tu
 
 The default runner is a fast direct Chrome DevTools Protocol harness. It launches Chrome/Chromium itself and talks CDP over WebSocket, avoiding Playwright's context and driver layers. A Playwright runner remains exported as `runPlaywrightReport()` for compatibility.
 
-## Give the Skill to Your Agent
+**Jump to:**
+- [Install](#install) — add the CLI via npm, one-off `npx`, or Playwright.
+- [Give the skill to your agent](#give-the-skill-to-your-agent) — wire it into Claude Code, Cline, Gemini, Copilot, or Codex.
+- [What it captures](#what-it-captures) — CDP samples, GPU timing, Chrome traces, and memory signals.
+- [CLI](#cli) — `run`, `serve`, `compare`, and `xctrace` commands.
+- [Node API](#node-api) — call `runReport` / `compareReports` from code.
+- [Instrument your page](#page-hook) — bench hook, allocation tracking, and precise GPU timing.
 
-The skill definition lives in [skill/SKILL.md](skill/SKILL.md) and is included in the npm tarball (`node_modules/gpu-perf-agent/skill/SKILL.md`). Install the package, then drop the skill where your agent discovers skills:
+## Install
+
+<details open>
+<summary><b>From npm</b> (recommended)</summary>
 
 ```bash
 npm install -D gpu-perf-agent
+npx gpu-perf-agent doctor
 ```
 
-**Claude Code** — project-scoped (recommended, travels with the repo):
-```bash
-mkdir -p .claude/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md .claude/skills/webgpu-performance-profiling/SKILL.md
-```
-Or user-wide with `~/.claude/skills/webgpu-performance-profiling/`.
+</details>
 
-**OpenAI Codex CLI**:
-```bash
-mkdir -p ~/.codex/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md ~/.codex/skills/webgpu-performance-profiling/SKILL.md
-```
-Or reference the skill from your `AGENTS.md`: "For GPU performance profiling, follow node_modules/gpu-perf-agent/skill/SKILL.md".
+<details>
+<summary><b>One-off, no install</b></summary>
 
-**Gemini CLI / Antigravity**:
 ```bash
-mkdir -p ~/.gemini/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md ~/.gemini/skills/webgpu-performance-profiling/SKILL.md
+npx gpu-perf-agent doctor
 ```
+
+</details>
+
+<details>
+<summary><b>Optional: Playwright</b> (compatibility runner / bundled Chromium)</summary>
+
+The fast runner prefers an installed Chrome/Chromium and falls back to Playwright's bundled Chromium when available. Playwright is an optional peer dependency — only needed for the compatibility runner or its bundled browser:
+
+```bash
+npm install playwright
+npx playwright install chromium
+```
+
+</details>
+
+## Give the Skill to Your Agent
+
+With the package installed, drop the skill where your agent discovers skills — the definition lives in [skill/SKILL.md](skill/SKILL.md) and ships in the npm tarball (`node_modules/gpu-perf-agent/skill/SKILL.md`). Expand your agent:
+
+<details>
+<summary><b>Claude Code</b></summary>
+
+Project-scoped (recommended — travels with the repo):
+
+```bash
+mkdir -p .claude/skills/gpu-perf-agent
+cp node_modules/gpu-perf-agent/skill/SKILL.md .claude/skills/gpu-perf-agent/SKILL.md
+```
+
+Or user-wide with `~/.claude/skills/gpu-perf-agent/`.
+
+</details>
+
+<details>
+<summary><b>Cline / Roo Code / Cursor</b></summary>
+
+Paste the contents of `skill/SKILL.md` into your rules file (`.clinerules`, `.cursorrules`, or custom instructions).
+
+</details>
+
+<details>
+<summary><b>Gemini CLI / Antigravity</b></summary>
+
+```bash
+mkdir -p ~/.gemini/skills/gpu-perf-agent
+cp node_modules/gpu-perf-agent/skill/SKILL.md ~/.gemini/skills/gpu-perf-agent/SKILL.md
+```
+
 Or reference it from `GEMINI.md` the same way as AGENTS.md.
 
-**GitHub Copilot (VS Code)** — project-scoped:
+</details>
+
+<details>
+<summary><b>GitHub Copilot (VS Code)</b></summary>
+
+Project-scoped:
+
 ```bash
-mkdir -p .github/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md .github/skills/webgpu-performance-profiling/SKILL.md
+mkdir -p .github/skills/gpu-perf-agent
+cp node_modules/gpu-perf-agent/skill/SKILL.md .github/skills/gpu-perf-agent/SKILL.md
 ```
 
-**Cline / Roo Code / Cursor** — paste the contents of `skill/SKILL.md` into your rules file (`.clinerules`, `.cursorrules`, or custom instructions).
+</details>
+
+<details>
+<summary><b>OpenAI Codex CLI</b></summary>
+
+```bash
+mkdir -p ~/.codex/skills/gpu-perf-agent
+cp node_modules/gpu-perf-agent/skill/SKILL.md ~/.codex/skills/gpu-perf-agent/SKILL.md
+```
+
+Or reference the skill from your `AGENTS.md`: "For GPU performance profiling, follow node_modules/gpu-perf-agent/skill/SKILL.md".
+
+</details>
 
 Once installed, ask your agent things like *"profile http://localhost:5173 and fix the biggest GPU bottleneck"* — the skill teaches it the full baseline → optimize → compare loop.
 
@@ -57,35 +122,6 @@ Once installed, ask your agent things like *"profile http://localhost:5173 and f
 - Optional macOS `xctrace` capture using Xcode Instruments templates such as `Metal System Trace`.
 
 Important limitation: the web platform does not expose exact VRAM residency for WebGPU/WebGL2. For deep memory analysis, use all three layers together: declared allocation tracking in the app, Chrome trace memory-infra summaries, and native Instruments captures on macOS.
-
-## Install
-
-From npm:
-
-```bash
-npm install -D gpu-perf-agent
-npx gpu-perf-agent doctor
-```
-
-Or run one-off without installing:
-
-```bash
-npx gpu-perf-agent doctor
-```
-
-From a checkout of this repository:
-
-```bash
-npm install
-npm run doctor
-```
-
-The fast runner prefers an installed Chrome/Chromium. If it cannot find one, it falls back to Playwright's bundled Chromium path when available. Playwright itself is an optional peer dependency — only needed for the compatibility runner or its bundled browser:
-
-```bash
-npm install playwright
-npx playwright install chromium
-```
 
 ## CLI
 
@@ -163,11 +199,8 @@ Every report (file, `--json` stdout, `serve` responses, and Node API results) co
   },
   "diagnostics": { "warnings": [], "highlights": [], "resources": {} },
   "inPage": { /* per-sample measurements, slow-frame op counts */ },
-  "trace": { /* Chrome trace summary when --trace */ },
-Record an Xcode Instruments trace on macOS:
-
-```bash
-node ./src/cli.js xctrace --url http://localhost:5173/bench.html --template "Metal System Trace" --time-limit 15s --out reports/metal.trace
+  "trace": { /* Chrome trace summary when --trace */ }
+}
 ```
 
 ## Node API

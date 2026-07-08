@@ -1,6 +1,6 @@
 {
   "name": "gpu-perf-agent",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Agent-ready WebGPU/WebGL2 performance profiler: Node-callable benchmark, trace, and memory reports with verdicts for automated optimization loops. Ships an agent skill.",
   "license": "MIT",
   "type": "module",
@@ -52,6 +52,6 @@
     }
   },
   "devDependencies": {
-    "playwright": "^1.60.0"
+    "playwright": "^1.61.1"
   }
 }

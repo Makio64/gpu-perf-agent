@@ -1,5 +1,5 @@
 ---
-name: webgpu-performance-profiling
+name: gpu-perf-agent
 description: >-
   Profiles WebGPU and WebGL2 pages on demand using auto-instrumentation and
   browser trace analysis to diagnose performance bottlenecks, VRAM consumption,
