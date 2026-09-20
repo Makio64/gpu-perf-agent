@@ -2,6 +2,13 @@ export function trackWebGPUDevice(device, options = {}) {
   const tracker = createTracker("webgpu", options);
   const originalCreateBuffer = device.createBuffer.bind(device);
   const originalCreateTexture = device.createTexture.bind(device);
+  const originalCreateRenderPipeline = device.createRenderPipeline?.bind(device);
+  const originalCreateRenderPipelineAsync = device.createRenderPipelineAsync?.bind(device);
+  const originalCreateComputePipeline = device.createComputePipeline?.bind(device);
+  const originalCreateComputePipelineAsync = device.createComputePipelineAsync?.bind(device);
+  const originalCreateShaderModule = device.createShaderModule?.bind(device);
+  const originalCreateBindGroup = device.createBindGroup?.bind(device);
+  const originalCreateBindGroupLayout = device.createBindGroupLayout?.bind(device);
 
   device.createBuffer = (descriptor) => {
     const buffer = originalCreateBuffer(descriptor);
@@ -9,7 +16,7 @@ export function trackWebGPUDevice(device, options = {}) {
     const id = tracker.track({
       api: "webgpu",
       bytes,
-      descriptor: cloneDescriptor(descriptor),
+      descriptor: lightweightDescriptor(descriptor),
       kind: "buffer",
       label: descriptor?.label || null
     });
@@ -23,13 +30,62 @@ export function trackWebGPUDevice(device, options = {}) {
     const id = tracker.track({
       api: "webgpu",
       bytes,
-      descriptor: cloneDescriptor(descriptor),
+      descriptor: lightweightDescriptor(descriptor),
       kind: "texture",
       label: descriptor?.label || null
     });
     patchDestroy(texture, () => tracker.release(id));
     return texture;
   };
+
+  if (originalCreateRenderPipeline) {
+    device.createRenderPipeline = (descriptor) => {
+      tracker.recordPipeline("render", false, descriptor);
+      return originalCreateRenderPipeline(descriptor);
+    };
+  }
+
+  if (originalCreateRenderPipelineAsync) {
+    device.createRenderPipelineAsync = (descriptor) => {
+      tracker.recordPipeline("render", true, descriptor);
+      return originalCreateRenderPipelineAsync(descriptor);
+    };
+  }
+
+  if (originalCreateComputePipeline) {
+    device.createComputePipeline = (descriptor) => {
+      tracker.recordPipeline("compute", false, descriptor);
+      return originalCreateComputePipeline(descriptor);
+    };
+  }
+
+  if (originalCreateComputePipelineAsync) {
+    device.createComputePipelineAsync = (descriptor) => {
+      tracker.recordPipeline("compute", true, descriptor);
+      return originalCreateComputePipelineAsync(descriptor);
+    };
+  }
+
+  if (originalCreateShaderModule) {
+    device.createShaderModule = (descriptor) => {
+      tracker.recordShaderModule(descriptor);
+      return originalCreateShaderModule(descriptor);
+    };
+  }
+
+  if (originalCreateBindGroup) {
+    device.createBindGroup = (descriptor) => {
+      tracker.recordBindGroup(descriptor);
+      return originalCreateBindGroup(descriptor);
+    };
+  }
+
+  if (originalCreateBindGroupLayout) {
+    device.createBindGroupLayout = (descriptor) => {
+      tracker.recordBindGroupLayout(descriptor);
+      return originalCreateBindGroupLayout(descriptor);
+    };
+  }
 
   return tracker;
 }
@@ -153,6 +209,46 @@ export function createTracker(api, options = {}) {
   const createdByKind = {};
   const releasedByKind = {};
 
+  const pipelines = {
+    sync: [],
+    syncCount: 0,
+    asyncCount: 0,
+    shaderModules: 0
+  };
+
+  const bindGroups = {
+    createdCount: 0,
+    layoutCount: 0
+  };
+
+  function recordPipeline(type, isAsync, descriptor) {
+    if (isAsync) {
+      pipelines.asyncCount += 1;
+    } else {
+      pipelines.syncCount += 1;
+      if (pipelines.sync.length < 50) {
+        pipelines.sync.push({
+          type,
+          label: descriptor?.label || "unlabeled",
+          atMs: typeof performance !== "undefined" ? performance.now() : Date.now(),
+          stack: typeof Error !== "undefined" ? new Error().stack : null
+        });
+      }
+    }
+  }
+
+  function recordShaderModule(descriptor) {
+    pipelines.shaderModules += 1;
+  }
+
+  function recordBindGroup(descriptor) {
+    bindGroups.createdCount += 1;
+  }
+
+  function recordBindGroupLayout(descriptor) {
+    bindGroups.layoutCount += 1;
+  }
+
   function remember(event) {
     if (!options.history) {
       return;
@@ -255,12 +351,26 @@ export function createTracker(api, options = {}) {
       createdCount: totalCreatedCount,
       releasedCount: totalReleasedCount,
       createdByKind: { ...createdByKind },
-      releasedByKind: { ...releasedByKind }
+      releasedByKind: { ...releasedByKind },
+      pipelines: {
+        syncCount: pipelines.syncCount,
+        asyncCount: pipelines.asyncCount,
+        shaderModules: pipelines.shaderModules,
+        syncPipelines: pipelines.sync.slice()
+      },
+      bindGroups: {
+        createdCount: bindGroups.createdCount,
+        layoutCount: bindGroups.layoutCount
+      }
     };
   }
 
   return {
     attach,
+    recordBindGroup,
+    recordBindGroupLayout,
+    recordPipeline,
+    recordShaderModule,
     release,
     releaseAttached,
     snapshot,
@@ -311,12 +421,21 @@ function patchDestroy(resource, onDestroy) {
   };
 }
 
+function lightweightDescriptor(descriptor) {
+  if (!descriptor) return {};
+  const out = {};
+  if (descriptor.label) out.label = descriptor.label;
+  if (descriptor.size) out.size = descriptor.size;
+  if (descriptor.usage !== undefined) out.usage = descriptor.usage;
+  if (descriptor.format) out.format = descriptor.format;
+  if (descriptor.dimension) out.dimension = descriptor.dimension;
+  if (descriptor.sampleCount !== undefined) out.sampleCount = descriptor.sampleCount;
+  if (descriptor.mipLevelCount !== undefined) out.mipLevelCount = descriptor.mipLevelCount;
+  return out;
+}
+
 function cloneDescriptor(descriptor) {
-  try {
-    return JSON.parse(JSON.stringify(descriptor || {}));
-  } catch {
-    return {};
-  }
+  return lightweightDescriptor(descriptor);
 }
 
 function normalizeExtent3D(size = {}) {

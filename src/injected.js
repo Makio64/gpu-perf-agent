@@ -5,7 +5,8 @@ export async function collectInPage(options = {}) {
     gc: Boolean(options.gc),
     hookName: options.hookName || "__gpuReportBench",
     samples: Number(options.samples ?? 5),
-    warmup: Number(options.warmup ?? 1)
+    warmup: Number(options.warmup ?? 1),
+    adaptive: Boolean(options.adaptive)
   };
 
   function finiteNumber(value) {
@@ -304,6 +305,43 @@ export async function collectInPage(options = {}) {
     }
   }
 
+  function detectCadence(deltas) {
+    if (!deltas || deltas.length < 5) return null;
+    const validDeltas = deltas.filter(d => typeof d === "number" && d > 2 && d < 120);
+    if (validDeltas.length < 5) return null;
+    const sorted = validDeltas.slice().sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+
+    const targets = [
+      { hz: 240, ms: 1000 / 240 },
+      { hz: 165, ms: 1000 / 165 },
+      { hz: 144, ms: 1000 / 144 },
+      { hz: 120, ms: 1000 / 120 },
+      { hz: 90, ms: 1000 / 90 },
+      { hz: 75, ms: 1000 / 75 },
+      { hz: 60, ms: 1000 / 60 },
+      { hz: 30, ms: 1000 / 30 }
+    ];
+
+    for (const target of targets) {
+      if (Math.abs(median - target.ms) < 1.8) {
+        const hits = validDeltas.filter(d => Math.abs(d - target.ms) < 2.0).length;
+        const hitRate = hits / validDeltas.length;
+        return {
+          hz: target.hz,
+          intervalMs: Math.round(target.ms * 100) / 100,
+          hitRate: Math.round(hitRate * 1000) / 1000
+        };
+      }
+    }
+
+    return {
+      hz: Math.round(1000 / median),
+      intervalMs: Math.round(median * 100) / 100,
+      hitRate: null
+    };
+  }
+
   function sampleFrames(durationMs) {
     return new Promise((resolve) => {
       const timestamps = [];
@@ -333,12 +371,25 @@ export async function collectInPage(options = {}) {
         }
 
         const elapsedMs = timestamps[timestamps.length - 1] - timestamps[0];
+
+        let gpuTimeNs = null;
+        if (globalThis.__lastWebGPUDurationNs != null) {
+          gpuTimeNs = globalThis.__lastWebGPUDurationNs;
+        } else if (globalThis.__lastWebGL2DurationNs != null) {
+          gpuTimeNs = globalThis.__lastWebGL2DurationNs;
+        }
+
         resolve({
           durationMs: elapsedMs,
           fps: elapsedMs > 0 ? (timestamps.length - 1) / (elapsedMs / 1000) : 0,
           frameCount: timestamps.length,
           frameTimeMs: stats(deltas),
           maxJitter,
+          cadence: detectCadence(deltas),
+          gpuTimeNs,
+          computeTimeNs: globalThis.__lastWebGPUComputeDurationNs ?? null,
+          renderTimeNs: globalThis.__lastWebGPURenderDurationNs ?? null,
+          passes: globalThis.__lastWebGPUPasses ?? null,
           type: "raf"
         });
       }
@@ -380,29 +431,68 @@ export async function collectInPage(options = {}) {
     const releasedCounts = [];
     const leakCounts = [];
 
+    const gpuTimes = [];
+    const computeTimes = [];
+    const renderTimes = [];
+    const drawCalls = [];
+    const dispatchCalls = [];
+    const renderPasses = [];
+    const computePasses = [];
+    const pipelineCalls = [];
+    const bindGroupCalls = [];
+    const cadences = [];
+    let latestPasses = null;
+
     for (const sample of samples) {
       elapsed.push(sample.elapsedMs);
-      if (finiteNumber(sample.measurement?.fps)) {
-        fps.push(sample.measurement.fps);
+      const m = sample.measurement;
+      if (finiteNumber(m?.fps)) {
+        fps.push(m.fps);
       }
-      if (finiteNumber(sample.measurement?.frameTimeMs?.mean)) {
-        frameTimeMeans.push(sample.measurement.frameTimeMs.mean);
+      if (finiteNumber(m?.frameTimeMs?.mean)) {
+        frameTimeMeans.push(m.frameTimeMs.mean);
       }
-      if (finiteNumber(sample.measurement?.frameTimeMs?.p95)) {
-        frameTimeP95s.push(sample.measurement.frameTimeMs.p95);
+      if (finiteNumber(m?.frameTimeMs?.p95)) {
+        frameTimeP95s.push(m.frameTimeMs.p95);
       }
-      if (finiteNumber(sample.measurement?.frameTimeMs?.p99)) {
-        frameTimeP99s.push(sample.measurement.frameTimeMs.p99);
+      if (finiteNumber(m?.frameTimeMs?.p99)) {
+        frameTimeP99s.push(m.frameTimeMs.p99);
       }
-      if (finiteNumber(sample.measurement?.frameTimeMs?.p99_9)) {
-        frameTimeP99_9s.push(sample.measurement.frameTimeMs.p99_9);
+      if (finiteNumber(m?.frameTimeMs?.p99_9)) {
+        frameTimeP99_9s.push(m.frameTimeMs.p99_9);
       }
-      if (finiteNumber(sample.measurement?.frameTimeMs?.max)) {
-        frameTimeMaxes.push(sample.measurement.frameTimeMs.max);
+      if (finiteNumber(m?.frameTimeMs?.max)) {
+        frameTimeMaxes.push(m.frameTimeMs.max);
       }
-      if (finiteNumber(sample.measurement?.maxJitter)) {
-        maxJitters.push(sample.measurement.maxJitter);
+      if (finiteNumber(m?.maxJitter)) {
+        maxJitters.push(m.maxJitter);
       }
+      if (m?.cadence) {
+        cadences.push(m.cadence);
+      }
+      if (finiteNumber(m?.gpuTimeNs)) {
+        gpuTimes.push(m.gpuTimeNs);
+      }
+      if (finiteNumber(m?.computeTimeNs)) {
+        computeTimes.push(m.computeTimeNs);
+      }
+      if (finiteNumber(m?.renderTimeNs)) {
+        renderTimes.push(m.renderTimeNs);
+      }
+      if (m?.passes) {
+        latestPasses = m.passes;
+      }
+
+      const ops = m?.webgpuOps;
+      if (ops) {
+        if (finiteNumber(ops.drawCalls)) drawCalls.push(ops.drawCalls);
+        if (finiteNumber(ops.dispatchCalls)) dispatchCalls.push(ops.dispatchCalls);
+        if (finiteNumber(ops.renderPasses)) renderPasses.push(ops.renderPasses);
+        if (finiteNumber(ops.computePasses)) computePasses.push(ops.computePasses);
+        if (finiteNumber(ops.setPipelineCalls)) pipelineCalls.push(ops.setPipelineCalls);
+        if (finiteNumber(ops.setBindGroupCalls)) bindGroupCalls.push(ops.setBindGroupCalls);
+      }
+
       if (finiteNumber(sample.memory?.delta?.performanceMemory?.usedJSHeapSize)) {
         jsHeapDeltas.push(sample.memory.delta.performanceMemory.usedJSHeapSize);
       }
@@ -426,6 +516,24 @@ export async function collectInPage(options = {}) {
       }
     }
 
+    let consensusCadence = null;
+    if (cadences.length > 0) {
+      const hzMap = {};
+      for (const c of cadences) {
+        hzMap[c.hz] = (hzMap[c.hz] || 0) + 1;
+      }
+      let topHz = null;
+      let topCount = 0;
+      for (const hz in hzMap) {
+        if (hzMap[hz] > topCount) {
+          topCount = hzMap[hz];
+          topHz = Number(hz);
+        }
+      }
+      const match = cadences.find(c => c.hz === topHz);
+      consensusCadence = match || cadences[0];
+    }
+
     return {
       elapsedMs: stats(elapsed),
       fps: stats(fps),
@@ -442,7 +550,18 @@ export async function collectInPage(options = {}) {
       userAgentMemoryDeltaBytes: stats(userAgentMemoryDeltas),
       createdCount: stats(createdCounts),
       releasedCount: stats(releasedCounts),
-      leakCount: stats(leakCounts)
+      leakCount: stats(leakCounts),
+      gpuTimeNs: stats(gpuTimes),
+      computeTimeNs: stats(computeTimes),
+      renderTimeNs: stats(renderTimes),
+      drawCalls: stats(drawCalls),
+      dispatchCalls: stats(dispatchCalls),
+      renderPasses: stats(renderPasses),
+      computePasses: stats(computePasses),
+      setPipelineCalls: stats(pipelineCalls),
+      setBindGroupCalls: stats(bindGroupCalls),
+      cadence: consensusCadence,
+      passes: latestPasses
     };
   }
 
@@ -455,13 +574,22 @@ export async function collectInPage(options = {}) {
   const apiSupport = await detectApis();
   await settleFrames(2);
 
+  const warmupStart = performance.now();
+  let warmupLagSpikeMs = 0;
   for (let index = 0; index < config.warmup; index += 1) {
     if (hookFound) {
-      await runHook("warmup", index);
+      const w = await runHook("warmup", index);
+      if (w?.frameTimeMs?.max > warmupLagSpikeMs) {
+        warmupLagSpikeMs = w.frameTimeMs.max;
+      }
     } else {
-      await sampleFrames(Math.min(250, config.durationMs));
+      const w = await sampleFrames(Math.min(250, config.durationMs));
+      if (w?.frameTimeMs?.max > warmupLagSpikeMs) {
+        warmupLagSpikeMs = w.frameTimeMs.max;
+      }
     }
   }
+  const warmupDurationMs = performance.now() - warmupStart;
 
   const globalBefore = await memorySnapshot();
   const samples = [];
@@ -514,6 +642,22 @@ export async function collectInPage(options = {}) {
     if (error) {
       break;
     }
+
+    if (config.adaptive && samples.length >= 3) {
+      const validFps = samples.map((s) => s.measurement?.fps).filter(finiteNumber);
+      if (validFps.length >= 3) {
+        const meanFps = validFps.reduce((a, b) => a + b, 0) / validFps.length;
+        if (meanFps > 0) {
+          const variance = validFps.reduce((sum, v) => sum + Math.pow(v - meanFps, 2), 0) / validFps.length;
+          const stdDev = Math.sqrt(variance);
+          const cv = stdDev / meanFps;
+          if (cv < 0.015) {
+            // Statistical convergence reached (CV < 1.5%); stop sampling early to save time
+            break;
+          }
+        }
+      }
+    }
   }
 
   const globalAfter = await memorySnapshot();
@@ -535,6 +679,11 @@ export async function collectInPage(options = {}) {
     summary: summarizeSamples(samples),
     userAgent: navigator.userAgent,
     warnings,
-    slowFrames: globalThis.__gpuSlowFrames || []
+    slowFrames: globalThis.__gpuSlowFrames || [],
+    warmup: {
+      durationMs: Math.round(warmupDurationMs * 100) / 100,
+      lagSpikeMs: Math.round(warmupLagSpikeMs * 100) / 100,
+      settled: true
+    }
   };
 }

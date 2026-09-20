@@ -13,7 +13,11 @@ import {
   runReport,
   startReportServer,
   analyzeReport,
-  formatDiagnostics
+  formatDiagnostics,
+  generateHtmlReport,
+  generateAgentDigest,
+  generateAgentCompareDigest,
+  runMcpServer
 } from "./index.js";
 
 const command = process.argv[2] || "help";
@@ -29,6 +33,10 @@ try {
     await serveCommand(process.argv.slice(3));
   } else if (command === "xctrace") {
     await xctraceCommand(process.argv.slice(3));
+  } else if (command === "mcp") {
+    await mcpCommand(process.argv.slice(3));
+  } else if (command === "agent") {
+    await agentCommand(process.argv.slice(3));
   } else {
     printHelp();
     process.exitCode = command === "help" || command === "--help" || command === "-h" ? 0 : 1;
@@ -55,6 +63,8 @@ async function runCommand(args) {
       headful: { type: "boolean" },
       hook: { default: "__gpuReportBench", type: "string" },
       out: { type: "string" },
+      html: { type: "boolean" },
+      "html-out": { type: "string" },
       "raw-trace": { type: "boolean" },
       runner: { default: "fast", type: "string" },
       samples: { default: "5", type: "string" },
@@ -68,6 +78,10 @@ async function runCommand(args) {
       warmup: { default: "1", type: "string" },
       "wait-until": { default: "networkidle", type: "string" },
       "auto-instrument": { type: "boolean" },
+      adaptive: { type: "boolean" },
+      agent: { type: "boolean" },
+      cdp: { type: "string" },
+      "cdp-url": { type: "string" },
       json: { type: "boolean" },
       screenshot: { type: "boolean" },
       "screenshot-out": { type: "string" },
@@ -109,6 +123,8 @@ async function runCommand(args) {
     warmup: Number(values.warmup),
     waitUntil: values["wait-until"],
     autoInstrument: Boolean(values["auto-instrument"]),
+    adaptive: Boolean(values.adaptive),
+    cdpUrl: values.cdp || values["cdp-url"],
     slowFrameThreshold: values["slow-frame-threshold"] ? Number(values["slow-frame-threshold"]) : null,
     out,
     screenshot: Boolean(values.screenshot || values["screenshot-out"]),
@@ -122,9 +138,28 @@ async function runCommand(args) {
   await mkdir(path.dirname(out), { recursive: true });
   await writeFile(out, JSON.stringify(report, null, 2));
 
+  const htmlPath = values["html-out"]
+    ? path.resolve(values["html-out"])
+    : values.html
+      ? out.replace(/\.json$/i, ".html")
+      : null;
+
+  if (htmlPath) {
+    const html = generateHtmlReport(report);
+    await mkdir(path.dirname(htmlPath), { recursive: true });
+    await writeFile(htmlPath, html, "utf8");
+    console.log(`Interactive HTML report written: ${htmlPath}`);
+  }
+
+  if (values.agent) {
+    console.log(generateAgentDigest(report));
+    return;
+  }
+
   if (values.json) {
     console.log(JSON.stringify({
       out,
+      htmlOut: htmlPath,
       target: report.target?.url || null,
       verdict: report.summary?.verdict || null,
       summary: report.summary || null,
@@ -147,6 +182,7 @@ async function compareCommand(args) {
       budget: { type: "string" },
       candidate: { type: "string" },
       json: { type: "boolean" },
+      agent: { type: "boolean" },
       threshold: { default: "5", type: "string" }
     }
   });
@@ -162,6 +198,14 @@ async function compareCommand(args) {
     budget,
     thresholdPercent: Number(values.threshold)
   });
+
+  if (values.agent) {
+    console.log(generateAgentCompareDigest(baseReport, candReport));
+    if (result.failures.length > 0) {
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   if (values.json) {
     const baseDiag = analyzeReport(baseReport);
@@ -200,6 +244,34 @@ async function compareCommand(args) {
   if (result.failures.length > 0) {
     process.exitCode = 1;
   }
+}
+
+async function agentCommand(args) {
+  if (args.includes("--base") && args.includes("--candidate")) {
+    await compareCommand([...args, "--agent"]);
+    return;
+  }
+  const modifiedArgs = [...args];
+  if (!modifiedArgs.some((a) => a === "--samples" || a.startsWith("--samples="))) {
+    modifiedArgs.push("--samples", "3");
+  }
+  if (!modifiedArgs.some((a) => a === "--duration-ms" || a.startsWith("--duration-ms="))) {
+    modifiedArgs.push("--duration-ms", "500");
+  }
+  if (!modifiedArgs.includes("--adaptive")) {
+    modifiedArgs.push("--adaptive");
+  }
+  if (!modifiedArgs.includes("--auto-instrument")) {
+    modifiedArgs.push("--auto-instrument");
+  }
+  if (!modifiedArgs.includes("--agent")) {
+    modifiedArgs.push("--agent");
+  }
+  await runCommand(modifiedArgs);
+}
+
+async function mcpCommand() {
+  await runMcpServer();
 }
 
 async function doctorCommand(args) {
@@ -358,13 +430,26 @@ function printHelp() {
 
 Usage:
   gpu-perf-agent doctor [--quick]
+  gpu-perf-agent agent --url http://localhost:5173/bench.html
+  gpu-perf-agent agent --file examples/webgpu-clear.html
+  gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
+  gpu-perf-agent mcp
   gpu-perf-agent run --url http://localhost:5173/bench.html --out reports/run.json [--trace]
   gpu-perf-agent run --file examples/webgl2-draw.html --samples 5 --duration-ms 1000
   gpu-perf-agent serve --port 9099
   gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json [--budget budget.json]
   gpu-perf-agent xctrace --url http://localhost:5173/bench.html --time-limit 15s
 
+Agent & Fast-Turnaround Commands:
+  gpu-perf-agent agent         Fast-path profiling: 3 samples, 500ms, adaptive early-stop,
+                               auto-instrument, outputs concise LLM digest (< 250 tokens).
+  gpu-perf-agent mcp           Start Model Context Protocol (MCP) JSON-RPC stdio server
+                               for Claude Desktop, Cursor, Antigravity, and AI agents.
+
 Key run options:
+  --agent                      Print ultra-dense Markdown digest for LLMs to stdout.
+  --adaptive                   Stop sampling early when FPS variance stabilizes (CV < 1.5%).
+  --cdp PORT|URL               Attach to existing running Chrome (zero startup overhead).
   --api webgpu|webgl2|auto     Label passed to the page hook.
   --hook NAME                  Page hook name. Default: __gpuReportBench.
   --trace                      Capture Chrome trace summary.
@@ -381,6 +466,8 @@ Key run options:
   --screenshot                 Capture a screenshot of the page/canvas.
   --screenshot-out PATH        File path to save the screenshot.
   --visual-validation          Verify screenshot is not blank (size > 5KB).
+  --html                       Generate self-contained interactive HTML report next to JSON.
+  --html-out PATH              Custom output path for interactive HTML report.
 
 Default runner:
   The CLI uses the fast direct-CDP runner. Import runPlaywrightReport()
@@ -388,16 +475,13 @@ Default runner:
 
 Persistent mode:
   gpu-perf-agent serve launches Chrome once and accepts POST /run JSON jobs.
-  This is the fastest path for agents running optimization loops.
+  Alternatively attach to any Chrome via --cdp <port>.
 
 Agent loop recipe:
-  1. gpu-perf-agent doctor --quick
-  2. gpu-perf-agent run --url URL --auto-instrument --out reports/base.json --json
-  3. (apply an optimization)
-  4. gpu-perf-agent run --url URL --auto-instrument --out reports/candidate.json --json
-  5. gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --json
-  Every report contains a top-level "summary" with a verdict
-  (excellent | good | needs-work | poor) plus warnings to act on.
+  1. gpu-perf-agent agent --file app.html --out reports/base.json
+  2. (apply an optimization)
+  3. gpu-perf-agent agent --file app.html --out reports/cand.json
+  4. gpu-perf-agent agent --base reports/base.json --candidate reports/cand.json
 `);
 }
 

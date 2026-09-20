@@ -8,9 +8,10 @@ The default runner is a fast direct Chrome DevTools Protocol harness. It launche
 
 **Jump to:**
 - [Install](#install) — add the CLI via npm, one-off `npx`, or Playwright.
+- [Agent Mode & MCP Server](#agent-mode--mcp-server) — ultra-fast < 250 token digests and Model Context Protocol server.
 - [Give the skill to your agent](#give-the-skill-to-your-agent) — wire it into Claude Code, Cline, Gemini, Copilot, or Codex.
 - [What it captures](#what-it-captures) — CDP samples, GPU timing, Chrome traces, and memory signals.
-- [CLI](#cli) — `run`, `serve`, `compare`, and `xctrace` commands.
+- [CLI](#cli) — `agent`, `run`, `serve`, `compare`, `mcp`, and `xctrace` commands.
 - [Node API](#node-api) — call `runReport` / `compareReports` from code.
 - [Instrument your page](#page-hook) — bench hook, allocation tracking, and precise GPU timing.
 
@@ -46,6 +47,69 @@ npx playwright install chromium
 ```
 
 </details>
+
+## Agent Mode & MCP Server
+
+Designed specifically for AI coding agents (Claude, Cursor, Copilot, Antigravity, Gemini) to perform rapid, low-token iterative optimization loops:
+
+### 1. `gpu-perf-agent agent` (Token-Optimized Profiling)
+Runs fast-path profiling (3 samples, 500ms duration, adaptive early-stopping, auto-instrumentation) and outputs a high-density Markdown digest in **< 250 tokens** directly to stdout:
+
+```bash
+# Profile local file or URL and get copy-pasteable code fixes:
+npx gpu-perf-agent agent --file examples/webgpu-clear.html --out reports/base.json
+```
+
+Output example:
+```markdown
+# WebGPU Profiling Digest
+- **Verdict**: POOR | **FPS**: 24.2 (Cadence: uncapped)
+- **Frame Time**: 41.32ms (p95: 58.2ms) | **GPU Time**: 12.10ms
+- **VRAM**: 148.0 MiB (18 buffers, 6 textures) | ⚠️ Leaked: 2
+- **Pipelines**: 2 sync stalls, 0 async, 2 modules
+- **WebGPU Ops**: 142 draws/frame, 4 dispatches | 48 bind groups created
+
+### Actionable Recommendations (2)
+1. 🔴 **[PIPELINE] Synchronous Pipeline Compilation**
+   - **Evidence**: 2 synchronous pipeline compilations detected
+   - **Action**: Use createRenderPipelineAsync to avoid blocking the main thread
+   - **Code Hint**:
+     ```javascript
+     const pipeline = await device.createRenderPipelineAsync(descriptor);
+     ```
+   - **Agent Task**: Replace device.createRenderPipeline with device.createRenderPipelineAsync.
+```
+
+### 2. Instant Before / After Compare
+```bash
+npx gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
+```
+Prints an instant diff showing resolved vs remaining bottlenecks and regressed metrics in < 50 tokens.
+
+### 3. Model Context Protocol (MCP) Server
+Start a zero-dependency JSON-RPC stdio MCP server for agent platforms:
+
+```bash
+npx gpu-perf-agent mcp
+```
+
+Add to your MCP client configuration (e.g. Claude Desktop `claude_desktop_config.json` or Cursor):
+```json
+{
+  "mcpServers": {
+    "webgpu-profiler": {
+      "command": "npx",
+      "args": ["-y", "gpu-perf-agent", "mcp"]
+    }
+  }
+}
+```
+Exposes tools:
+- `profile_webgpu`: Profile any URL/file and return the concise digest.
+- `compare_webgpu_reports`: Compare two reports and detect regressions.
+
+### 4. Zero-Startup via `--cdp`
+If Chrome is already running with remote debugging (e.g. `--remote-debugging-port=9222`), pass `--cdp 9222` to skip browser launch completely for instant 0ms turnaround.
 
 ## Give the Skill to Your Agent
 
@@ -189,18 +253,34 @@ Every report (file, `--json` stdout, `serve` responses, and Node API results) co
   "summary": {
     "verdict": "excellent",          // excellent | good | needs-work | poor
     "fps": 60,
+    "cadence": { "hz": 60, "intervalMs": 16.67, "hitRate": 0.99 },
     "frameTimeMsMean": 16.4,
     "frameTimeMsP95": 17.1,
     "gpuFrameMsMean": 4.2,           // when GPU timing hooks are active
     "jsHeapGrowthMBPerSec": 0.02,
     "trackedVram": { "totalMiB": 128.5, "textureMiB": 96.2, "bufferMiB": 32.3, "textureCount": 14, "bufferCount": 42, "leakedResources": 0 },
+    "pipelines": { "syncCount": 0, "asyncCount": 4, "shaderModules": 4 },
+    "bindGroups": { "createdCount": 4, "layoutCount": 2 },
+    "warmup": { "durationMs": 180, "lagSpikeMs": 22.4, "settled": true },
+    "webgpuOps": { "drawCalls": 48, "dispatchCalls": 2 },
     "slowFrameCount": 0,
-    "warnings": [ /* actionable bottleneck descriptions */ ]
+    "warnings": [ /* readable bottleneck descriptions */ ],
+    "recommendations": [ /* structured { id, category, severity, title, action, evidence } */ ]
   },
-  "diagnostics": { "warnings": [], "highlights": [], "resources": {} },
+  "diagnostics": { "warnings": [], "highlights": [], "recommendations": [], "resources": {} },
   "inPage": { /* per-sample measurements, slow-frame op counts */ },
   "trace": { /* Chrome trace summary when --trace */ }
 }
+```
+
+### Interactive HTML Reports
+
+Pass `--html` to generate a self-contained, zero-dependency dark-mode HTML report dashboard next to the JSON artifact:
+
+```bash
+node ./src/cli.js run --file examples/webgpu-clear.html --auto-instrument --html
+# Outputs reports/report-<timestamp>.html with interactive SVG frame distribution charts,
+# VRAM breakdown, pass execution timing, and filterable recommendations.
 ```
 
 ## Node API

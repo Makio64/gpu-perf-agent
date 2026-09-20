@@ -97,24 +97,27 @@ export function createWebGPUTimer(device) {
   };
 }
 
-export function createWebGPURingTimer(device, poolSize = 8) {
+export function createWebGPURingTimer(device, poolSize = 8, maxPassesPerFrame = 15) {
   if (!device?.features?.has?.("timestamp-query")) {
     return null;
   }
 
+  const maxQueries = (maxPassesPerFrame + 1) * 2;
+  const bufferByteSize = maxQueries * 8;
   const querySets = [];
   const resolveBuffers = [];
   const resultBuffers = [];
   const states = new Array(poolSize).fill("free"); // "free", "pending", "reading"
+  const passMeta = new Array(poolSize).fill(null).map(() => []);
 
   for (let i = 0; i < poolSize; i++) {
-    querySets.push(device.createQuerySet({ count: 2, type: "timestamp" }));
+    querySets.push(device.createQuerySet({ count: maxQueries, type: "timestamp" }));
     resolveBuffers.push(device.createBuffer({
-      size: 16,
+      size: bufferByteSize,
       usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.QUERY_RESOLVE
     }));
     resultBuffers.push(device.createBuffer({
-      size: 16,
+      size: bufferByteSize,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
     }));
   }
@@ -126,10 +129,28 @@ export function createWebGPURingTimer(device, poolSize = 8) {
       const idx = (activeIndex + i) % poolSize;
       if (states[idx] === "free") {
         activeIndex = idx;
+        passMeta[idx].length = 0;
         return idx;
       }
     }
     return -1;
+  }
+
+  function allocatePassTimestamp(idx, type, label) {
+    if (idx < 0 || idx >= poolSize || states[idx] !== "free") return null;
+    const metaList = passMeta[idx];
+    if (metaList.length >= maxPassesPerFrame) return null;
+
+    const pairIndex = metaList.length + 1;
+    const startIndex = pairIndex * 2;
+    const endIndex = pairIndex * 2 + 1;
+    metaList.push({ type, label: label || type, startIndex, endIndex });
+
+    return {
+      querySet: querySets[idx],
+      beginningOfPassWriteIndex: startIndex,
+      endOfPassWriteIndex: endIndex
+    };
   }
 
   return {
@@ -138,9 +159,11 @@ export function createWebGPURingTimer(device, poolSize = 8) {
     resultBuffers,
     states,
     getNextSlot,
+    allocatePassTimestamp,
     resolve(encoder, idx) {
-      encoder.resolveQuerySet(querySets[idx], 0, 2, resolveBuffers[idx], 0);
-      encoder.copyBufferToBuffer(resolveBuffers[idx], 0, resultBuffers[idx], 0, 16);
+      const queryCount = Math.max(2, (passMeta[idx].length + 1) * 2);
+      encoder.resolveQuerySet(querySets[idx], 0, queryCount, resolveBuffers[idx], 0);
+      encoder.copyBufferToBuffer(resolveBuffers[idx], 0, resultBuffers[idx], 0, queryCount * 8);
       states[idx] = "pending";
     },
     async readNanoseconds(idx) {
@@ -152,10 +175,44 @@ export function createWebGPURingTimer(device, poolSize = 8) {
         const copy = buffer.getMappedRange().slice(0);
         buffer.unmap();
         states[idx] = "free";
+
         const values = new BigUint64Array(copy);
-        return Number(values[1] - values[0]);
+        const meta = passMeta[idx] || [];
+        let computeDurationNs = 0;
+        let renderDurationNs = 0;
+        const passes = [];
+
+        for (const p of meta) {
+          const start = values[p.startIndex];
+          const end = values[p.endIndex];
+          if (end > start) {
+            const diff = Number(end - start);
+            if (p.type === "compute") computeDurationNs += diff;
+            else renderDurationNs += diff;
+            passes.push({ type: p.type, label: p.label, durationNs: diff });
+          }
+        }
+
+        let durationNs = 0;
+        if (values[1] > values[0]) {
+          durationNs = Number(values[1] - values[0]);
+        } else if (computeDurationNs + renderDurationNs > 0) {
+          durationNs = computeDurationNs + renderDurationNs;
+        }
+
+        passMeta[idx].length = 0;
+
+        return {
+          durationNs,
+          computeDurationNs,
+          renderDurationNs,
+          passes,
+          valueOf() { return this.durationNs; },
+          [Symbol.toPrimitive](hint) { return hint === "string" ? String(this.durationNs) : this.durationNs; }
+        };
       } catch (e) {
         states[idx] = "free";
+        passMeta[idx].length = 0;
         return 0;
       }
     }

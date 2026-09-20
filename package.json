@@ -19,10 +19,11 @@
     "skill"
   ],
   "bin": {
-    "gpu-perf-agent": "./src/cli.js"
+    "gpu-perf-agent": "src/cli.js"
   },
   "exports": {
     ".": "./src/index.js",
+    "./agent": "./src/agent.js",
     "./browser/allocation-tracker": "./src/browser/allocation-tracker.js",
     "./browser/timing": "./src/browser/timing.js"
   },

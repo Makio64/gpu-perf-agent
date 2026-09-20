@@ -78,7 +78,8 @@ export async function runReport(options = {}) {
       gc: Boolean(options.gc),
       hookName: options.hookName,
       samples: Number(options.samples ?? 5),
-      warmup: Number(options.warmup ?? 1)
+      warmup: Number(options.warmup ?? 1),
+      adaptive: Boolean(options.adaptive)
     });
     const cdpAfter = await cdpSnapshot(session, options);
 
@@ -314,6 +315,7 @@ function reportOptions(options, launchArgs) {
     headful: Boolean(options.headful),
     hookName: options.hookName || "__gpuReportBench",
     samples: Number(options.samples ?? 5),
+    adaptive: Boolean(options.adaptive),
     trace: Boolean(options.trace),
     viewport: options.viewport || "1280x720",
     warmup: Number(options.warmup ?? 1),

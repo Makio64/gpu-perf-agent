@@ -12,7 +12,20 @@ export function reportMetrics(report) {
   add(metrics, "frame.elapsedMs.mean", summary.elapsedMs?.mean);
   add(metrics, "frame.elapsedMs.p95", summary.elapsedMs?.p95);
   add(metrics, "frame.fps.mean", summary.fps?.mean);
+  add(metrics, "frame.fps.p95", summary.fps?.p95);
   add(metrics, "frame.frameTimeMs.mean", summary.frameTimeMsMean?.mean);
+  add(metrics, "frame.frameTimeMs.p95", summary.frameTimeMsP95?.mean);
+  add(metrics, "frame.frameTimeMs.p99", summary.frameTimeMsP99?.mean);
+  add(metrics, "frame.maxJitterMs.mean", summary.maxJitterMs?.mean ?? summary.maxJitter?.mean);
+  add(metrics, "gpu.durationNs.mean", summary.gpuTimeNs?.mean);
+  add(metrics, "gpu.computeDurationNs.mean", summary.computeTimeNs?.mean);
+  add(metrics, "gpu.renderDurationNs.mean", summary.renderTimeNs?.mean);
+  add(metrics, "webgpu.drawCalls.mean", summary.drawCalls?.mean ?? report?.summary?.webgpuOps?.drawCalls);
+  add(metrics, "webgpu.dispatchCalls.mean", summary.dispatchCalls?.mean ?? report?.summary?.webgpuOps?.dispatchCalls);
+  add(metrics, "webgpu.syncPipelines.count", report?.summary?.pipelines?.syncCount ?? report?.diagnostics?.recommendations?.find(r => r.id === "pipeline-sync-stall")?.value);
+  add(metrics, "webgpu.bindGroupsCreated.count", report?.summary?.bindGroups?.createdCount ?? report?.diagnostics?.recommendations?.find(r => r.id === "bind-group-churn")?.value);
+  add(metrics, "warmup.durationMs", report?.inPage?.warmup?.durationMs);
+  add(metrics, "warmup.lagSpikeMs", report?.inPage?.warmup?.lagSpikeMs);
   add(metrics, "memory.jsHeapDeltaBytes.mean", summary.jsHeapDeltaBytes?.mean);
   add(metrics, "memory.trackedGpuDeltaBytes.mean", summary.trackedGpuDeltaBytes?.mean);
   add(metrics, "memory.trackedGpuTotalBytes.max", summary.trackedGpuTotalBytes?.max);
@@ -87,9 +100,18 @@ export function compareReports(baseReport, candidateReport, options = {}) {
     });
   }
 
+  const baseRecs = baseReport?.diagnostics?.recommendations || [];
+  const candidateRecs = candidateReport?.diagnostics?.recommendations || [];
+  const resolved = baseRecs.filter(b => !candidateRecs.some(c => c.id === b.id));
+  const introduced = candidateRecs.filter(c => !baseRecs.some(b => b.id === c.id));
+
   return {
     failures: rows.filter((row) => row.status === "regression"),
     rows,
+    recommendationDiff: {
+      resolved,
+      introduced
+    },
     summary: {
       improved: rows.filter((row) => row.status === "improved").length,
       passed: rows.filter((row) => row.status === "pass").length,
@@ -101,8 +123,8 @@ export function compareReports(baseReport, candidateReport, options = {}) {
 
 export function formatCompareTable(result) {
   const important = result.rows
-    .filter((row) => row.status !== "pass" || /fps|frame|memory|trackedGpu|gpu/i.test(row.key))
-    .slice(0, 40);
+    .filter((row) => row.status !== "pass" || /fps|frame|memory|trackedGpu|gpu|webgpu|warmup/i.test(row.key))
+    .slice(0, 50);
   const widths = [12, 58, 16, 16, 22];
   const header = formatRow(["status", "metric", "base", "candidate", "delta"], widths);
   const lines = [header, "-".repeat(header.length)];
@@ -123,6 +145,23 @@ export function formatCompareTable(result) {
 
   lines.push("");
   lines.push(`Compared ${result.summary.total} metrics: ${result.summary.regressions} regressions, ${result.summary.improved} improvements, ${result.summary.passed} passing.`);
+
+  if (result.recommendationDiff?.resolved?.length > 0) {
+    lines.push("");
+    lines.push("🎉 Resolved Optimization Recommendations:");
+    for (const r of result.recommendationDiff.resolved) {
+      lines.push(`  - [${r.category.toUpperCase()}] ${r.title}: ${r.action}`);
+    }
+  }
+
+  if (result.recommendationDiff?.introduced?.length > 0) {
+    lines.push("");
+    lines.push("⚠️ New Bottlenecks / Recommendations Introduced:");
+    for (const r of result.recommendationDiff.introduced) {
+      lines.push(`  - [${r.category.toUpperCase()}] ${r.title}: ${r.evidence}`);
+    }
+  }
+
   return lines.join("\n");
 }
 

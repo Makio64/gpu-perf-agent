@@ -4,7 +4,17 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+let cachedScript = null;
+
+export function clearScriptCache() {
+  cachedScript = null;
+}
+
 export async function getAutoInstrumentScript() {
+  if (cachedScript) {
+    return cachedScript;
+  }
+
   const allocationTrackerPath = path.join(__dirname, "allocation-tracker.js");
   const timingPath = path.join(__dirname, "timing.js");
   const autoInstrumentPath = path.join(__dirname, "auto-instrument-source.js");
@@ -20,9 +30,10 @@ export async function getAutoInstrumentScript() {
   const trackerClean = trackerRaw.replace(/\bexport\s+/g, "");
   const timingClean = timingRaw.replace(/\bexport\s+/g, "");
 
-  return `
+  cachedScript = `
     ${trackerClean}
     ${timingClean}
     ${autoRaw}
   `;
+  return cachedScript;
 }

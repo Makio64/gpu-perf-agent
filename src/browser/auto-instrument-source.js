@@ -9,8 +9,15 @@
     dispatchCalls: 0,
     setPipelineCalls: 0,
     setBindGroupCalls: 0,
-    copyBufferCalls: 0
+    copyBufferCalls: 0,
+    syncPipelines: 0,
+    asyncPipelines: 0,
+    shaderModules: 0,
+    bindGroupsCreated: 0,
+    bindGroupLayoutsCreated: 0
   };
+
+  globalThis.__gpuSyncPipelines = [];
 
   let lastFrameTime = performance.now();
   const slowFrameThresholdMs = 20;
@@ -37,19 +44,22 @@
         `WebGPU Ops: renderPasses=${currentFrameStats.renderPasses}, computePasses=${currentFrameStats.computePasses}, ` +
         `draws=${currentFrameStats.drawCalls}, dispatches=${currentFrameStats.dispatchCalls}, ` +
         `pipelines=${currentFrameStats.setPipelineCalls}, bindGroups=${currentFrameStats.setBindGroupCalls}, ` +
-        `copies=${currentFrameStats.copyBufferCalls}`
+        `copies=${currentFrameStats.copyBufferCalls}, syncPipelines=${currentFrameStats.syncPipelines}, newBindGroups=${currentFrameStats.bindGroupsCreated}`
       );
     }
 
-    currentFrameStats = {
-      renderPasses: 0,
-      computePasses: 0,
-      drawCalls: 0,
-      dispatchCalls: 0,
-      setPipelineCalls: 0,
-      setBindGroupCalls: 0,
-      copyBufferCalls: 0
-    };
+    currentFrameStats.renderPasses = 0;
+    currentFrameStats.computePasses = 0;
+    currentFrameStats.drawCalls = 0;
+    currentFrameStats.dispatchCalls = 0;
+    currentFrameStats.setPipelineCalls = 0;
+    currentFrameStats.setBindGroupCalls = 0;
+    currentFrameStats.copyBufferCalls = 0;
+    currentFrameStats.syncPipelines = 0;
+    currentFrameStats.asyncPipelines = 0;
+    currentFrameStats.shaderModules = 0;
+    currentFrameStats.bindGroupsCreated = 0;
+    currentFrameStats.bindGroupLayoutsCreated = 0;
 
     lastFrameTime = now;
     requestAnimationFrame(frameLoop);
@@ -71,6 +81,16 @@
       };
       let hasWebGPU = false;
       let hasWebGL2 = false;
+      combined.pipelines = {
+        syncCount: 0,
+        asyncCount: 0,
+        shaderModules: 0,
+        syncPipelines: (globalThis.__gpuSyncPipelines || []).slice(0, 32)
+      };
+      combined.bindGroups = {
+        createdCount: 0,
+        layoutCount: 0
+      };
       for (const tracker of activeTrackers) {
         const snap = tracker.snapshot();
         if (snap.api === "webgpu") hasWebGPU = true;
@@ -87,6 +107,18 @@
         if (snap.liveResources) {
           combined.liveResources.push(...snap.liveResources);
         }
+        if (snap.pipelines) {
+          combined.pipelines.syncCount += snap.pipelines.syncCount || 0;
+          combined.pipelines.asyncCount += snap.pipelines.asyncCount || 0;
+          combined.pipelines.shaderModules += snap.pipelines.shaderModules || 0;
+        }
+        if (snap.bindGroups) {
+          combined.bindGroups.createdCount += snap.bindGroups.createdCount || 0;
+          combined.bindGroups.layoutCount += snap.bindGroups.layoutCount || 0;
+        }
+      }
+      if (globalThis.__gpuSyncPipelines?.length) {
+        combined.pipelines.syncCount = Math.max(combined.pipelines.syncCount, globalThis.__gpuSyncPipelines.length);
       }
       if (hasWebGPU) {
         combined.api = "webgpu";
@@ -122,11 +154,15 @@
 
         try {
           const startEncoder = originalCreateCommandEncoder();
-          startEncoder.writeTimestamp(timer.querySets[idx], 0);
+          try {
+            startEncoder.writeTimestamp(timer.querySets[idx], 0);
+          } catch (_) {}
           const startCB = startEncoder.finish();
 
           const endEncoder = originalCreateCommandEncoder();
-          endEncoder.writeTimestamp(timer.querySets[idx], 1);
+          try {
+            endEncoder.writeTimestamp(timer.querySets[idx], 1);
+          } catch (_) {}
           timer.resolve(endEncoder, idx);
           const endCB = endEncoder.finish();
 
@@ -135,9 +171,19 @@
 
           originalSubmit(timedCommandBuffers);
 
-          timer.readNanoseconds(idx).then((durationNs) => {
+          timer.readNanoseconds(idx).then((result) => {
+            const durationNs = typeof result === "number" ? result : result?.durationNs;
             if (durationNs > 0) {
               globalThis.__lastWebGPUDurationNs = durationNs;
+            }
+            if (result?.computeDurationNs != null) {
+              globalThis.__lastWebGPUComputeDurationNs = result.computeDurationNs;
+            }
+            if (result?.renderDurationNs != null) {
+              globalThis.__lastWebGPURenderDurationNs = result.renderDurationNs;
+            }
+            if (result?.passes) {
+              globalThis.__lastWebGPUPasses = result.passes;
             }
           }).catch(() => {});
         } catch (e) {
@@ -369,7 +415,7 @@
           const id = this.__tracker.track({
             api: "webgpu",
             bytes,
-            descriptor: cloneDescriptor(descriptor),
+            descriptor: lightweightDescriptor(descriptor),
             kind: "buffer",
             label: descriptor?.label || null
           });
@@ -386,7 +432,7 @@
           const id = this.__tracker.track({
             api: "webgpu",
             bytes,
-            descriptor: cloneDescriptor(descriptor),
+            descriptor: lightweightDescriptor(descriptor),
             kind: "texture",
             label: descriptor?.label || null
           });
@@ -394,6 +440,99 @@
         }
         return texture;
       };
+
+      const originalCreateRenderPipeline = GPUDevice.prototype.createRenderPipeline;
+      if (originalCreateRenderPipeline) {
+        GPUDevice.prototype.createRenderPipeline = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordPipeline("render", false, descriptor);
+          }
+          currentFrameStats.syncPipelines++;
+          if (globalThis.__gpuSyncPipelines) {
+            globalThis.__gpuSyncPipelines.push({
+              type: "render",
+              label: descriptor?.label || null,
+              timestamp: performance.now(),
+              stack: new Error().stack?.split("\n").slice(2, 6).join("\n") || null
+            });
+          }
+          return originalCreateRenderPipeline.call(this, descriptor);
+        };
+      }
+
+      const originalCreateRenderPipelineAsync = GPUDevice.prototype.createRenderPipelineAsync;
+      if (originalCreateRenderPipelineAsync) {
+        GPUDevice.prototype.createRenderPipelineAsync = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordPipeline("render", true, descriptor);
+          }
+          currentFrameStats.asyncPipelines++;
+          return originalCreateRenderPipelineAsync.call(this, descriptor);
+        };
+      }
+
+      const originalCreateComputePipeline = GPUDevice.prototype.createComputePipeline;
+      if (originalCreateComputePipeline) {
+        GPUDevice.prototype.createComputePipeline = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordPipeline("compute", false, descriptor);
+          }
+          currentFrameStats.syncPipelines++;
+          if (globalThis.__gpuSyncPipelines) {
+            globalThis.__gpuSyncPipelines.push({
+              type: "compute",
+              label: descriptor?.label || null,
+              timestamp: performance.now(),
+              stack: new Error().stack?.split("\n").slice(2, 6).join("\n") || null
+            });
+          }
+          return originalCreateComputePipeline.call(this, descriptor);
+        };
+      }
+
+      const originalCreateComputePipelineAsync = GPUDevice.prototype.createComputePipelineAsync;
+      if (originalCreateComputePipelineAsync) {
+        GPUDevice.prototype.createComputePipelineAsync = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordPipeline("compute", true, descriptor);
+          }
+          currentFrameStats.asyncPipelines++;
+          return originalCreateComputePipelineAsync.call(this, descriptor);
+        };
+      }
+
+      const originalCreateShaderModule = GPUDevice.prototype.createShaderModule;
+      if (originalCreateShaderModule) {
+        GPUDevice.prototype.createShaderModule = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordShaderModule(descriptor);
+          }
+          currentFrameStats.shaderModules++;
+          return originalCreateShaderModule.call(this, descriptor);
+        };
+      }
+
+      const originalCreateBindGroup = GPUDevice.prototype.createBindGroup;
+      if (originalCreateBindGroup) {
+        GPUDevice.prototype.createBindGroup = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordBindGroup(descriptor);
+          }
+          currentFrameStats.bindGroupsCreated++;
+          return originalCreateBindGroup.call(this, descriptor);
+        };
+      }
+
+      const originalCreateBindGroupLayout = GPUDevice.prototype.createBindGroupLayout;
+      if (originalCreateBindGroupLayout) {
+        GPUDevice.prototype.createBindGroupLayout = function (descriptor) {
+          if (this.__tracker) {
+            this.__tracker.recordBindGroupLayout(descriptor);
+          }
+          currentFrameStats.bindGroupLayoutsCreated++;
+          return originalCreateBindGroupLayout.call(this, descriptor);
+        };
+      }
     }
 
     if (globalThis.GPUBuffer) {
@@ -555,6 +694,11 @@
         frameCount: frames.length,
         frameTimeMs,
         gpuTimeNs,
+        computeTimeNs: globalThis.__lastWebGPUComputeDurationNs ?? null,
+        renderTimeNs: globalThis.__lastWebGPURenderDurationNs ?? null,
+        passes: globalThis.__lastWebGPUPasses ?? null,
+        webgpuOps: { ...currentFrameStats },
+        slowFrames: (globalThis.__gpuSlowFrames || []).slice(-20),
         phase,
         trackedGpuMemory: globalThis.__gpuMemoryTracker ? globalThis.__gpuMemoryTracker.snapshot() : null
       };

@@ -37,8 +37,23 @@ export async function runFastReports(reportOptions, launchOptions = {}) {
 export class FastCDPHarness {
   static async launch(options = {}) {
     const viewport = parseViewport(options.viewport);
-    const launch = await launchChromeForCDP(options, viewport);
-    const browserSession = await CDPConnection.connect(launch.webSocketUrl);
+    const cdpTarget = options.cdpUrl || options.cdp || options.webSocketUrl;
+    let launch;
+    let browserSession;
+
+    if (cdpTarget) {
+      const wsUrl = await resolveCdpWebSocketUrl(cdpTarget);
+      browserSession = await CDPConnection.connect(wsUrl);
+      launch = {
+        args: [],
+        webSocketUrl: wsUrl,
+        close: async () => {}
+      };
+    } else {
+      launch = await launchChromeForCDP(options, viewport);
+      browserSession = await CDPConnection.connect(launch.webSocketUrl);
+    }
+
     return new FastCDPHarness(launch, browserSession);
   }
 
@@ -94,6 +109,7 @@ export class FastCDPHarness {
 
       const cdpBefore = await cdpSnapshot(page.session, options);
       const inPage = await evaluateInPage(page.session, {
+        adaptive: Boolean(options.adaptive),
         api: options.api,
         durationMs: Number(options.durationMs ?? 1000),
         gc: Boolean(options.gc),
@@ -251,6 +267,31 @@ async function createFastTarget(options = {}) {
     });
   }
   throw new Error("A target is required. Pass --url or --file.");
+}
+
+async function resolveCdpWebSocketUrl(target) {
+  if (typeof target !== "string") {
+    throw new Error(`Invalid CDP target: ${target}`);
+  }
+  if (target.startsWith("ws://") || target.startsWith("wss://")) {
+    return target;
+  }
+  let httpUrl = target;
+  if (/^\d+$/.test(target)) {
+    httpUrl = `http://127.0.0.1:${target}`;
+  } else if (!httpUrl.startsWith("http://") && !httpUrl.startsWith("https://")) {
+    httpUrl = `http://${httpUrl}`;
+  }
+  const versionUrl = new URL("/json/version", httpUrl).toString();
+  const res = await fetch(versionUrl);
+  if (!res.ok) {
+    throw new Error(`Failed to query CDP version endpoint at ${versionUrl}: ${res.status} ${res.statusText}`);
+  }
+  const data = await res.json();
+  if (!data.webSocketDebuggerUrl) {
+    throw new Error(`CDP endpoint ${versionUrl} did not return webSocketDebuggerUrl.`);
+  }
+  return data.webSocketDebuggerUrl;
 }
 
 async function launchChromeForCDP(options, viewport) {
@@ -777,6 +818,7 @@ function reportOptions(options, launchArgs) {
     hookName: options.hookName || "__gpuReportBench",
     runner: "fast-cdp",
     samples: Number(options.samples ?? 5),
+    adaptive: Boolean(options.adaptive),
     trace: Boolean(options.trace),
     minimalTrace: Boolean(options.minimalTrace),
     viewport: options.viewport || "1280x720",
