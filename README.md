@@ -17,10 +17,10 @@ npx skills add Makio64/gpu-perf-agent -g
 Choose your agent when prompted. Start a new agent session in your project, then ask:
 
 ```text
-Use gpu-perf-agent to optimize http://localhost:5173. Measure before and after.
+Use gpu-perf-agent to optimize the webgpu performance
 ```
 
-Use your app's URL. The skill runs the profiler through `npx`; no separate global profiler install is needed. Omit `-g` to install the skill only in the current project.
+The skill runs the profiler through `npx`; no separate global profiler install is needed. Omit `-g` to install the skill only in the current project.
 
 **Requires Node.js 22+, Git, and Chrome/Chromium.**
 
