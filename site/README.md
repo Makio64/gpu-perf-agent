@@ -1,6 +1,6 @@
 # GPU Performance Agent website
 
-A small static product page. No framework, fonts, analytics, or third-party runtime scripts.
+A two-step quickstart: install the skill with the same `skills` command for Codex, Claude Code, Gemini CLI, and other supported agents; then ask the agent to optimize an app. No framework, fonts, analytics, or third-party runtime scripts.
 
 From this directory, run `npm run dev` and open the printed preview URL. Rebuild after edits. `npm run build` writes `dist/`; `npm run preview` serves that production build. No dependency installation is needed (Node.js 22+).
 
@@ -8,4 +8,6 @@ The build reads the root package version and replaces `__VERSION__`. All asset U
 
 `.github/workflows/pages.yml` builds and deploys changes on `master`. The published site is https://makio64.github.io/gpu-perf-agent/.
 
-The interactive report is explicitly illustrative, not a live capture or a performance claim. The profiler runs locally; visiting this website does not profile the visitor's GPU.
+The install command uses the `skills` CLI with `-g` for all projects; users choose their agent when prompted. The skill runs the profiler through `npx`, so a separate global profiler installation is unnecessary. Project-only installation is available by omitting `-g`.
+
+Clipboard actions run entirely in the browser. Both snippets stay readable without JavaScript. The profiler runs locally when the agent executes it, with the agent's normal command permissions.

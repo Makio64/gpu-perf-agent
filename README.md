@@ -2,11 +2,29 @@
 
 [![GPU Performance Agent — Make fast measurable.](https://raw.githubusercontent.com/Makio64/gpu-perf-agent/master/docs/cover.svg)](https://makio64.github.io/gpu-perf-agent/)
 
-Profile WebGPU and WebGL apps from your terminal. Get useful diagnostics, compare changes, and give your coding agent real measurements to work with.
+Give your coding agent real WebGPU and WebGL measurements. Find bottlenecks, optimize your app, and verify the improvement.
 
 [Website](https://makio64.github.io/gpu-perf-agent/) · [npm](https://www.npmjs.com/package/gpu-perf-agent) · [Full reference](https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md) · [Agent skill](https://github.com/Makio64/gpu-perf-agent/blob/master/skill/SKILL.md)
 
-## One command. A useful report.
+## Install once. Then just ask.
+
+Same install command for **Codex, Claude Code, Gemini CLI**, and [other supported agents](https://github.com/vercel-labs/skills#supported-agents):
+
+```bash
+npx skills add Makio64/gpu-perf-agent -g
+```
+
+Choose your agent when prompted. Start a new agent session in your project, then ask:
+
+```text
+Use gpu-perf-agent to optimize http://localhost:5173. Measure before and after.
+```
+
+Use your app's URL. The skill runs the profiler through `npx`; no separate global profiler install is needed. Omit `-g` to install the skill only in the current project.
+
+**Requires Node.js 22+, Git, and Chrome/Chromium.**
+
+## Prefer the terminal?
 
 Start your app, then point the profiler at it:
 
