@@ -24,7 +24,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .skip-link:focus { transform: none; }
 .header { height: 82px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: 10px; font: 600 16px var(--mono); letter-spacing: -0.5px; }
-.header nav { display: flex; gap: 26px; font-size: 14px; }
+.header nav { display: flex; align-items: baseline; gap: 26px; font-size: 14px; line-height: 1.5; }
 .intro { padding-block: 42px 36px; }
 .release { display: inline-flex; align-items: center; gap: 7px; font: 13px var(--mono); color: var(--muted); margin-bottom: 16px; }
 .release span { width: 5px; height: 5px; background: var(--orange); border-radius: 50%; }
