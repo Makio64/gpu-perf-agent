@@ -1,6 +1,6 @@
 # GPU Performance Agent website
 
-A two-step quickstart: install the skill with the same `skills` command for Codex, Claude Code, Gemini CLI, and other supported agents; then ask the agent to optimize an app. A compact section before the footer explains capture, code changes, comparison evidence, and measurement limits. No framework, fonts, analytics, or third-party runtime scripts.
+A two-step quickstart: install the skill with the same `skills` command for Codex, Claude Code, Gemini CLI, and other supported agents; then ask the agent to optimize an app. Stacked explanations before the footer cover capture, code changes, comparison evidence, iteration options, and measurement limits. No framework, fonts, analytics, or third-party runtime scripts.
 
 From this directory, run `npm run dev` and open the printed preview URL. Rebuild after edits. `npm run build` writes `dist/`; `npm run preview` serves that production build. No dependency installation is needed (Node.js 22+).
 

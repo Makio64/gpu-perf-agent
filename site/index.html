@@ -67,30 +67,27 @@
         <div class="mechanics-heading">
           <p class="eyebrow"><span aria-hidden="true"></span>Under the hood</p>
           <h2 id="mechanics-title">Give your agent a way to measure.</h2>
-          <p>The skill guides your agent through a local profiling loop: find a bottleneck, change the code, and check whether it helped.</p>
+          <p>The skill gives your coding agent a repeatable profiling workflow. It explains how to run the local CLI, interpret the measurements, and check a code change against a saved baseline.</p>
         </div>
-        <ol class="pipeline">
-          <li>
-            <div class="pipeline-stage"><span class="pipeline-number" aria-hidden="true">01</span><span>Chrome + instrumentation</span></div>
-            <h3>Capture the baseline.</h3>
-            <p>Sample frame pacing, draw calls, and buffer / texture allocations in your running app.</p>
-          </li>
-          <li>
-            <div class="pipeline-stage"><span class="pipeline-number" aria-hidden="true">02</span><span>Your agent + your code</span></div>
-            <h3>Fix a measured issue.</h3>
-            <p>The agent reads the diagnosis and changes one suspected bottleneck, keeping the scene visually equivalent.</p>
-          </li>
-          <li>
-            <div class="pipeline-stage"><span class="pipeline-number" aria-hidden="true">03</span><span>Before / after comparison</span></div>
-            <h3>Verify the change.</h3>
-            <p>Repeat with the same settings. Flag regressions, invalid captures, and inconclusive results.</p>
-          </li>
-        </ol>
-        <div class="evidence" aria-label="Built for development workflows">
-          <div><span aria-hidden="true">{}</span><p><strong>Compact agent output</strong><span>Full JSON evidence saved locally.</span></p></div>
-          <div><span aria-hidden="true">±</span><p><strong>Repeatable comparisons</strong><span>Confidence intervals &amp; regression budgets.</span></p></div>
+        <div class="mechanics-topics">
+          <section aria-labelledby="capture-title">
+            <h3 id="capture-title">Profile your running app.</h3>
+            <p>The CLI opens your WebGPU or WebGL app in Chrome, injects API instrumentation, and samples frame pacing, draw calls, and declared buffer and texture allocations. Optional Chrome traces add context about browser activity when a capture needs closer investigation.</p>
+          </section>
+          <section aria-labelledby="change-title">
+            <h3 id="change-title">Give the agent evidence to act on.</h3>
+            <p>A compact diagnostic summary keeps the agent’s context small; the full capture is saved locally as JSON. The skill guides the agent to investigate the measurements, change one suspected bottleneck, and preserve the scene’s visual behavior before capturing again.</p>
+          </section>
+          <section aria-labelledby="compare-title">
+            <h3 id="compare-title">Check whether the change helped.</h3>
+            <p>Compare baseline and candidate reports with identical sampling settings. The tool reports metric changes, confidence intervals where repeated data supports them, and regressions against configured thresholds. Invalid captures, incompatible settings, and inconclusive results are flagged explicitly.</p>
+          </section>
+          <section aria-labelledby="iterate-title">
+            <h3 id="iterate-title">Keep the loop fast and inspectable.</h3>
+            <p>Reuse Chrome across captures to reduce startup overhead. Use longer sampling or interleaved A/B runs for stronger evidence. Saved JSON, optional HTML reports, and performance budgets make the results useful for code review and automated regression checks.</p>
+          </section>
         </div>
-        <p class="measurement-note">GPU duration needs timing hooks. Allocation tracking estimates declared storage, not physical VRAM residency. <a href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md">Measurement details <span aria-hidden="true">↗</span></a></p>
+        <p class="measurement-note">Frame pacing measures browser cadence; GPU duration requires timing hooks. Allocation totals estimate declared storage, not physical VRAM residency. <a href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md">Read the measurement reference <span aria-hidden="true">↗</span></a></p>
       </section>
     </main>
     <footer class="footer wrap">
