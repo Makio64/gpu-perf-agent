@@ -63,6 +63,35 @@
         </section>
       </div>
       <p class="requirements">Requires Node.js 22+, Git, and Chrome / Chromium. Runs on your machine.</p>
+      <section class="mechanics" aria-labelledby="mechanics-title">
+        <div class="mechanics-heading">
+          <p class="eyebrow"><span aria-hidden="true"></span>Under the hood</p>
+          <h2 id="mechanics-title">Give your agent a way to measure.</h2>
+          <p>The skill guides your agent through a local profiling loop: find a bottleneck, change the code, and check whether it helped.</p>
+        </div>
+        <ol class="pipeline">
+          <li>
+            <div class="pipeline-stage"><span class="pipeline-number" aria-hidden="true">01</span><span>Chrome + instrumentation</span></div>
+            <h3>Capture the baseline.</h3>
+            <p>Sample frame pacing, draw calls, and buffer / texture allocations in your running app.</p>
+          </li>
+          <li>
+            <div class="pipeline-stage"><span class="pipeline-number" aria-hidden="true">02</span><span>Your agent + your code</span></div>
+            <h3>Fix a measured issue.</h3>
+            <p>The agent reads the diagnosis and changes one suspected bottleneck, keeping the scene visually equivalent.</p>
+          </li>
+          <li>
+            <div class="pipeline-stage"><span class="pipeline-number" aria-hidden="true">03</span><span>Before / after comparison</span></div>
+            <h3>Verify the change.</h3>
+            <p>Repeat with the same settings. Flag regressions, invalid captures, and inconclusive results.</p>
+          </li>
+        </ol>
+        <div class="evidence" aria-label="Built for development workflows">
+          <div><span aria-hidden="true">{}</span><p><strong>Compact agent output</strong><span>Full JSON evidence saved locally.</span></p></div>
+          <div><span aria-hidden="true">±</span><p><strong>Repeatable comparisons</strong><span>Confidence intervals &amp; regression budgets.</span></p></div>
+        </div>
+        <p class="measurement-note">GPU duration needs timing hooks. Allocation tracking estimates declared storage, not physical VRAM residency. <a href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md">Measurement details <span aria-hidden="true">↗</span></a></p>
+      </section>
     </main>
     <footer class="footer wrap">
       <span>Open source · MIT</span>
