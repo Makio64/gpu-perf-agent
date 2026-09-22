@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0
+
+- A shorter README leads with the value, a one-command capture, and a repeatable compare workflow. The full technical guide now lives in `docs/reference.md` and ships with the npm package.
+- A redesigned, responsive website explains profiling, reports, comparisons, and agent integration with copyable commands and clearly labeled examples.
+- The website builds with Node.js alone and publishes automatically to GitHub Pages. Its release label comes from the package version.
+- Profiling behavior and defaults are unchanged from 2.0.0.
+
 ## 2.0.0
 
 ### Breaking changes

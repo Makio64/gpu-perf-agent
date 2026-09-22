@@ -259,7 +259,7 @@ export async function runMcpServer(options = {}) {
         sendResponse(id, {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "gpu-perf-agent", version: "2.0.0" }
+          serverInfo: { name: "gpu-perf-agent", version: "2.1.0" }
         });
         return;
       }

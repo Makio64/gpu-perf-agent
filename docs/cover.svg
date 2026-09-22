@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">GPU Performance Agent — Make fast measurable.</title>
+  <desc id="desc">WebGPU and WebGL profiling for developers and coding agents. Measure, compare, repeat.</desc>
+  <rect width="1200" height="340" rx="14" fill="#f6f5f1"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="52" y="60" fill="#686b63" font-family="monospace" font-size="12" letter-spacing="1.4">WEBGPU + WEBGL · BUILT FOR YOUR NEXT ITERATION</text>
+    <text x="48" y="147" fill="#222520" font-size="68" font-weight="700" letter-spacing="-3.5">Make fast</text>
+    <text x="48" y="222" fill="#d74520" font-size="68" font-weight="700" letter-spacing="-3.5">measurable.</text>
+    <text x="52" y="285" fill="#686b63" font-size="18">Find the bottleneck. Measure the fix.</text>
+  </g>
+  <g transform="translate(720 68)">
+    <rect width="424" height="205" rx="9" fill="#fff" stroke="#dedfd7"/>
+    <text x="23" y="30" fill="#686b63" font-family="monospace" font-size="11" letter-spacing="1.2">MEASURE. COMPARE. REPEAT.</text>
+    <path d="M24 68H400M24 108H400M24 148H400" stroke="#eceee6"/>
+    <path d="M24 133L44 130L64 134L84 72L104 131L124 133L144 128L164 132L184 109L204 132L224 131L244 130L264 132L284 129L304 131L324 130L344 132L364 130L400 131" fill="none" stroke="#ed592e" stroke-width="2.5" stroke-linejoin="round"/>
+    <circle cx="84" cy="72" r="4" fill="#ed592e"/>
+    <text x="24" y="181" fill="#686b63" font-family="monospace" font-size="10">YOUR APP → A CLEARER PERFORMANCE SIGNAL</text>
+  </g>
+</svg>

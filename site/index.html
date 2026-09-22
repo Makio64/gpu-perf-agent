@@ -1,567 +1,441 @@
 <!doctype html>
 <html lang="en">
-<head>
-	<meta charset="utf-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<meta name="color-scheme" content="light" />
-	<title>gpu-perf-agent — agent-ready WebGPU/WebGL2 profiler</title>
-	<meta name="description"
-		content="An agent-ready WebGPU/WebGL2 performance profiler. An npm CLI plus a drop-in agent skill, so AI assistants can profile a page, read a one-word verdict, fix a bottleneck, and prove the win — autonomously." />
-	<link rel="icon"
-		href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232f6bff'/%3E%3Cpath d='M3 12h4l2-5 3 10 2-7 2 4h5' fill='none' stroke='white' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
-	<link rel="stylesheet" href="./src/style.css" />
-</head>
-<body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f6f5f1" />
+    <title>GPU Performance Agent — Find the bottleneck. Measure the fix.</title>
+    <meta
+      name="description"
+      content="Profile WebGPU and WebGL apps from your terminal. Find expensive work, compare changes, and give coding agents real measurements. Free, open source, zero required dependencies."
+    />
+    <meta
+      property="og:title"
+      content="GPU Performance Agent — Make fast measurable."
+    />
+    <meta
+      property="og:description"
+      content="A small profiler for better GPU decisions. WebGPU, WebGL, and your favorite coding agent."
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:url"
+      content="https://makio64.github.io/gpu-perf-agent/"
+    />
+    <link rel="canonical" href="https://makio64.github.io/gpu-perf-agent/" />
+    <link rel="icon" href="./assets/mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./src/style.css" />
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="header wrap">
+      <a class="brand" href="#" aria-label="GPU Performance Agent home"
+        ><img src="./assets/mark.svg" width="32" height="32" alt="" /><span
+          >gpu-perf-agent</span
+        ></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="#workflow" class="workflow-link">How it works</a>
+        <a
+          href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md"
+          >Docs</a
+        >
+        <a class="nav-github" href="https://github.com/Makio64/gpu-perf-agent"
+          >GitHub <span aria-hidden="true">↗</span></a
+        >
+      </nav>
+    </header>
 
-	<!-- ========================= NAV ========================= -->
-	<header class="nav">
-		<div class="nav__inner">
-			<a class="brand" href="#top" aria-label="gpu-perf-agent home">
-				<span class="brand__mark" aria-hidden="true">
-					<svg viewBox="0 0 24 24" fill="none"><path d="M3 12h4l2-5 3 10 2-7 2 4h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				</span>
-				<code>gpu-perf-agent</code>
-			</a>
-			<nav class="nav__links" aria-label="Sections">
-				<a href="#how">How it works</a>
-				<a href="#report">Report</a>
-				<a href="#commands">Commands</a>
-				<a href="#agent">Agent skill</a>
-				<a href="#install">Install</a>
-			</nav>
-			<div class="nav__actions">
-				<a class="btn btn--sm" href="https://www.npmjs.com/package/gpu-perf-agent" target="_blank" rel="noopener">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.2 9 0a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3Z"/><path d="M9 16v-8h3v8M12 8h3v8"/></svg>
-					npm
-				</a>
-				<a class="btn btn--sm btn--primary" href="https://github.com/Makio64/gpu-perf-agent" target="_blank" rel="noopener">
-					<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.87-.01-1.71-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.58 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.3 9.3 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
-					GitHub
-				</a>
-			</div>
-		</div>
-	</header>
+    <main id="main">
+      <section class="hero wrap" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <a
+            class="release"
+            href="https://github.com/Makio64/gpu-perf-agent/releases/tag/v__VERSION__"
+            ><span class="status-dot" aria-hidden="true"></span>v__VERSION__ is
+            here <span aria-hidden="true">↗</span></a
+          >
+          <h1 id="hero-title">Make fast<br /><span>measurable.</span></h1>
+          <p class="hero-description">
+            Find the bottleneck. Measure the fix.<br />GPU profiling for
+            developers and coding agents working with WebGPU and WebGL.
+          </p>
+          <div class="install" id="start">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code id="install-command">npm install -D gpu-perf-agent</code>
+            <button
+              class="copy-button"
+              data-copy="install-command"
+              aria-label="Copy install command"
+            >
+              <span class="copy-icon" aria-hidden="true">⧉</span
+              ><span class="copy-label">Copy</span>
+            </button>
+          </div>
+          <p class="requirements">
+            Node.js 22+ & Chrome/Chromium <span aria-hidden="true">·</span> MIT
+            licensed
+          </p>
+          <a class="text-link hero-link" href="#workflow"
+            >Or try it in one command <span aria-hidden="true">↓</span></a
+          >
+        </div>
 
-	<main id="top">
+        <div class="demo" aria-label="Illustrative profiling report">
+          <div class="demo-top">
+            <span class="window-dots" aria-hidden="true"
+              ><i></i><i></i><i></i></span
+            ><span>your next optimization</span
+            ><span class="local-label">LOCAL</span>
+          </div>
+          <div class="demo-tabs" role="tablist" aria-label="Example output">
+            <button
+              role="tab"
+              id="tab-profile"
+              aria-controls="panel-profile"
+              aria-selected="true"
+              tabindex="0"
+            >
+              01 <span>Profile</span>
+            </button>
+            <button
+              role="tab"
+              id="tab-compare"
+              aria-controls="panel-compare"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              02 <span>Compare</span>
+            </button>
+            <button
+              role="tab"
+              id="tab-agent"
+              aria-controls="panel-agent"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              03 <span>Agent</span>
+            </button>
+          </div>
+          <div
+            class="demo-panel"
+            role="tabpanel"
+            id="panel-profile"
+            aria-labelledby="tab-profile"
+            tabindex="0"
+          >
+            <div class="terminal-command">
+              <span>$</span> gpu-perf-agent agent --url http://localhost:5173
+            </div>
+            <div class="report-heading">
+              <span>FRAME PACING</span
+              ><span class="signal"><i aria-hidden="true"></i> Needs work</span>
+            </div>
+            <div class="report-number">
+              18.4 <span>ms</span><small>frame time · p95</small>
+            </div>
+            <div
+              class="chart"
+              role="img"
+              aria-label="Illustrative frame timing with two spikes above a 16.7 millisecond budget"
+            >
+              <div class="chart-labels">
+                <span>33 ms</span><span>16.7</span><span>0</span>
+              </div>
+              <svg
+                viewBox="0 0 420 118"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <path class="chart-grid" d="M0 10H420M0 58H420M0 110H420" />
+                <path class="chart-budget" d="M0 58H420" />
+                <path
+                  class="chart-line"
+                  d="M0 80L12 77L24 80L36 76L48 78L60 73L72 78L84 80L96 18L108 76L120 78L132 72L144 78L156 77L168 82L180 76L192 72L204 78L216 76L228 77L240 29L252 73L264 79L276 75L288 78L300 74L312 80L324 76L336 77L348 73L360 78L372 75L384 79L396 74L408 78L420 76"
+                />
+                <circle cx="96" cy="18" r="3.5" class="chart-point" />
+                <circle cx="240" cy="29" r="3.5" class="chart-point" />
+              </svg>
+            </div>
+            <div class="report-metrics">
+              <div>
+                <span>Declared GPU memory</span
+                ><strong>96.0 <small>MiB</small></strong>
+              </div>
+              <div><span>Draws / frame</span><strong>212</strong></div>
+            </div>
+            <div class="report-tip">
+              <span aria-hidden="true">↳</span> Frame spikes detected. Inspect
+              expensive frames.
+            </div>
+          </div>
+          <div
+            class="demo-panel"
+            role="tabpanel"
+            id="panel-compare"
+            aria-labelledby="tab-compare"
+            tabindex="0"
+            hidden
+          >
+            <div class="terminal-command">
+              <span>$</span> gpu-perf-agent compare --base … --candidate …
+            </div>
+            <div class="report-heading">
+              <span>BEFORE → AFTER</span
+              ><span class="signal signal-good"
+                ><i aria-hidden="true"></i> Improved</span
+              >
+            </div>
+            <div class="report-number">
+              −22.0<span>%</span
+              ><small>mean frame time · illustrative comparison</small>
+            </div>
+            <div class="comparison-bars">
+              <div>
+                <span>Baseline</span>
+                <div class="bar bar-base"></div>
+                <strong>16.8 ms</strong>
+              </div>
+              <div>
+                <span>Candidate</span>
+                <div class="bar bar-candidate"></div>
+                <strong>13.1 ms</strong>
+              </div>
+            </div>
+            <div class="report-metrics">
+              <div>
+                <span>Check the evidence</span
+                ><strong class="metric-word">Confidence intervals</strong>
+              </div>
+              <div>
+                <span>Catch regressions</span
+                ><strong class="metric-word">Performance budgets</strong>
+              </div>
+            </div>
+            <div class="report-tip">
+              <span aria-hidden="true">↳</span> Clear improvements. Explicit
+              uncertainty.
+            </div>
+          </div>
+          <div
+            class="demo-panel"
+            role="tabpanel"
+            id="panel-agent"
+            aria-labelledby="tab-agent"
+            tabindex="0"
+            hidden
+          >
+            <div class="terminal-command">
+              <span>$</span> gpu-perf-agent agent --url … --json
+            </div>
+            <div class="report-heading">
+              <span>SMALL OUTPUT. USEFUL CONTEXT.</span
+              ><span class="signal signal-good"
+                ><i aria-hidden="true"></i> Valid</span
+              >
+            </div>
+            <pre class="json-example"><code>{
+  <span>"ok"</span>: true,
+  <span>"verdict"</span>: "needs-work",
+  <span>"summary"</span>: {
+    "frameTimeMsP95": 18.4,
+    "drawCallsPerFrame": 212
+  },
+  <span>"out"</span>: "reports/base.json"
+}</code></pre>
+            <div class="report-tip">
+              <span aria-hidden="true">↳</span> Compact context. Full evidence
+              saved to JSON.
+            </div>
+          </div>
+          <div class="demo-caption">
+            <span class="example-dot" aria-hidden="true"></span>Illustrative
+            output. Your app, hardware, and results will differ.
+          </div>
+        </div>
+      </section>
 
-		<!-- ========================= HERO ========================= -->
-		<section class="hero">
-			<div class="container hero__grid">
-				<div class="hero__copy">
-					<span class="hero__tag"><span class="dot"></span> npm CLI · drop-in agent skill · MIT</span>
-					<h1>WebGPU profiling <br /><span class="grad">built for agents.</span></h1>
-					<p class="hero__lede">
-						<strong>gpu-perf-agent</strong> profiles any WebGPU or WebGL2 page, returns a
-						one-word verdict, and proves an optimization with a regression-checked compare —
-						so an AI assistant can tune your GPU workload on its own.
-					</p>
-					<div class="hero__cta">
-						<div class="cmd" data-copy-src>
-							<span class="prompt" aria-hidden="true">$</span>
-							<code data-lang="bash">npm install -D gpu-perf-agent</code>
-							<button class="copy" data-copy aria-label="Copy install command">
-								<svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-								<svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-								<span class="copy__label">Copy</span>
-							</button>
-						</div>
-						<a class="btn btn--ghost" href="#how">See how it works
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
-						</a>
-					</div>
-					<div class="hero__meta">
-						<span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg> Zero runtime deps</span>
-						<span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg> Direct Chrome DevTools Protocol</span>
-						<span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg> Node ≥ 20</span>
-					</div>
-				</div>
+      <div class="compatibility wrap" aria-label="Supported workflows">
+        <span>Works with your stack</span>
+        <div>
+          <span>WebGPU</span><span>WebGL</span><span>three.js</span
+          ><span>CLI + MCP</span>
+        </div>
+      </div>
 
-				<!-- hero scope card -->
-				<div class="scope reveal" data-spark>
-					<div class="scope__bar">
-						<span class="scope__dots" aria-hidden="true"><i></i><i></i><i></i></span>
-						<span class="scope__title">summary.json</span>
-					</div>
-					<div class="scope__body">
-						<div class="scope__row">
-							<span class="verdict-pill">
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
-								verdict: excellent
-							</span>
-							<div class="scope__stats">
-								<div class="scope__stat"><div class="n" data-count="60" data-suffix="">0</div><div class="k">fps</div></div>
-								<div class="scope__stat"><div class="n" data-count="16.4" data-decimals="1" data-suffix=" ms">0</div><div class="k">frame · mean</div></div>
-							</div>
-						</div>
-						<svg class="spark" viewBox="0 0 320 96" preserveAspectRatio="none" aria-hidden="true">
-							<defs>
-								<linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
-									<stop offset="0" stop-color="#2f6bff" stop-opacity="0.18" />
-									<stop offset="1" stop-color="#2f6bff" stop-opacity="0" />
-								</linearGradient>
-								<linearGradient id="sparkStroke" x1="0" y1="0" x2="1" y2="0">
-									<stop offset="0" stop-color="#4f83ff" />
-									<stop offset="1" stop-color="#12a150" />
-								</linearGradient>
-							</defs>
-							<line class="spark__budget" x1="0" y1="40" x2="320" y2="40" />
-							<polygon class="spark__area" points="8,58 21,52 34,60 47,49 60,55 73,46 86,58 99,44 112,52 125,48 138,56 151,43 164,50 177,47 190,57 203,45 216,53 229,42 242,51 255,47 268,55 281,44 294,50 307,46 307,96 8,96" />
-							<polyline class="spark__line reveal-line" points="8,58 21,52 34,60 47,49 60,55 73,46 86,58 99,44 112,52 125,48 138,56 151,43 164,50 177,47 190,57 203,45 216,53 229,42 242,51 255,47 268,55 281,44 294,50 307,46" />
-							<circle class="spark__dot" cx="307" cy="46" r="4" />
-						</svg>
-						<div class="spark__caption"><span>frame time · 60 samples</span><span>16.7 ms budget</span></div>
-					</div>
-				</div>
-			</div>
-		</section>
+      <section class="benefits wrap" aria-label="Why GPU Performance Agent">
+        <article>
+          <span class="section-number">01 / SEE</span>
+          <h2>Find the expensive part.</h2>
+          <p>
+            Frame spikes, draw pressure, and GPU allocation growth. Get
+            measurements and actionable warnings in one report.
+          </p>
+        </article>
+        <article>
+          <span class="section-number">02 / COMPARE</span>
+          <h2>Know if the change helped.</h2>
+          <p>
+            Compare a baseline with your next build. See improvements, catch
+            regressions, and know when the evidence is inconclusive.
+          </p>
+        </article>
+        <article>
+          <span class="section-number">03 / REPEAT</span>
+          <h2>Keep the loop moving.</h2>
+          <p>
+            Zero required dependencies. Reuse Chrome, isolate each capture, and
+            spend less time setting up the next measurement.
+          </p>
+        </article>
+      </section>
 
-		<!-- ========================= PROBLEM ========================= -->
-		<section class="section section--alt" id="why">
-			<div class="container">
-				<div class="section-head">
-					<span class="eyebrow">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
-						The problem
-					</span>
-					<h2>Browser GPU work is hard to profile — and impossible to measure exactly.</h2>
-					<p>Frame timing drifts run to run, and the web platform never exposes true VRAM
-						residency. Without a repeatable, machine-readable signal, an agent (or a CI job)
-						can’t tell whether a change actually helped.</p>
-				</div>
-				<div class="cards cards--3">
-					<div class="card reveal">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
-						<h3>Noisy, unrepeatable</h3>
-						<p>Eyeballing FPS in devtools is subjective. Small regressions hide inside frame-time jitter you can’t reproduce.</p>
-					</div>
-					<div class="card reveal d1">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></div>
-						<h3>VRAM is invisible</h3>
-						<p>WebGPU/WebGL2 never report exact GPU residency. You’re guessing at texture and buffer footprints.</p>
-					</div>
-					<div class="card reveal d2">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h.01M15 9h.01M9 15h6"/></svg></div>
-						<h3>Not machine-readable</h3>
-						<p>Screenshots and console tables can’t be diffed. Agents need a verdict and a number they can act on.</p>
-					</div>
-				</div>
-			</div>
-		</section>
+      <section
+        class="workflow wrap"
+        id="workflow"
+        aria-labelledby="workflow-title"
+      >
+        <div class="section-intro">
+          <span class="eyebrow">FROM QUESTION TO EVIDENCE</span>
+          <h2 id="workflow-title">Three commands.<br />A clearer answer.</h2>
+          <p>
+            Run your app locally. Capture a baseline. Make your change, then
+            measure again.
+          </p>
+          <a
+            class="text-link"
+            href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md"
+            >Explore the full reference <span aria-hidden="true">↗</span></a
+          >
+        </div>
+        <ol class="steps">
+          <li>
+            <div class="step-heading">
+              <span class="step-number">1</span>
+              <h3>Capture the baseline</h3>
+              <button
+                class="step-copy"
+                data-copy="baseline-command"
+                aria-label="Copy baseline command"
+              >
+                Copy
+              </button>
+            </div>
+            <pre><code id="baseline-command">npx gpu-perf-agent agent --url http://localhost:5173 --out reports/base.json</code></pre>
+          </li>
+          <li>
+            <div class="step-heading">
+              <span class="step-number">2</span>
+              <h3>Measure your change</h3>
+              <button
+                class="step-copy"
+                data-copy="candidate-command"
+                aria-label="Copy candidate command"
+              >
+                Copy
+              </button>
+            </div>
+            <pre><code id="candidate-command">npx gpu-perf-agent agent --url http://localhost:5173 --out reports/candidate.json</code></pre>
+          </li>
+          <li>
+            <div class="step-heading">
+              <span class="step-number">3</span>
+              <h3>Compare the evidence</h3>
+              <button
+                class="step-copy"
+                data-copy="compare-command"
+                aria-label="Copy comparison command"
+              >
+                Copy
+              </button>
+            </div>
+            <pre><code id="compare-command">npx gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --agent</code></pre>
+          </li>
+        </ol>
+      </section>
 
-		<!-- ========================= SAMPLE REPORT ========================= -->
-		<section class="section" id="report">
-			<div class="container">
-				<div class="section-head">
-					<span class="eyebrow">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/></svg>
-						What you get
-					</span>
-					<h2>One report. A verdict, the numbers, and the fix.</h2>
-					<p>Every run — file, <code style="font-family:var(--font-mono);font-size:.9em">--json</code> stdout,
-						or <code style="font-family:var(--font-mono);font-size:.9em">serve</code> response — opens with an
-						agent-friendly <code style="font-family:var(--font-mono);font-size:.9em">summary</code>. Below is a real
-						capture of a three.js Cascaded Shadow Maps scene.</p>
-				</div>
+      <section class="agent-section wrap" aria-labelledby="agent-title">
+        <div class="agent-copy">
+          <span class="eyebrow">A BETTER FEEDBACK LOOP</span>
+          <h2 id="agent-title">Give your agent<br />something to measure.</h2>
+          <p>
+            A compact digest for the context window. Full JSON for a closer
+            look. An MCP server and a skill that fit into your existing
+            workflow.
+          </p>
+          <a
+            href="https://github.com/Makio64/gpu-perf-agent/blob/master/skill/SKILL.md"
+            class="text-link"
+            >Get the agent skill <span aria-hidden="true">↗</span></a
+          >
+        </div>
+        <div class="agent-terminal">
+          <div class="terminal-heading">
+            <span class="status-dot" aria-hidden="true"></span> Ready for your
+            MCP client
+          </div>
+          <div class="mcp-command">
+            <span aria-hidden="true">$</span
+            ><code id="mcp-command">npx gpu-perf-agent mcp</code
+            ><button
+              data-copy="mcp-command"
+              class="step-copy"
+              aria-label="Copy MCP command"
+            >
+              Copy
+            </button>
+          </div>
+          <div class="tool-row">
+            <span>profile_webgpu</span><span>Capture + diagnose</span>
+          </div>
+          <div class="tool-row">
+            <span>compare_webgpu_reports</span><span>Verify a change</span>
+          </div>
+          <p>Runs locally. Your app stays in your environment.</p>
+        </div>
+      </section>
 
-				<div class="report reveal" data-report>
-					<div class="report__head">
-						<div class="report__target">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/></svg>
-							three.js · Cascaded Shadow Maps <span style="color:var(--faint);font-weight:400">(WebGPU)</span>
-						</div>
-						<span class="verdict-pill verdict-pill--warn">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-							verdict: needs-work
-						</span>
-					</div>
-					<div class="report__cmd"><code>$ gpu-perf-agent run --url http://localhost:3002/demo/csm --auto-instrument --trace --json</code></div>
-					<div class="report__body">
-						<div class="metric" data-metric>
-							<span class="metric__label">frame rate</span>
-							<div class="metric__track"><div class="metric__fill metric__fill--ok" data-fill="99"></div></div>
-							<span class="metric__val">119.6 <small>fps</small></span>
-						</div>
-						<div class="metric" data-metric>
-							<span class="metric__label">frame · mean</span>
-							<div class="metric__track"><div class="metric__fill metric__fill--ok" data-fill="50"></div></div>
-							<span class="metric__val">8.36 <small>ms</small></span>
-						</div>
-						<div class="metric" data-metric>
-							<span class="metric__label">worst frame</span>
-							<div class="metric__track"><div class="metric__fill metric__fill--warn" data-fill="100"></div></div>
-							<span class="metric__val">33.4 <small>ms</small></span>
-						</div>
-						<div class="metric" data-metric>
-							<span class="metric__label">gpu memory</span>
-							<div class="metric__track"><div class="metric__fill metric__fill--split" data-split>
-								<span class="metric__fill--warn" data-fill="86" style="background:linear-gradient(90deg,#e0a83a,#b7791f)"></span>
-								<span data-fill="1.3" style="background:#2f6bff"></span>
-							</div></div>
-							<span class="metric__val">111.8 <small>MiB</small></span>
-						</div>
-						<div class="metric" data-metric>
-							<span class="metric__label" style="grid-column:1"></span>
-							<span style="grid-column:2 / -1;font-family:var(--font-mono);font-size:12px;color:var(--faint);margin-top:-8px">
-								texture 110.1 MiB · 21 textures &nbsp;·&nbsp; buffer 1.72 MiB · 47 buffers &nbsp;·&nbsp; 0 leaked
-							</span>
-						</div>
-						<div class="metric" data-metric>
-							<span class="metric__label">js heap growth</span>
-							<div class="metric__track"><div class="metric__fill metric__fill--ok" data-fill="4"></div></div>
-							<span class="metric__val">0.0 <small>MB/s</small></span>
-						</div>
+      <section class="notes wrap" aria-label="Measurement notes">
+        <strong>Good measurements need context.</strong>
+        <p>
+          Frame timing tracks browser cadence. GPU duration needs timing hooks.
+          Allocation estimates describe declared storage, not physical VRAM
+          residency. Use matching settings and repeat important comparisons.
+        </p>
+        <a
+          class="text-link"
+          href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md#limitations"
+          >Measurement guide <span aria-hidden="true">↗</span></a
+        >
+      </section>
+    </main>
 
-						<div class="warnbox">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-							<span><strong>summary.warnings[0]</strong> — Texture memory is high: 110.1 MiB across 21 textures.
-								Recommend using compressed textures (KTX2, Basis Universal) and ensuring unused textures are disposed.</span>
-						</div>
-					</div>
-				</div>
-
-				<!-- compare strip -->
-				<div class="compare reveal" data-report>
-					<div class="compare__col">
-						<h4>Base</h4>
-						<div class="compare__big">111.8 <span style="font-size:16px;color:var(--faint)">MiB</span></div>
-						<div class="compare__sub">21 textures · verdict needs-work</div>
-					</div>
-					<div class="compare__arrow" aria-hidden="true">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
-					</div>
-					<div class="compare__col">
-						<h4>Candidate · one fix applied</h4>
-						<div class="compare__big" style="color:var(--ok)">43.7 <span style="font-size:16px;color:var(--faint)">MiB</span></div>
-						<div class="compare__sub">9 textures · verdict excellent</div>
-						<span class="compare__delta">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
-							61% less VRAM
-						</span>
-						<div class="compare__resolved">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>
-							<span>resolvedWarnings — <s>Texture memory is high: 110.1 MiB across 21 textures.</s></span>
-						</div>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- ========================= HOW IT WORKS ========================= -->
-		<section class="section section--alt" id="how">
-			<div class="container">
-				<div class="section-head section-head--center">
-					<span class="eyebrow">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>
-						The loop
-					</span>
-					<h2>Baseline, optimize, compare — on repeat.</h2>
-					<p>The skill teaches an agent a four-step loop. The compare step is regression-gated:
-						it exits with code <code style="font-family:var(--font-mono);font-size:.9em">1</code> the moment a metric slips, so a “fix” can’t quietly make things worse.</p>
-				</div>
-
-				<div class="loop">
-					<div class="loop__step reveal">
-						<div class="loop__num">01</div>
-						<h4>doctor</h4>
-						<code>gpu-perf-agent doctor</code>
-						<p>Confirm the machine and headless Chrome support WebGPU/WebGL2. Always first.</p>
-					</div>
-					<div class="loop__step reveal d1">
-						<div class="loop__num">02</div>
-						<h4>baseline</h4>
-						<code>run --auto-instrument</code>
-						<p>Profile the unmodified page. Capture the verdict, metrics, and warnings.</p>
-					</div>
-					<div class="loop__step reveal d2">
-						<div class="loop__num">03</div>
-						<h4>optimize</h4>
-						<code>one targeted change</code>
-						<p>Apply a single fix for the highest-impact warning — then re-profile.</p>
-					</div>
-					<div class="loop__step reveal d3">
-						<div class="loop__num">04</div>
-						<h4>compare <span class="chk" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-2px"><path d="M20 6 9 17l-5-5"/></svg></span></h4>
-						<code>compare --threshold 5</code>
-						<p>Prove the win. Exit code <code>1</code> on regression; check resolvedWarnings.</p>
-					</div>
-				</div>
-
-				<div class="cards cards--2" style="margin-bottom:36px">
-					<div class="card reveal">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg></div>
-						<h3>A fast, direct-CDP runner</h3>
-						<p>The default runner launches Chrome/Chromium itself and talks Chrome DevTools Protocol
-							over a WebSocket — skipping Playwright’s context and driver layers. A Playwright runner
-							stays exported for compatibility.</p>
-					</div>
-					<div class="card reveal d1">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
-						<h3>Persistent server for tight loops</h3>
-						<p>Launch Chrome once with <code style="font-family:var(--font-mono);font-size:.85em">serve</code> and POST repeated jobs
-							to <code style="font-family:var(--font-mono);font-size:.85em">/run</code>. It returns the same report JSON — the fastest path per agent iteration.</p>
-					</div>
-				</div>
-
-				<div class="section-head" style="max-width:640px">
-					<h3 style="font-size:20px">Three memory layers, because VRAM residency is hidden</h3>
-					<p style="font-size:15.5px;margin-top:10px">The web platform never exposes exact GPU residency. For deep memory analysis, combine all three.</p>
-				</div>
-				<div class="cards cards--3">
-					<div class="card card--ok reveal">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></div>
-						<h3>Declared allocation tracking</h3>
-						<p><code style="font-family:var(--font-mono);font-size:.85em">--auto-instrument</code> hooks buffer/texture
-							allocations in your app — a deterministic estimate that’s ideal for regression checks.</p>
-					</div>
-					<div class="card card--ok reveal d1">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="12" y="6" width="3" height="12"/><rect x="17" y="13" width="3" height="5"/></svg></div>
-						<h3>Chrome trace memory-infra</h3>
-						<p><code style="font-family:var(--font-mono);font-size:.85em">--trace</code> adds summaries of GPU, frame,
-							and memory-infra events straight from the browser’s own tracing.</p>
-					</div>
-					<div class="card card--ok reveal d2">
-						<div class="card__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/></svg></div>
-						<h3>Native Instruments (macOS)</h3>
-						<p><code style="font-family:var(--font-mono);font-size:.85em">xctrace</code> records an Xcode Instruments
-							trace such as <em>Metal System Trace</em> — GPU-driver-level evidence when Chrome’s signals aren’t enough.</p>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- ========================= COMMANDS ========================= -->
-		<section class="section" id="commands">
-			<div class="container">
-				<div class="section-head">
-					<span class="eyebrow">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>
-						The CLI
-					</span>
-					<h2>Five commands. Everything the loop needs.</h2>
-					<p>All five accept <code style="font-family:var(--font-mono);font-size:.9em">--json</code> where it matters,
-						so agents and CI read structured output instead of scraping tables.</p>
-				</div>
-
-				<div class="cmds">
-					<article class="cmdcard reveal">
-						<div class="cmdcard__top">
-							<div class="cmdcard__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
-							<div><div class="cmdcard__name">doctor</div><div class="cmdcard__desc">Check WebGPU/WebGL2 support. Run first.</div></div>
-						</div>
-						<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">npx gpu-perf-agent doctor</code></pre></div>
-					</article>
-
-					<article class="cmdcard reveal d1">
-						<div class="cmdcard__top">
-							<div class="cmdcard__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17a9 9 0 1 1 17 0"/><path d="M12 13.5 16 9"/><circle cx="12" cy="13.5" r="1.3"/></svg></div>
-							<div><div class="cmdcard__name">run</div><div class="cmdcard__desc">Profile a URL or local file into a JSON report.</div></div>
-						</div>
-						<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">npx gpu-perf-agent run --url http://localhost:5173 \
-  --auto-instrument --samples 5 --out reports/base.json --json</code></pre></div>
-					</article>
-
-					<article class="cmdcard reveal">
-						<div class="cmdcard__top">
-							<div class="cmdcard__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 8h14"/><path d="m5 8-2.5 6a3 3 0 0 0 5 0z"/><path d="m19 8-2.5 6a3 3 0 0 0 5 0z"/></svg></div>
-							<div><div class="cmdcard__name">compare</div><div class="cmdcard__desc">Gate base vs candidate. Exit 1 on regression.</div></div>
-						</div>
-						<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">npx gpu-perf-agent compare --base reports/base.json \
-  --candidate reports/candidate.json --threshold 5 --json</code></pre></div>
-					</article>
-
-					<article class="cmdcard reveal d1">
-						<div class="cmdcard__top">
-							<div class="cmdcard__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
-							<div><div class="cmdcard__name">serve</div><div class="cmdcard__desc">One persistent Chrome; POST jobs for tight loops.</div></div>
-						</div>
-						<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">npx gpu-perf-agent serve --port 9099
-# then: POST http://127.0.0.1:9099/run  {"url":"...","samples":5}</code></pre></div>
-					</article>
-
-					<article class="cmdcard reveal" style="grid-column:1 / -1">
-						<div class="cmdcard__top">
-							<div class="cmdcard__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3l2-7 4 16 3-11 2 6h6"/></svg></div>
-							<div><div class="cmdcard__name">xctrace <span class="badge-os">macOS</span></div><div class="cmdcard__desc">Record a native Xcode Instruments trace (e.g. Metal System Trace) for GPU-driver-level evidence.</div></div>
-						</div>
-						<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">npx gpu-perf-agent xctrace --url http://localhost:5173 \
-  --template "Metal System Trace" --time-limit 15s --out reports/metal.trace</code></pre></div>
-					</article>
-				</div>
-			</div>
-		</section>
-
-		<!-- ========================= AGENT SKILL ========================= -->
-		<section class="section section--alt" id="agent">
-			<div class="container">
-				<div class="agent-lede">
-					<div>
-						<span class="eyebrow">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/></svg>
-							Built for agents
-						</span>
-						<h2>A drop-in skill your assistant already knows how to use.</h2>
-						<p style="color:var(--muted);margin-top:14px;font-size:16.5px">
-							The package ships a single <code style="font-family:var(--font-mono);font-size:.9em">SKILL.md</code> that
-							teaches the full baseline&nbsp;→&nbsp;optimize&nbsp;→&nbsp;compare loop. Install the package, then copy
-							the skill where your agent discovers skills.</p>
-						<div class="ask">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
-							<p>Then just ask: <em>“profile http://localhost:5173 and fix the biggest GPU bottleneck.”</em></p>
-						</div>
-					</div>
-
-					<div>
-						<div class="tabs" data-tabs>
-							<div class="tabs__list" role="tablist">
-								<button class="tabs__btn is-active" role="tab" data-tab="claude">Claude Code</button>
-								<button class="tabs__btn" role="tab" data-tab="codex">Codex CLI</button>
-								<button class="tabs__btn" role="tab" data-tab="gemini">Gemini CLI</button>
-								<button class="tabs__btn" role="tab" data-tab="copilot">Copilot</button>
-								<button class="tabs__btn" role="tab" data-tab="cursor">Cline · Cursor</button>
-							</div>
-							<div class="tabs__panel is-active" data-panel="claude">
-								<div class="code"><div class="code__head"><span class="code__lang">project-scoped</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">mkdir -p .claude/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md \
-  .claude/skills/webgpu-performance-profiling/SKILL.md</code></pre></div>
-							</div>
-							<div class="tabs__panel" data-panel="codex">
-								<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">mkdir -p ~/.codex/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md \
-  ~/.codex/skills/webgpu-performance-profiling/SKILL.md</code></pre></div>
-							</div>
-							<div class="tabs__panel" data-panel="gemini">
-								<div class="code"><div class="code__head"><span class="code__lang">bash</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">mkdir -p ~/.gemini/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md \
-  ~/.gemini/skills/webgpu-performance-profiling/SKILL.md</code></pre></div>
-							</div>
-							<div class="tabs__panel" data-panel="copilot">
-								<div class="code"><div class="code__head"><span class="code__lang">project-scoped</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash">mkdir -p .github/skills/webgpu-performance-profiling
-cp node_modules/gpu-perf-agent/skill/SKILL.md \
-  .github/skills/webgpu-performance-profiling/SKILL.md</code></pre></div>
-							</div>
-							<div class="tabs__panel" data-panel="cursor">
-								<div class="code"><div class="code__head"><span class="code__lang">rules file</span><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div><pre><code data-lang="bash"># Paste the contents of node_modules/gpu-perf-agent/skill/SKILL.md
-# into your rules file: .clinerules, .cursorrules, or custom instructions.</code></pre></div>
-							</div>
-						</div>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- ========================= INSTALL ========================= -->
-		<section class="section" id="install">
-			<div class="container">
-				<div class="section-head">
-					<span class="eyebrow">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-						Get started
-					</span>
-					<h2>Installed in a minute, looping in five.</h2>
-					<p>Requires Node ≥ 20. The fast runner prefers an installed Chrome/Chromium; if none is found
-						it can fall back to Playwright’s bundled browser.</p>
-				</div>
-
-				<div class="steps">
-					<div class="step reveal">
-						<div class="step__num">1</div>
-						<div class="step__body">
-							<h4>Install the package</h4>
-							<p>Or run it one-off with <code style="font-family:var(--font-mono);font-size:.85em">npx gpu-perf-agent doctor</code> — no install needed.</p>
-							<div class="cmd" data-copy-src><span class="prompt">$</span><code data-lang="bash">npm install -D gpu-perf-agent</code><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div>
-						</div>
-					</div>
-					<div class="step reveal">
-						<div class="step__num">2</div>
-						<div class="step__body">
-							<h4>Run the doctor</h4>
-							<p>Verify your machine and headless Chrome support WebGPU/WebGL2 before profiling.</p>
-							<div class="cmd" data-copy-src><span class="prompt">$</span><code data-lang="bash">npx gpu-perf-agent doctor</code><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div>
-						</div>
-					</div>
-					<div class="step reveal">
-						<div class="step__num">3</div>
-						<div class="step__body">
-							<h4>Capture a baseline</h4>
-							<p>Profile your page with allocation tracking on and machine-readable output.</p>
-							<div class="cmd" data-copy-src><span class="prompt">$</span><code data-lang="bash">npx gpu-perf-agent run --url http://localhost:5173 --auto-instrument --out reports/base.json --json</code><button class="copy" data-copy><svg class="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><svg class="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span class="copy__label">Copy</span></button></div>
-						</div>
-					</div>
-					<div class="step reveal">
-						<div class="step__num">4</div>
-						<div class="step__body">
-							<h4>Hand the loop to your agent</h4>
-							<p>Drop <code style="font-family:var(--font-mono);font-size:.85em">SKILL.md</code> into your assistant
-								(<a href="#agent">see above</a>) and let it baseline, fix, and compare until the verdict is <strong>good</strong> or <strong>excellent</strong>.</p>
-						</div>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- ========================= METRICS REFERENCE ========================= -->
-		<section class="section section--alt" id="metrics">
-			<div class="container">
-				<div class="section-head">
-					<span class="eyebrow">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="12" y="6" width="3" height="12"/><rect x="17" y="13" width="3" height="5"/></svg>
-						Reference
-					</span>
-					<h2>Read <code style="font-family:var(--font-mono)">summary</code> first.</h2>
-					<p>The top-level digest every report opens with — the fields an agent acts on before touching any nested data.</p>
-				</div>
-				<div class="table-wrap reveal">
-					<table class="ref">
-						<thead><tr><th>Field</th><th>Meaning</th></tr></thead>
-						<tbody>
-							<tr><td><code>verdict</code></td><td>Overall health in one word: <strong>excellent</strong> · good · needs-work · poor.</td></tr>
-							<tr><td><code>fps</code></td><td>Mean frames per second. High-refresh displays may report 120.</td></tr>
-							<tr><td><code>frameTimeMsMean / P95 / Max</code></td><td>Frame-time distribution. A large p95 − mean gap means stutter.</td></tr>
-							<tr><td><code>gpuFrameMsMean</code></td><td>Mean GPU time per frame when timing hooks are active. &gt; 13 ms means GPU-bound.</td></tr>
-							<tr><td><code>jsHeapGrowthMBPerSec</code></td><td>JS heap growth rate. &gt; 5 MB/s means allocations in the render loop.</td></tr>
-							<tr><td><code>trackedVram</code></td><td><code>{ totalMiB, textureMiB, bufferMiB, textureCount, bufferCount, leakedResources }</code> from <code>--auto-instrument</code>.</td></tr>
-							<tr><td><code>slowFrameCount</code></td><td>Frames exceeding the slow-frame threshold (default 20 ms).</td></tr>
-							<tr><td><code>warnings</code></td><td>Actionable bottleneck descriptions with recommendations — treat each as a task.</td></tr>
-						</tbody>
-					</table>
-				</div>
-			</div>
-		</section>
-	</main>
-
-	<!-- ========================= FOOTER ========================= -->
-	<footer class="footer">
-		<div class="container">
-			<div class="footer__inner">
-				<div class="footer__brand">
-					<a class="brand" href="#top">
-						<span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3 12h4l2-5 3 10 2-7 2 4h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg></span>
-						<code>gpu-perf-agent</code>
-					</a>
-					<p>An agent-ready WebGPU/WebGL2 performance profiler. Humans and CI get the same repeatable artifacts.</p>
-				</div>
-				<div class="footer__cols">
-					<div class="footer__col">
-						<h5>Project</h5>
-						<a href="https://www.npmjs.com/package/gpu-perf-agent" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg> npm package</a>
-						<a href="https://github.com/Makio64/gpu-perf-agent" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg> GitHub</a>
-					</div>
-					<div class="footer__col">
-						<h5>On this page</h5>
-						<a href="#how">How it works</a>
-						<a href="#commands">Commands</a>
-						<a href="#agent">Agent skill</a>
-						<a href="#install">Install</a>
-					</div>
-				</div>
-			</div>
-			<div class="footer__legal">
-				<span class="mono">MIT · v0.1.0 · by Makio64</span>
-				<span class="mono">No analytics. No cookies. No tracking.</span>
-			</div>
-		</div>
-	</footer>
-
-	<script type="module" src="./src/main.js"></script>
-</body>
+    <footer class="footer wrap">
+      <div>
+        <a class="brand" href="#"
+          ><img src="./assets/mark.svg" width="26" height="26" alt="" /><span
+            >gpu-perf-agent</span
+          ></a
+        >
+        <p>Built for the next iteration.</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://www.npmjs.com/package/gpu-perf-agent"
+          >npm <span aria-hidden="true">↗</span></a
+        ><a href="https://github.com/Makio64/gpu-perf-agent"
+          >GitHub <span aria-hidden="true">↗</span></a
+        ><a href="https://github.com/Makio64/gpu-perf-agent/blob/master/LICENSE"
+          >MIT</a
+        ><span>v__VERSION__ · by Makio64</span>
+      </div>
+    </footer>
+    <div
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+      id="copy-status"
+    ></div>
+  </body>
 </html>
