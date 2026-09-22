@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.1
+
+- Lead the README and website with one shared skill-install command for Codex, Claude Code, Gemini CLI, and other supported agents, followed by a short usage prompt.
+- Explain the profiling loop with a compact flow diagram, scannable technical details, and measurement limits.
+- Improve website readability with larger text, stacked explanations, and aligned header links.
+- Profiling behavior and defaults are unchanged from 2.1.0.
+
 ## 2.1.0
 
 - A shorter README leads with the value, a one-command capture, and a repeatable compare workflow. The full technical guide now lives in `docs/reference.md` and ships with the npm package.

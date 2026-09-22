@@ -1,6 +1,6 @@
 {
   "name": "gpu-perf-agent",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Agent-oriented WebGPU/WebGL performance, memory, trace, and regression diagnostics.",
   "type": "module",
   "bin": {
