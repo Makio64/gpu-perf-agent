@@ -3,13 +3,16 @@ import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { CDPConnection } from "./cdp.js";
+import { normalizeOptions, parseViewport, PROFILING_PRESETS } from "./options.js";
+import { finalizeReport } from "./analysis.js";
+import { autoInstrumentationSource } from "./browser/auto-instrument.js";
 import { collectInPage } from "./injected.js";
 import { createFileTarget } from "./static-server.js";
 import { DEFAULT_TRACE_CATEGORIES, MINIMAL_TRACE_CATEGORIES, startChromeTrace, stopChromeTrace, summarizeTrace } from "./trace.js";
-import { getAutoInstrumentScript } from "./browser/bundler.js";
-import { finalizeReport } from "./diagnostics.js";
 
 export async function runFastReport(options = {}) {
+  options = normalizeOptions(options);
   const harness = await FastCDPHarness.launch(options);
   try {
     return await harness.run(options);
@@ -19,10 +22,13 @@ export async function runFastReport(options = {}) {
 }
 
 export async function runFastReports(reportOptions, launchOptions = {}) {
+  if (!Array.isArray(reportOptions)) throw new TypeError("reportOptions must be an array.");
+  const jobs = reportOptions.map(options => normalizeOptions({ ...launchOptions, ...options }));
+  if (jobs.length === 0) return [];
   const harness = await FastCDPHarness.launch(launchOptions);
   try {
     const reports = [];
-    for (const options of reportOptions) {
+    for (const options of jobs) {
       reports.push(await harness.run({
         ...launchOptions,
         ...options
@@ -36,92 +42,104 @@ export async function runFastReports(reportOptions, launchOptions = {}) {
 
 export class FastCDPHarness {
   static async launch(options = {}) {
+    options = normalizeOptions(options, { requireTarget: false });
     const viewport = parseViewport(options.viewport);
-    const cdpTarget = options.cdpUrl || options.cdp || options.webSocketUrl;
-    let launch;
-    let browserSession;
-
-    if (cdpTarget) {
-      const wsUrl = await resolveCdpWebSocketUrl(cdpTarget);
-      browserSession = await CDPConnection.connect(wsUrl);
-      launch = {
-        args: [],
-        webSocketUrl: wsUrl,
-        close: async () => {}
-      };
-    } else {
-      launch = await launchChromeForCDP(options, viewport);
-      browserSession = await CDPConnection.connect(launch.webSocketUrl);
+    const launch = options.cdpUrl ? {
+      external: true,
+      args: [],
+      webSocketUrl: await resolveCdpWebSocketUrl(options.cdpUrl, options.launchTimeoutMs),
+      close: async () => {}
+    } : await launchChromeForCDP(options, viewport);
+    try {
+      const browserSession = await CDPConnection.connect(launch.webSocketUrl);
+      return new FastCDPHarness(launch, browserSession, options);
+    } catch (error) {
+      await launch.close();
+      throw error;
     }
-
-    return new FastCDPHarness(launch, browserSession);
   }
 
-  constructor(launch, browserSession) {
+  constructor(launch, browserSession, options = {}) {
     this.browserInfo = null;
     this.browserSession = browserSession;
     this.closed = false;
     this.launch = launch;
+    this.options = options;
+    this.queue = Promise.resolve();
+    this.closing = null;
+    this.cleanupError = null;
+    this.sharedContextId = null;
   }
 
-  async run(options = {}) {
-    if (this.closed) {
-      throw new Error("FastCDPHarness is already closed.");
-    }
+  run(options = {}) {
+    if (this.closed) return Promise.reject(new Error("FastCDPHarness is already closed."));
+    // Serialize even Node API callers: Chrome tracing is browser-wide.
+    const job = this.queue.then(() => {
+      if (this.cleanupError) throw this.cleanupError;
+      options = { ...options };
+      if (options.cdp || options.webSocketUrl) options.cdpUrl ??= options.cdp ?? options.webSocketUrl;
+      const merged = { ...this.options, ...(options.preset ? PROFILING_PRESETS[options.preset] : {}), ...options };
+      if (options.url && !options.file) delete merged.file;
+      if (options.file && !options.url) delete merged.url;
+      // Launch-only flags cannot take effect after Chrome has started.
+      for (const key of ["angle", "channel", "executablePath", "headful", "chromiumArgs", "cdpUrl"]) {
+        if (options[key] !== undefined && JSON.stringify(options[key]) !== JSON.stringify(this.options[key] ?? (key === "headful" ? false : key === "chromiumArgs" ? [] : undefined))) {
+          throw new TypeError(`${key} is a launch option; create a new harness to change it.`);
+        }
+      }
+      return this.runJob(normalizeOptions(merged));
+    });
+    this.queue = job.catch(() => {});
+    return job;
+  }
 
+  async runJob(options) {
+    const startedAt = performance.now();
     const target = await createFastTarget(options);
     const viewport = parseViewport(options.viewport);
-    let pageTargetId = null;
+    let page = null;
+    let tracing = false;
     let trace = null;
     let traceSummary = null;
     let traceError = null;
+    let screenshotPath = null;
+    let screenshotSize = null;
 
     try {
-      const page = await createPage(this.browserSession, target.url, viewport, options);
-      pageTargetId = page.targetId;
+      if (options.contextMode === "shared" && !this.sharedContextId) {
+        const context = await this.browserSession.send("Target.createBrowserContext", { disposeOnDetach: true });
+        this.sharedContextId = context.browserContextId;
+      }
+      page = await createPage(this.browserSession, target.url, viewport, options, this.sharedContextId);
+      const navigationMs = performance.now() - startedAt;
 
       const browserInfo = await this.getBrowserInfo();
 
-      if (options.waitCondition) {
-        const timeout = Number(options.waitConditionTimeoutMs ?? 20000);
-        const start = Date.now();
-        let conditionMet = false;
-        while (Date.now() - start < timeout) {
-          const evalResult = await page.session.send("Runtime.evaluate", {
-            expression: options.waitCondition,
-            returnByValue: true
-          });
-          if (evalResult?.result?.value) {
-            conditionMet = true;
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        if (!conditionMet) {
-          throw new Error(`Timed out waiting for condition: ${options.waitCondition}`);
-        }
-      }
-
       if (options.trace) {
-        const categories = options.traceCategories || (options.minimalTrace ? MINIMAL_TRACE_CATEGORIES : DEFAULT_TRACE_CATEGORIES);
-        await startChromeTrace(this.browserSession, categories);
+        await startChromeTrace(this.browserSession, options.traceCategories || (options.minimalTrace ? MINIMAL_TRACE_CATEGORIES : DEFAULT_TRACE_CATEGORIES));
+        tracing = true;
       }
 
       const cdpBefore = await cdpSnapshot(page.session, options);
+      const samplingStartedAt = performance.now();
       const inPage = await evaluateInPage(page.session, {
         adaptive: Boolean(options.adaptive),
         api: options.api,
         durationMs: Number(options.durationMs ?? 1000),
         gc: Boolean(options.gc),
+        deepMemory: Boolean(options.deepMemory),
         hookName: options.hookName,
         samples: Number(options.samples ?? 5),
+        slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
         warmup: Number(options.warmup ?? 1)
       }, Number(options.timeoutMs ?? 60000));
+      const samplingMs = performance.now() - samplingStartedAt;
       const cdpAfter = await cdpSnapshot(page.session, options);
 
       if (options.trace) {
         try {
           trace = await stopChromeTrace(this.browserSession);
+          tracing = false;
           traceSummary = summarizeTrace(trace);
         } catch (error) {
           traceError = plainError(error);
@@ -133,70 +151,27 @@ export class FastCDPHarness {
         await writeFile(options.rawTracePath, JSON.stringify(trace));
       }
 
-      let screenshotSize = null;
-      let screenshotError = null;
-
-      if (options.screenshot || options.visualValidation) {
-        try {
-          const canvasDataUrl = await page.session.send("Runtime.evaluate", {
-            expression: `(async () => {
-              const canvas = document.querySelector('canvas');
-              if (!canvas) return null;
-              return new Promise((resolve) => {
-                const timer = setTimeout(() => resolve(null), 5000);
-                canvas.toBlob((blob) => {
-                  clearTimeout(timer);
-                  if (!blob) {
-                    resolve(null);
-                    return;
-                  }
-                  const reader = new FileReader();
-                  reader.onload = () => resolve(reader.result);
-                  reader.onerror = () => resolve(null);
-                  reader.readAsDataURL(blob);
-                }, 'image/png');
-              });
-            })()`,
-            awaitPromise: true,
-            returnByValue: true
-          });
-
-          let screenshotBuffer = null;
-          if (canvasDataUrl?.result?.value) {
-            const dataUrl = canvasDataUrl.result.value;
-            const base64Data = dataUrl.slice(dataUrl.indexOf(",") + 1);
-            screenshotBuffer = Buffer.from(base64Data, "base64");
-          } else {
-            const screenshotResponse = await page.session.send("Page.captureScreenshot", {
-              format: "png"
-            });
-            if (screenshotResponse?.data) {
-              screenshotBuffer = Buffer.from(screenshotResponse.data, "base64");
-            }
-          }
-
-          if (screenshotBuffer) {
-            screenshotSize = screenshotBuffer.byteLength;
-            let savePath = options.screenshotOut;
-            if (!savePath && options.screenshot && options.out) {
-              savePath = options.out.replace(/\.json$/i, ".png");
-              if (savePath === options.out) {
-                savePath = options.out + ".png";
-              }
-            }
-            if (savePath) {
-              await mkdir(path.dirname(savePath), { recursive: true });
-              await writeFile(savePath, screenshotBuffer);
-            }
-          } else {
-            screenshotError = "Failed to capture canvas or page screenshot.";
-          }
-        } catch (error) {
-          screenshotError = error?.message || String(error);
+      if (options.screenshotPath || options.screenshot || options.visualValidation) {
+        const screenshot = await page.session.send("Page.captureScreenshot", {
+          captureBeyondViewport: false,
+          format: "png",
+          fromSurface: true
+        });
+        const bytes = Buffer.from(screenshot.data, "base64");
+        screenshotSize = bytes.byteLength;
+        if (options.screenshotPath) {
+          screenshotPath = path.resolve(options.screenshotPath);
+          await mkdir(path.dirname(screenshotPath), { recursive: true });
+          await writeFile(screenshotPath, bytes);
         }
       }
 
       return finalizeReport({
+        screenshotSize,
+        artifacts: {
+          screenshotPath
+        },
+        timings: { navigationMs, samplingMs, totalMs: performance.now() - startedAt },
         browser: browserInfo,
         cdp: {
           after: cdpAfter,
@@ -207,7 +182,7 @@ export class FastCDPHarness {
         inPage,
         options: reportOptions(options, this.launch.args),
         pageEvents: page.events,
-        schemaVersion: 1,
+        schemaVersion: 2,
         target: {
           file: target.file || null,
           root: target.root || null,
@@ -219,33 +194,47 @@ export class FastCDPHarness {
           error: traceError,
           rawTracePath: options.rawTracePath || null,
           summary: traceSummary
-        },
-        screenshotSize,
-        screenshotError
-      });
+        }
+      }, options);
+    } catch (error) {
+      if (error.code === "CAPTURE_CLEANUP_FAILED") this.cleanupError = error;
+      throw error;
     } finally {
-      if (pageTargetId) {
-        await safeSend(this.browserSession, "Target.closeTarget", { targetId: pageTargetId });
+      try {
+        if (tracing) await stopChromeTrace(this.browserSession, { timeoutMs: 5000 }).catch(() => {});
+        if (page) await page.close();
+      } catch (error) {
+        this.cleanupError = captureCleanupError(error);
+        throw this.cleanupError;
+      } finally {
+        await target.close?.();
       }
-      await target.close?.();
     }
   }
 
-  async close() {
-    if (this.closed) {
-      return;
+  close() {
+    if (!this.closing) {
+      this.closed = true;
+      this.closing = this.queue.then(async () => {
+        try {
+          if (this.launch.external) {
+            if (this.sharedContextId) await safeSend(this.browserSession, "Target.disposeBrowserContext", {browserContextId: this.sharedContextId});
+          } else await safeSend(this.browserSession, "Browser.close");
+        }
+        finally {
+          this.browserSession.close();
+          await this.launch.close();
+        }
+      });
     }
-    this.closed = true;
-    await safeSend(this.browserSession, "Browser.close");
-    this.browserSession.close();
-    await this.launch.close();
+    return this.closing;
   }
 
   async getBrowserInfo() {
     if (!this.browserInfo) {
       this.browserInfo = {
         executablePath: this.launch.executablePath,
-        pid: this.launch.process.pid,
+        pid: this.launch.process?.pid ?? null,
         systemInfo: await safeSend(this.browserSession, "SystemInfo.getInfo"),
         version: await safeSend(this.browserSession, "Browser.getVersion")
       };
@@ -269,34 +258,21 @@ async function createFastTarget(options = {}) {
   throw new Error("A target is required. Pass --url or --file.");
 }
 
-async function resolveCdpWebSocketUrl(target) {
-  if (typeof target !== "string") {
-    throw new Error(`Invalid CDP target: ${target}`);
-  }
-  if (target.startsWith("ws://") || target.startsWith("wss://")) {
-    return target;
-  }
-  let httpUrl = target;
-  if (/^\d+$/.test(target)) {
-    httpUrl = `http://127.0.0.1:${target}`;
-  } else if (!httpUrl.startsWith("http://") && !httpUrl.startsWith("https://")) {
-    httpUrl = `http://${httpUrl}`;
-  }
-  const versionUrl = new URL("/json/version", httpUrl).toString();
-  const res = await fetch(versionUrl);
-  if (!res.ok) {
-    throw new Error(`Failed to query CDP version endpoint at ${versionUrl}: ${res.status} ${res.statusText}`);
-  }
-  const data = await res.json();
-  if (!data.webSocketDebuggerUrl) {
-    throw new Error(`CDP endpoint ${versionUrl} did not return webSocketDebuggerUrl.`);
-  }
+async function resolveCdpWebSocketUrl(target, timeoutMs) {
+  if (/^wss?:\/\//.test(target)) return new URL(target).href;
+  const endpoint = /^\d+$/.test(target) ? `http://127.0.0.1:${target}` : /^[a-z]+:\/\//i.test(target) ? target : `http://${target}`;
+  const url = new URL("/json/version", endpoint);
+  if (!["http:", "https:"].includes(url.protocol)) throw new TypeError("CDP discovery must use HTTP(S), or provide a browser WebSocket URL.");
+  const response = await fetch(url, {signal: AbortSignal.timeout(timeoutMs)});
+  if (!response.ok) throw new Error(`CDP discovery returned HTTP ${response.status}.`);
+  const data = await response.json();
+  if (typeof data.webSocketDebuggerUrl !== "string" || !/^wss?:\/\//.test(data.webSocketDebuggerUrl)) throw new Error("CDP discovery did not return a browser WebSocket URL.");
   return data.webSocketDebuggerUrl;
 }
 
 async function launchChromeForCDP(options, viewport) {
   const executablePath = await resolveChromeExecutable(options);
-  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "gpu-perf-agent-cdp-"));
+  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "webgpu-report-cdp-"));
   const args = [
     ...chromiumArgs(options),
     `--user-data-dir=${userDataDir}`,
@@ -315,44 +291,52 @@ async function launchChromeForCDP(options, viewport) {
   });
 
   let stderr = "";
-  const webSocketUrl = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Timed out waiting for Chrome DevTools endpoint.\n${stderr}`));
-    }, Number(options.launchTimeoutMs ?? 15000));
-
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-
-    child.once("exit", (code, signal) => {
-      clearTimeout(timeout);
-      reject(new Error(`Chrome exited before DevTools was ready: code=${code} signal=${signal}\n${stderr}`));
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-      const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) {
-        clearTimeout(timeout);
-        resolve(match[1]);
+  const close = async () => {
+    if (child.pid && child.exitCode == null && child.signalCode == null) {
+      child.kill("SIGTERM");
+      try { await waitForExit(child, 2500); }
+      catch {
+        child.kill("SIGKILL");
+        await waitForExit(child, 2500).catch(() => {});
       }
+    }
+    await rm(userDataDir, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+  };
+  let webSocketUrl;
+  try {
+    webSocketUrl = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Timed out waiting for Chrome DevTools endpoint.\n${stderr}`));
+      }, Number(options.launchTimeoutMs ?? 15000));
+
+      child.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+
+      child.once("exit", (code, signal) => {
+        clearTimeout(timeout);
+        reject(new Error(`Chrome exited before DevTools was ready: code=${code} signal=${signal}\n${stderr}`));
+      });
+
+      child.stderr.on("data", (chunk) => {
+        stderr = (stderr + chunk).slice(-65536);
+        const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        }
+      });
     });
-  });
+
+  } catch (error) {
+    await close();
+    throw error;
+  }
 
   return {
     args,
-    close: async () => {
-      if (!child.killed && child.exitCode == null) {
-        child.kill("SIGTERM");
-        await waitForExit(child, 2500).catch(() => {
-          if (!child.killed && child.exitCode == null) {
-            child.kill("SIGKILL");
-          }
-        });
-      }
-      await rm(userDataDir, { force: true, recursive: true });
-    },
+    close,
     executablePath,
     process: child,
     userDataDir,
@@ -360,55 +344,115 @@ async function launchChromeForCDP(options, viewport) {
   };
 }
 
-async function createPage(browserSession, url, viewport, options) {
+async function createPage(browserSession, url, viewport, options, sharedContextId) {
   const events = [];
-  const target = await browserSession.send("Target.createTarget", {
-    newWindow: false,
-    url: "about:blank"
-  });
-  const attached = await browserSession.send("Target.attachToTarget", {
-    flatten: true,
-    targetId: target.targetId
-  });
-  const session = browserSession.session(attached.sessionId);
-
-  capturePageEvents(session, events);
-  await Promise.all([
-    session.send("Page.enable"),
-    session.send("Runtime.enable"),
-    session.send("Log.enable"),
-    session.send("Network.enable"),
-    session.send("Performance.enable"),
-    session.send("HeapProfiler.enable"),
-    session.send("Page.setLifecycleEventsEnabled", { enabled: true }),
-    session.send("Emulation.setDeviceMetricsOverride", {
-      deviceScaleFactor: Number(options.deviceScaleFactor ?? 1),
-      height: viewport.height,
-      mobile: false,
-      width: viewport.width
-    })
-  ]);
-
-  if (options.slowFrameThreshold) {
-    const source = `globalThis.__gpuSlowFrameThreshold = ${Number(options.slowFrameThreshold)};`;
-    await session.send("Page.addScriptToEvaluateOnNewDocument", { source });
-  }
-
-  if (options.autoInstrument) {
-    const source = await getAutoInstrumentScript();
-    await session.send("Page.addScriptToEvaluateOnNewDocument", { source });
-  }
-
-  await navigatePage(session, url, {
-    timeoutMs: Number(options.timeoutMs ?? 60000),
-    waitUntil: options.waitUntil || "networkidle"
-  });
-
-  return {
-    events,
-    session,
-    targetId: target.targetId
+  let target;
+  let browserContextId;
+  let session;
+  const isolated = options.contextMode !== "shared";
+  const close = async () => {
+    session?.dispose();
+    if (browserContextId && isolated) {
+      // Also closes popups and terminates workers owned by this job.
+      await browserSession.send("Target.disposeBrowserContext", { browserContextId }, 5000);
+      browserContextId = null;
+    } else if (browserContextId) {
+      // Shared mode retains storage and service workers, but never leaves popup pages running.
+      const { targetInfos } = await browserSession.send("Target.getTargets");
+      await Promise.all(targetInfos.filter(info => info.browserContextId === browserContextId && info.type === "page")
+        .map(info => browserSession.send("Target.closeTarget", { targetId: info.targetId }, 5000)));
+    } else if (target) {
+      await safeSend(browserSession, "Target.closeTarget", { targetId: target.targetId });
+    }
+    target = null;
   };
+  try {
+    if (isolated) {
+      ({ browserContextId } = await browserSession.send("Target.createBrowserContext", { disposeOnDetach: true }));
+    } else browserContextId = sharedContextId;
+    target = await browserSession.send("Target.createTarget", {
+      browserContextId,
+      // Omit newWindow so Chrome can create the first window in a fresh context.
+      url: "about:blank"
+    });
+    const attached = await browserSession.send("Target.attachToTarget", {
+      flatten: true,
+      targetId: target.targetId
+    });
+    session = browserSession.session(attached.sessionId);
+
+    capturePageEvents(session, events);
+    await Promise.all([
+      session.send("Page.enable"),
+      session.send("Runtime.enable"),
+      session.send("Log.enable"),
+      session.send("Network.enable"),
+      session.send("Performance.enable"),
+      session.send("HeapProfiler.enable"),
+      session.send("Page.setLifecycleEventsEnabled", { enabled: true }),
+      session.send("Emulation.setDeviceMetricsOverride", {
+        deviceScaleFactor: Number(options.deviceScaleFactor ?? 1),
+        height: viewport.height,
+        mobile: false,
+        width: viewport.width
+      })
+    ]);
+
+    if (options.autoInstrument) {
+      await session.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: autoInstrumentationSource(options.autoInstrumentOptions)
+      });
+    }
+
+    await navigatePage(session, url, {
+      timeoutMs: Number(options.timeoutMs ?? 60000),
+      waitUntil: options.waitUntil || "networkidle"
+    });
+
+    if (options.waitCondition) {
+      const ready = await session.send("Runtime.evaluate", {
+        expression: `(async () => {
+          const deadline = performance.now() + ${options.waitConditionTimeoutMs};
+          while (!(${options.waitCondition})) {
+            if (performance.now() >= deadline) throw new Error("Timed out waiting for page condition.");
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        })()`, awaitPromise: true, returnByValue: true
+      }, options.waitConditionTimeoutMs + 1000);
+      if (ready.exceptionDetails) throw new Error(formatExceptionDetails(ready.exceptionDetails));
+    }
+
+    if (options.waitForHook) {
+      const hookName = options.hookName || "__gpuReportBench";
+      const ready = await session.send("Runtime.evaluate", {
+        expression: `(async () => {
+          const deadline = performance.now() + ${options.timeoutMs};
+          while (typeof globalThis[${JSON.stringify(hookName)}] !== "function") {
+            if (performance.now() >= deadline) throw new Error(${JSON.stringify(`Timed out waiting for benchmark hook ${hookName}.`)});
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        })()`,
+        awaitPromise: true,
+        returnByValue: true
+      }, options.timeoutMs + 1000);
+      if (ready.exceptionDetails) throw new Error(formatExceptionDetails(ready.exceptionDetails));
+    }
+
+    return {
+      close,
+      events,
+      session,
+      targetId: target.targetId
+    };
+  } catch (error) {
+    try { await close(); }
+    catch (cleanupError) { throw captureCleanupError(new AggregateError([error, cleanupError])); }
+    throw error;
+  }
+}
+
+function captureCleanupError(cause) {
+  return Object.assign(new Error("Capture cleanup failed; close this harness and launch a new one before profiling again.", { cause }), { code: "CAPTURE_CLEANUP_FAILED" });
 }
 
 async function navigatePage(session, url, options) {
@@ -416,7 +460,8 @@ async function navigatePage(session, url, options) {
   const timeoutMs = Number(options.timeoutMs ?? 60000);
   const deadline = Date.now() + timeoutMs;
   const network = createNetworkTracker(session);
-  const loadPromise = waitForEvent(session, "Page.loadEventFired", timeoutMs);
+  const event = waitUntil === "domcontentloaded" ? "Page.domContentEventFired" : "Page.loadEventFired";
+  const load = waitUntil === "commit" ? null : waitForEvent(session, event, timeoutMs);
 
   try {
     const navigation = await session.send("Page.navigate", { url });
@@ -428,12 +473,13 @@ async function navigatePage(session, url, options) {
       return;
     }
 
-    await loadPromise;
+    await load.promise;
 
     if (waitUntil === "networkidle") {
       await network.waitForIdle(250, Math.max(1, deadline - Date.now()));
     }
   } finally {
+    load?.cancel();
     network.dispose();
   }
 }
@@ -488,9 +534,6 @@ function createNetworkTracker(session) {
       idleWaiters.clear();
     },
     waitForIdle(idleForMs, timeoutMs) {
-      if (pending.size === 0) {
-        return new Promise((resolve) => setTimeout(resolve, idleForMs));
-      }
       return new Promise((resolve, reject) => {
         const waiter = { idleForMs, resolve };
         idleWaiters.add(waiter);
@@ -563,8 +606,9 @@ async function cdpSnapshot(session, options) {
     await safeSend(session, "HeapProfiler.collectGarbage");
   }
 
-  const performanceMetrics = await safeSend(session, "Performance.getMetrics");
-  const domCounters = await safeSend(session, "Memory.getDOMCounters");
+  const [performanceMetrics, domCounters] = await Promise.all([
+    safeSend(session, "Performance.getMetrics"), safeSend(session, "Memory.getDOMCounters")
+  ]);
 
   return {
     domCounters,
@@ -622,7 +666,7 @@ async function resolveChromeExecutable(options = {}) {
     // Keep the final error focused on what the user can fix.
   }
 
-  throw new Error("Could not find Chrome/Chromium. Pass --executable-path, set CHROME_PATH, or run `npx playwright install chromium`.");
+  throw new Error("Could not find Chrome/Chromium. Install Chrome/Chromium, pass --executable-path, or set CHROME_PATH or CHROMIUM_PATH.");
 }
 
 function channelCandidates(channel) {
@@ -713,22 +757,6 @@ async function findOnPath(binary) {
   return null;
 }
 
-function parseViewport(viewport) {
-  if (!viewport) {
-    return { height: 720, width: 1280 };
-  }
-
-  const match = /^(\d+)x(\d+)$/i.exec(viewport);
-  if (!match) {
-    throw new Error(`Invalid viewport "${viewport}". Expected WIDTHxHEIGHT, for example 1280x720.`);
-  }
-
-  return {
-    height: Number(match[2]),
-    width: Number(match[1])
-  };
-}
-
 async function safeSend(session, method, params) {
   try {
     return await session.send(method, params);
@@ -738,7 +766,8 @@ async function safeSend(session, method, params) {
 }
 
 function waitForEvent(session, method, timeoutMs) {
-  return new Promise((resolve, reject) => {
+  let cancel;
+  const promise = new Promise((resolve, reject) => {
     const off = session.once(method, (params) => {
       clearTimeout(timeout);
       resolve(params);
@@ -747,19 +776,24 @@ function waitForEvent(session, method, timeoutMs) {
       off();
       reject(new Error(`Timed out waiting for ${method}.`));
     }, timeoutMs);
+    cancel = () => { off(); clearTimeout(timeout); resolve(); };
   });
+  // Navigation can fail before the waiter is awaited.
+  promise.catch(() => {});
+  return { promise, cancel };
 }
 
 function waitForExit(child, timeoutMs) {
-  if (child.exitCode != null) {
+  if (child.exitCode != null || child.signalCode != null) {
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Timed out waiting for process exit.")), timeoutMs);
-    child.once("exit", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
+    const onExit = () => { clearTimeout(timeout); resolve(); };
+    const timeout = setTimeout(() => {
+      child.off("exit", onExit);
+      reject(new Error("Timed out waiting for process exit."));
+    }, timeoutMs);
+    child.once("exit", onExit);
   });
 }
 
@@ -810,176 +844,28 @@ function reportOptions(options, launchArgs) {
   return {
     angle: options.angle || null,
     api: options.api || "auto",
+    autoInstrument: Boolean(options.autoInstrument),
     browserChannel: options.channel || null,
     chromiumArgs: launchArgs,
+    contextMode: options.contextMode,
+    frameObservation: "wall-clock",
+    adaptive: Boolean(options.adaptive),
+    minimalTrace: Boolean(options.minimalTrace),
+    cdpAttached: Boolean(options.cdpUrl),
+    waitCondition: options.waitCondition ?? null,
     durationMs: Number(options.durationMs ?? 1000),
+    deviceScaleFactor: options.deviceScaleFactor,
+    deepMemory: Boolean(options.deepMemory),
+    waitUntil: options.waitUntil,
+    waitForHook: Boolean(options.waitForHook),
     gc: Boolean(options.gc),
     headful: Boolean(options.headful),
     hookName: options.hookName || "__gpuReportBench",
     runner: "fast-cdp",
     samples: Number(options.samples ?? 5),
-    adaptive: Boolean(options.adaptive),
+    slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
     trace: Boolean(options.trace),
-    minimalTrace: Boolean(options.minimalTrace),
     viewport: options.viewport || "1280x720",
-    warmup: Number(options.warmup ?? 1),
-    autoInstrument: Boolean(options.autoInstrument),
-    slowFrameThreshold: options.slowFrameThreshold ? Number(options.slowFrameThreshold) : null,
-    screenshot: Boolean(options.screenshot),
-    screenshotOut: options.screenshotOut || null,
-    visualValidation: Boolean(options.visualValidation),
-    waitCondition: options.waitCondition || null,
-    waitConditionTimeoutMs: options.waitConditionTimeoutMs ? Number(options.waitConditionTimeoutMs) : null
+    warmup: Number(options.warmup ?? 1)
   };
-}
-
-class CDPConnection {
-  static async connect(url) {
-    const socket = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Timed out connecting to Chrome DevTools WebSocket.")), 10000);
-      socket.addEventListener("open", () => {
-        clearTimeout(timeout);
-        resolve();
-      }, { once: true });
-      socket.addEventListener("error", (event) => {
-        clearTimeout(timeout);
-        reject(new Error(`Chrome DevTools WebSocket error: ${event.message || "unknown"}`));
-      }, { once: true });
-    });
-
-    return new CDPConnection(socket);
-  }
-
-  constructor(socket) {
-    this.id = 1;
-    this.listeners = new Map();
-    this.pending = new Map();
-    this.socket = socket;
-
-    socket.addEventListener("message", (event) => {
-      this.handleMessage(event.data);
-    });
-    socket.addEventListener("close", () => {
-      for (const { reject, timeout } of this.pending.values()) {
-        clearTimeout(timeout);
-        reject(new Error("Chrome DevTools WebSocket closed."));
-      }
-      this.pending.clear();
-    });
-  }
-
-  close() {
-    if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
-      this.socket.close();
-    }
-  }
-
-  session(sessionId) {
-    return new CDPSession(this, sessionId);
-  }
-
-  send(method, params, timeoutMs = 30000) {
-    return this.sendRaw(method, params, undefined, timeoutMs);
-  }
-
-  sendRaw(method, params, sessionId, timeoutMs = 30000) {
-    const id = this.id;
-    this.id += 1;
-    const message = {
-      id,
-      method,
-      params
-    };
-    if (sessionId) {
-      message.sessionId = sessionId;
-    }
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`CDP command timed out: ${method}`));
-      }, timeoutMs);
-      this.pending.set(id, {
-        method,
-        reject,
-        resolve,
-        timeout
-      });
-      this.socket.send(JSON.stringify(message));
-    });
-  }
-
-  on(method, handler) {
-    if (!this.listeners.has(method)) {
-      this.listeners.set(method, new Set());
-    }
-    this.listeners.get(method).add(handler);
-    return () => this.listeners.get(method)?.delete(handler);
-  }
-
-  once(method, handler) {
-    const off = this.on(method, (params, sessionId) => {
-      off();
-      handler(params, sessionId);
-    });
-    return off;
-  }
-
-  handleMessage(data) {
-    const text = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
-    const message = JSON.parse(text);
-
-    if (message.id) {
-      const pending = this.pending.get(message.id);
-      if (!pending) {
-        return;
-      }
-      clearTimeout(pending.timeout);
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(`${pending.method}: ${message.error.message || JSON.stringify(message.error)}`));
-      } else {
-        pending.resolve(message.result);
-      }
-      return;
-    }
-
-    if (message.method) {
-      const handlers = this.listeners.get(message.method);
-      if (!handlers) {
-        return;
-      }
-      for (const handler of Array.from(handlers)) {
-        handler(message.params || {}, message.sessionId);
-      }
-    }
-  }
-}
-
-class CDPSession {
-  constructor(connection, sessionId) {
-    this.connection = connection;
-    this.sessionId = sessionId;
-  }
-
-  send(method, params, timeoutMs = 30000) {
-    return this.connection.sendRaw(method, params, this.sessionId, timeoutMs);
-  }
-
-  on(method, handler) {
-    return this.connection.on(method, (params, sessionId) => {
-      if (sessionId === this.sessionId) {
-        handler(params);
-      }
-    });
-  }
-
-  once(method, handler) {
-    const off = this.on(method, (params) => {
-      off();
-      handler(params);
-    });
-    return off;
-  }
 }

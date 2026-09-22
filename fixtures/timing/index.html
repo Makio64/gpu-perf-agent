@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GPU timing lifecycle fixture</title>
+<canvas id="stage" width="64" height="64"></canvas>
+<script type="module">
+import {requestTimedWebGPUDevice, createWebGPUTimer, createWebGL2Timer} from '../../src/browser/timing.js';
+import {trackWebGPUDevice} from '../../src/browser/allocation-tracker.js';
+
+const adapter = await navigator.gpu?.requestAdapter();
+if (!adapter?.features.has('timestamp-query')) {
+  globalThis.__gpuReportBench = () => ({ unsupported: 'timestamp-query unavailable' });
+} else {
+  const {device,timer}=await requestTimedWebGPUDevice(adapter);
+  timer.destroy();
+  // Track allocations of the subsequently created batch, then verify explicit cleanup.
+  const tracker=trackWebGPUDevice(device);
+  globalThis.__gpuMemoryTracker=tracker;
+  const uncaptured=[];
+  device.addEventListener('uncapturederror',event=>uncaptured.push(event.error.message));
+  const gl=document.querySelector('#stage').getContext('webgl2');
+  globalThis.__gpuReportBench=async()=>{
+    device.pushErrorScope('validation');
+    const simple=createWebGPUTimer(device);
+    const batch=simple.createBatch({capacity:2});
+    const glTimer=createWebGL2Timer(gl);
+    try {
+      let gpuNs=0;
+      for(let frame=0;frame<3;frame++) {
+        gpuNs+=await simple.measure((encoder,timing)=>{timing.beginComputePass(encoder).end();});
+        const encoder=device.createCommandEncoder();
+        batch.beginComputePass(encoder,{},'first').end();
+        batch.beginComputePass(encoder,{},'second').end();
+        batch.resolve(encoder);
+        device.queue.submit([encoder.finish()]);
+        const values=await batch.read();
+        if(values.length!==2||values[0].label!=='first'||values[1].label!=='second')throw Error('lost timestamp labels');
+        gpuNs+=values.reduce((total,value)=>total+value.durationNs,0);
+      }
+      const glNs=glTimer?await glTimer.measure(()=>{gl.clearColor(1,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);}):null;
+      batch.destroy(); simple.destroy();
+      const validation=await device.popErrorScope();
+      if(validation)throw Error(validation.message);
+      return {gpuNs,glNs,glAvailable:Boolean(glTimer),frames:3,validationErrors:uncaptured.slice(),trackedBytesAfterDestroy:tracker.snapshot().totalBytes};
+    } finally {batch.destroy();simple.destroy();glTimer?.destroy();}
+  };
+}
+</script>

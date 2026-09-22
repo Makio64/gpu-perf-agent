@@ -8,14 +8,14 @@ import { compareReports } from "./compare.js";
 
 /**
  * Generates an ultra-dense, high-signal Markdown digest for LLM context windows.
- * Designed to fit in < 250 tokens while providing unambiguous verdict and numbers.
+ * Includes measurements and detailed recommendations; size depends on the findings.
  */
 export function generateAgentDigest(report) {
   const summary = report.summary || summarizeReport(report);
   const analysis = report.diagnostics || analyzeReport(report);
   const recs = analysis.recommendations || summary.recommendations || [];
 
-  const verdict = (summary.verdict || "unknown").toUpperCase();
+  const verdict = report.diagnostics?.validity?.valid === false ? "INVALID" : (summary.verdict || "unknown").toUpperCase();
   const fps = summary.fps != null ? summary.fps.toFixed(1) : "--";
   const cadence = summary.cadence
     ? `${summary.cadence.hz} Hz${summary.cadence.hitRate != null ? ` (${(summary.cadence.hitRate * 100).toFixed(1)}% hits)` : ""}`
@@ -52,7 +52,7 @@ export function generateAgentDigest(report) {
   ].filter(Boolean);
 
   if (recs.length === 0) {
-    lines.push("✨ No performance bottlenecks detected. Rendering and memory are optimal!");
+    lines.push("✨ No performance bottlenecks detected in the available measurements.");
   } else {
     for (let i = 0; i < recs.length; i++) {
       const r = recs[i];
@@ -80,8 +80,8 @@ export function generateAgentDigest(report) {
 /**
  * Generates a compact comparative delta between base and candidate runs.
  */
-export function generateAgentCompareDigest(baseReport, candidateReport) {
-  const result = compareReports(baseReport, candidateReport);
+export function generateAgentCompareDigest(baseReport, candidateReport, options = {}) {
+  const result = compareReports(baseReport, candidateReport, options);
   const baseSummary = baseReport.summary || summarizeReport(baseReport);
   const candSummary = candidateReport.summary || summarizeReport(candidateReport);
 
@@ -97,7 +97,7 @@ export function generateAgentCompareDigest(baseReport, candidateReport) {
   const baseVram = baseSummary.trackedVram?.totalMiB?.toFixed(1) ?? "--";
   const candVram = candSummary.trackedVram?.totalMiB?.toFixed(1) ?? "--";
 
-  const status = result.failures.length > 0 ? "REGRESSION" : result.summary.improved > 0 ? "IMPROVED" : "PASSED";
+  const status = result.validity?.valid === false || result.compatibility?.compatible === false ? "INVALID" : result.failures.length > 0 ? "REGRESSION" : result.summary.improved > 0 ? "IMPROVED" : "PASSED";
 
   const lines = [
     `# WebGPU Optimization Delta`,
@@ -210,10 +210,10 @@ export async function runMcpServer(options = {}) {
       }
 
       if (method === "tools/call") {
-        const { name, arguments: args } = params || {};
+        const { name, arguments: args = {} } = params || {};
         try {
           if (name === "profile_webgpu") {
-            const { runReport } = await import("./fast-cdp-runner.js");
+            const { runFastReport: runReport } = await import("./fast-cdp-runner.js");
             const report = await runReport({
               url: args.url,
               file: args.file,
@@ -227,6 +227,7 @@ export async function runMcpServer(options = {}) {
             const digest = generateAgentDigest(report);
             sendResponse(id, {
               content: [{ type: "text", text: digest }],
+              isError: report.diagnostics?.validity?.valid === false,
               report
             });
             return;
@@ -236,7 +237,7 @@ export async function runMcpServer(options = {}) {
             const { loadReport } = await import("./compare.js");
             const base = await loadReport(args.baseReportPath);
             const cand = await loadReport(args.candidateReportPath);
-            const digest = generateAgentCompareDigest(base, cand);
+            const digest = generateAgentCompareDigest(base, cand, {thresholdPercent: args.thresholdPercent});
             sendResponse(id, {
               content: [{ type: "text", text: digest }]
             });
@@ -258,7 +259,7 @@ export async function runMcpServer(options = {}) {
         sendResponse(id, {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "gpu-perf-agent", version: "1.1.0" }
+          serverInfo: { name: "gpu-perf-agent", version: "2.0.0" }
         });
         return;
       }

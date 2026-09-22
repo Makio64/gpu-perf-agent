@@ -1,58 +1,65 @@
 {
   "name": "gpu-perf-agent",
-  "version": "1.0.0",
-  "description": "Agent-ready WebGPU/WebGL2 performance profiler: Node-callable benchmark, trace, and memory reports with verdicts for automated optimization loops. Ships an agent skill.",
-  "license": "MIT",
+  "version": "2.0.0",
+  "description": "Agent-oriented WebGPU/WebGL performance, memory, trace, and regression diagnostics.",
   "type": "module",
-  "keywords": [
-    "webgpu",
-    "webgl2",
-    "performance",
-    "profiling",
-    "benchmark",
-    "gpu",
-    "vram",
-    "chrome-devtools-protocol",
-    "cdp",
-    "regression-testing",
-    "agent-skill",
-    "skill"
-  ],
   "bin": {
-    "gpu-perf-agent": "src/cli.js"
+    "gpu-perf-agent": "./src/cli.js",
+    "webgpu-report": "./src/cli.js"
   },
   "exports": {
     ".": "./src/index.js",
-    "./agent": "./src/agent.js",
     "./browser/allocation-tracker": "./src/browser/allocation-tracker.js",
-    "./browser/timing": "./src/browser/timing.js"
+    "./browser/auto-instrument": "./src/browser/auto-instrument.js",
+    "./browser/timing": "./src/browser/timing.js",
+    "./agent": "./src/agent.js"
   },
   "files": [
-    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "OPTIMIZATION.md",
+    "LICENSE",
     "skill",
     "examples",
-    "README.md",
-    "LICENSE"
+    "src",
+    "scripts/benchmark.mjs"
   ],
   "scripts": {
     "doctor": "node ./src/cli.js doctor",
-    "test": "node --test",
-    "prepublishOnly": "node --test",
+    "test": "node --test --test-reporter=spec test/*.test.js",
+    "test:browser": "GPU_PERF_BROWSER_TESTS=1 node --test --test-reporter=spec --test-concurrency=1 test/browser.integration.test.js test/static-server.test.js test/report-server.test.js",
     "example:webgl2": "node ./src/cli.js run --file examples/webgl2-draw.html --samples 3 --duration-ms 600 --out reports/webgl2.json",
-    "example:webgpu": "node ./src/cli.js run --file examples/webgpu-clear.html --samples 3 --duration-ms 600 --out reports/webgpu.json"
+    "example:webgpu": "node ./src/cli.js run --file examples/webgpu-clear.html --samples 3 --duration-ms 600 --out reports/webgpu.json",
+    "benchmark": "node scripts/benchmark.mjs",
+    "prepublishOnly": "npm test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "peerDependencies": {
-    "playwright": ">=1.40.0"
+    "playwright": "^1.60.0"
   },
   "peerDependenciesMeta": {
     "playwright": {
       "optional": true
     }
   },
-  "devDependencies": {
-    "playwright": "^1.61.1"
-  }
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Makio64/gpu-perf-agent.git"
+  },
+  "homepage": "https://github.com/Makio64/gpu-perf-agent#readme",
+  "bugs": {
+    "url": "https://github.com/Makio64/gpu-perf-agent/issues"
+  },
+  "keywords": [
+    "webgpu",
+    "webgl",
+    "gpu",
+    "performance",
+    "profiling",
+    "agents",
+    "mcp"
+  ]
 }

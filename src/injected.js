@@ -1,12 +1,14 @@
 export async function collectInPage(options = {}) {
   const config = {
+    adaptive: Boolean(options.adaptive),
     api: options.api || "auto",
     durationMs: Number(options.durationMs ?? 1000),
     gc: Boolean(options.gc),
+    deepMemory: Boolean(options.deepMemory),
     hookName: options.hookName || "__gpuReportBench",
     samples: Number(options.samples ?? 5),
-    warmup: Number(options.warmup ?? 1),
-    adaptive: Boolean(options.adaptive)
+    slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
+    warmup: Number(options.warmup ?? 1)
   };
 
   function finiteNumber(value) {
@@ -19,6 +21,8 @@ export async function collectInPage(options = {}) {
       return null;
     }
     const sum = numbers.reduce((total, value) => total + value, 0);
+    const mean = sum / numbers.length;
+    const variance = numbers.reduce((total, value) => total + ((value - mean) ** 2), 0) / numbers.length;
     const percentile = (ratio) => {
       if (numbers.length === 1) {
         return numbers[0];
@@ -33,14 +37,18 @@ export async function collectInPage(options = {}) {
       return numbers[lower] * (1 - weight) + numbers[upper] * weight;
     };
     return {
+      coefficientOfVariation: mean === 0 ? null : Math.sqrt(variance) / Math.abs(mean),
       count: numbers.length,
       min: numbers[0],
       max: numbers[numbers.length - 1],
-      mean: sum / numbers.length,
+      mean,
       p50: percentile(0.5),
+      p90: percentile(0.9),
       p95: percentile(0.95),
       p99: percentile(0.99),
-      p99_9: percentile(0.999)
+      p99_9: percentile(0.999),
+      stddev: Math.sqrt(variance),
+      variance
     };
   }
 
@@ -119,20 +127,38 @@ export async function collectInPage(options = {}) {
       }
 
       support.features = Array.from(adapter.features || []);
-      support.limits = sanitize(adapter.limits || {});
+      support.limits = capabilityAttributes(adapter.limits);
       if (adapter.info) {
-        support.adapter = sanitize(adapter.info);
+        support.adapter = capabilityAttributes(adapter.info);
       } else if (typeof adapter.requestAdapterInfo === "function") {
-        support.adapter = sanitize(await adapter.requestAdapterInfo());
+        support.adapter = capabilityAttributes(await adapter.requestAdapterInfo());
       }
     } catch (error) {
+      support.available = false;
       support.error = plainError(error);
     }
 
     return support;
   }
 
-  function detectWebGL2() {
+  // WebIDL attributes live on prototypes, so Object.entries loses adapter info/limits.
+  function capabilityAttributes(value) {
+    const out = {};
+    const keys = new Set();
+    for (let prototype = value, depth = 0; prototype && prototype !== Object.prototype && depth < 4; prototype = Object.getPrototypeOf(prototype), depth += 1) {
+      for (const key of Object.getOwnPropertyNames(prototype)) keys.add(key);
+    }
+    for (const key of keys) {
+      if (key === "constructor" || key === "__proto__") continue;
+      try {
+        const item = value[key];
+        if (typeof item === "string" || typeof item === "boolean" || finiteNumber(item)) out[key] = item;
+      } catch { /* Optional browser attributes can be unavailable. */ }
+    }
+    return out;
+  }
+
+  function detectWebGL(api = "webgl2") {
     const support = {
       available: false,
       contextAttributes: null,
@@ -146,9 +172,10 @@ export async function collectInPage(options = {}) {
       error: null
     };
 
+    let gl;
     try {
       const canvas = document.createElement("canvas");
-      const gl = canvas.getContext("webgl2", {
+      gl = canvas.getContext(api, {
         antialias: false,
         depth: false,
         stencil: false
@@ -171,18 +198,26 @@ export async function collectInPage(options = {}) {
         support.unmaskedRenderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
       }
     } catch (error) {
+      support.available = false;
       support.error = plainError(error);
+    } finally {
+      // The probe owns this context; release it before sampling the application's GPU work.
+      try { gl?.getExtension("WEBGL_lose_context")?.loseContext(); } catch {}
     }
 
     return support;
   }
 
   async function detectApis() {
-    const [webgpu, webgl2] = await Promise.all([detectWebGPU(), Promise.resolve(detectWebGL2())]);
-    return { webgpu, webgl2 };
+    const skipped = () => ({ available: null, skipped: true, error: null });
+    const [webgpu, webgl2] = await Promise.all([
+      config.api === "auto" || config.api === "webgpu" ? detectWebGPU() : skipped(),
+      config.api === "auto" || config.api === "webgl2" ? detectWebGL() : skipped()
+    ]);
+    return { webgpu, webgl2, ...(config.api === "webgl" ? { webgl: detectWebGL("webgl") } : {}) };
   }
 
-  function trackerSnapshot() {
+  function trackerSnapshot(includeHistory = false) {
     const candidates = [
       globalThis.__gpuMemoryTracker,
       globalThis.__gpuReportMemoryTracker,
@@ -193,7 +228,7 @@ export async function collectInPage(options = {}) {
     for (const candidate of candidates) {
       if (candidate && typeof candidate.snapshot === "function") {
         try {
-          return sanitize(candidate.snapshot());
+          return sanitize(candidate.snapshot({ includeHistory, includeResources: includeHistory }));
         } catch (error) {
           return { error: plainError(error) };
         }
@@ -205,22 +240,13 @@ export async function collectInPage(options = {}) {
 
   function appSnapshot() {
     const e2e = globalThis.__e2e;
-    const isGated = !!document.querySelector('.webgpu-gate');
-    const isCrashed = !!document.querySelector('.webgpu-error:not(.webgpu-gate)');
-    const errorText = isCrashed ? document.querySelector('.webgpu-error:not(.webgpu-gate)').textContent?.trim() : null;
-
-    const snapshot = {
-      isGated,
-      isCrashed,
-      errorText,
-      e2e: null
-    };
-
     if (e2e) {
-      snapshot.e2e = {
-        frames: finiteNumber(e2e.frames) ? e2e.frames : null,
-        framesStable: finiteNumber(e2e.framesStable) ? e2e.framesStable : null,
-        stats: null
+      const snapshot = {
+        e2e: {
+          frames: finiteNumber(e2e.frames) ? e2e.frames : null,
+          framesStable: finiteNumber(e2e.framesStable) ? e2e.framesStable : null,
+          stats: null
+        }
       };
       if (typeof e2e.stats === "function") {
         try {
@@ -229,8 +255,38 @@ export async function collectInPage(options = {}) {
           snapshot.e2e.stats = { error: plainError(error) };
         }
       }
+      return snapshot;
     }
-    return snapshot;
+
+    return null;
+  }
+
+  function instrumentationSnapshot(includeHistory = false) {
+    const instrumentation = globalThis.__gpuReportInstrumentation;
+    if (!instrumentation || typeof instrumentation.snapshot !== "function") {
+      return null;
+    }
+    try {
+      return sanitize(instrumentation.snapshot({ includeHistory, includeResources: includeHistory }));
+    } catch (error) {
+      return { error: plainError(error) };
+    }
+  }
+
+  function deltaInstrumentation(before, after) {
+    const delta = {};
+    const keys = new Set([
+      ...Object.keys(before?.counters || {}),
+      ...Object.keys(after?.counters || {})
+    ]);
+    for (const key of keys) {
+      const beforeValue = before?.counters?.[key];
+      const afterValue = after?.counters?.[key];
+      if (finiteNumber(beforeValue) || finiteNumber(afterValue)) {
+        delta[key] = Number(afterValue || 0) - Number(beforeValue || 0);
+      }
+    }
+    return delta;
   }
 
   async function memorySnapshot() {
@@ -249,7 +305,7 @@ export async function collectInPage(options = {}) {
       };
     }
 
-    if (typeof performance.measureUserAgentSpecificMemory === "function") {
+    if (config.deepMemory && typeof performance.measureUserAgentSpecificMemory === "function") {
       try {
         snapshot.userAgentSpecificMemory = sanitize(await performance.measureUserAgentSpecificMemory());
       } catch (error) {
@@ -284,24 +340,23 @@ export async function collectInPage(options = {}) {
       delta.trackedGpuMemoryBytes = afterTrackedBytes - beforeTrackedBytes;
     }
 
-    const beforeTracked = before?.trackedGpuMemory;
-    const afterTracked = after?.trackedGpuMemory;
-    if (beforeTracked && afterTracked) {
-      delta.createdCount = (afterTracked.createdCount || 0) - (beforeTracked.createdCount || 0);
-      delta.releasedCount = (afterTracked.releasedCount || 0) - (beforeTracked.releasedCount || 0);
-      delta.leakCount = (afterTracked.totalResources || 0) - (beforeTracked.totalResources || 0);
-    }
-
     return delta;
   }
 
   function nextFrame() {
-    return new Promise((resolve) => requestAnimationFrame(resolve));
+    return new Promise(resolve => {
+      let frame;
+      const timeout = setTimeout(() => { cancelAnimationFrame(frame); resolve(false); }, 250);
+      frame = requestAnimationFrame(() => { clearTimeout(timeout); resolve(true); });
+    });
   }
 
   async function settleFrames(count = 2) {
     for (let index = 0; index < count; index += 1) {
-      await nextFrame();
+      if (!await nextFrame()) {
+        warnings.push("Frame settling ended without an animation callback; the page may be hidden or stalled.");
+        break;
+      }
     }
   }
 
@@ -323,7 +378,7 @@ export async function collectInPage(options = {}) {
       { hz: 30, ms: 1000 / 30 }
     ];
 
-    for (const target of targets) {
+    for (const target of targets.sort((a, b) => Math.abs(median - a.ms) - Math.abs(median - b.ms))) {
       if (Math.abs(median - target.ms) < 1.8) {
         const hits = validDeltas.filter(d => Math.abs(d - target.ms) < 2.0).length;
         const hitRate = hits / validDeltas.length;
@@ -343,58 +398,49 @@ export async function collectInPage(options = {}) {
   }
 
   function sampleFrames(durationMs) {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const timestamps = [];
-      let start = null;
+      const startedAt = performance.now();
+      let animationFrame;
+      let finished = false;
+      // Background pages may stop rAF entirely. A wall-clock deadline keeps capture bounded.
+      const timeout = setTimeout(finish, durationMs);
 
-      function frame(timestamp) {
-        if (start == null) {
-          start = timestamp;
-        }
-        timestamps.push(timestamp);
-        if (timestamp - start < durationMs) {
-          requestAnimationFrame(frame);
-          return;
-        }
-
+      function finish() {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        cancelAnimationFrame(animationFrame);
         const deltas = [];
         for (let index = 1; index < timestamps.length; index += 1) {
-          deltas.push(timestamps[index] - timestamps[index - 1]);
-        }
-
-        let maxJitter = 0;
-        for (let index = 1; index < deltas.length; index += 1) {
-          const jitter = Math.abs(deltas[index] - deltas[index - 1]);
-          if (jitter > maxJitter) {
-            maxJitter = jitter;
+          const delta = timestamps[index] - timestamps[index - 1];
+          deltas.push(delta);
+          if (delta > config.slowFrameThresholdMs && slowFrames.length < 100) {
+            slowFrames.push({ timestamp: timestamps[index], frameDurationMs: delta });
           }
         }
-
-        const elapsedMs = timestamps[timestamps.length - 1] - timestamps[0];
-
-        let gpuTimeNs = null;
-        if (globalThis.__lastWebGPUDurationNs != null) {
-          gpuTimeNs = globalThis.__lastWebGPUDurationNs;
-        } else if (globalThis.__lastWebGL2DurationNs != null) {
-          gpuTimeNs = globalThis.__lastWebGL2DurationNs;
-        }
-
+        const elapsedMs = timestamps.length > 1 ? timestamps.at(-1) - timestamps[0] : 0;
         resolve({
           durationMs: elapsedMs,
-          fps: elapsedMs > 0 ? (timestamps.length - 1) / (elapsedMs / 1000) : 0,
+          observationWindowMs: performance.now() - startedAt,
+          fps: elapsedMs > 0 ? (timestamps.length - 1) / (elapsedMs / 1000) : null,
           frameCount: timestamps.length,
           frameTimeMs: stats(deltas),
-          maxJitter,
           cadence: detectCadence(deltas),
-          gpuTimeNs,
-          computeTimeNs: globalThis.__lastWebGPUComputeDurationNs ?? null,
-          renderTimeNs: globalThis.__lastWebGPURenderDurationNs ?? null,
-          passes: globalThis.__lastWebGPUPasses ?? null,
+          maxJitter: deltas.length ? deltas.reduce((max, value) => Math.max(max, value), 0) - deltas.reduce((min, value) => Math.min(min, value), Infinity) : null,
+          slowFrameCount: deltas.filter(value => value > config.slowFrameThresholdMs).length,
           type: "raf"
         });
       }
 
-      requestAnimationFrame(frame);
+      function frame(timestamp) {
+        if (finished) return;
+        timestamps.push(timestamp);
+        if (performance.now() - startedAt >= durationMs) finish();
+        else animationFrame = requestAnimationFrame(frame);
+      }
+
+      animationFrame = requestAnimationFrame(frame);
     });
   }
 
@@ -418,81 +464,61 @@ export async function collectInPage(options = {}) {
     const elapsed = [];
     const fps = [];
     const frameTimeMeans = [];
-    const frameTimeP95s = [];
-    const frameTimeP99s = [];
-    const frameTimeP99_9s = [];
     const frameTimeMaxes = [];
-    const maxJitters = [];
+    const frameTimeP95s = [];
+    const instrumentationCounters = {};
     const jsHeapDeltas = [];
+    let observedFrameCount = 0;
+    let slowFrameCount = 0;
     const trackedGpuTotals = [];
     const trackedGpuDeltas = [];
     const userAgentMemoryDeltas = [];
-    const createdCounts = [];
-    const releasedCounts = [];
-    const leakCounts = [];
-
-    const gpuTimes = [];
-    const computeTimes = [];
-    const renderTimes = [];
-    const drawCalls = [];
-    const dispatchCalls = [];
-    const renderPasses = [];
-    const computePasses = [];
-    const pipelineCalls = [];
-    const bindGroupCalls = [];
+    const extra = {};
     const cadences = [];
-    let latestPasses = null;
+    let passes = null;
+    const record = (key, value) => { if (finiteNumber(value)) (extra[key] ||= []).push(value); };
 
     for (const sample of samples) {
       elapsed.push(sample.elapsedMs);
-      const m = sample.measurement;
-      if (finiteNumber(m?.fps)) {
-        fps.push(m.fps);
+      const frameMeasurement = sample.measurement?.observedFrames || sample.measurement;
+      if (finiteNumber(sample.measurement?.fps)) {
+        fps.push(sample.measurement.fps);
+      } else if (finiteNumber(frameMeasurement?.fps)) {
+        fps.push(frameMeasurement.fps);
       }
-      if (finiteNumber(m?.frameTimeMs?.mean)) {
-        frameTimeMeans.push(m.frameTimeMs.mean);
+      const frameTime = { ...frameMeasurement?.frameTimeMs, ...sample.measurement?.frameTimeMs };
+      record("frameTimeMsP99", frameTime.p99);
+      record("frameTimeMsP99_9", frameTime.p99_9);
+      record("maxJitter", sample.measurement?.maxJitter ?? frameMeasurement?.maxJitter);
+      const cadence = sample.measurement?.cadence ?? frameMeasurement?.cadence;
+      if (cadence) cadences.push(cadence);
+      for (const key of ["gpuTimeNs", "computeTimeNs", "renderTimeNs"]) record(key, sample.measurement?.[key]);
+      if (sample.measurement?.passes) passes = sample.measurement.passes;
+      for (const key of ["drawCalls", "dispatchCalls", "renderPasses", "computePasses", "setPipelineCalls", "setBindGroupCalls"]) {
+        const supplied = sample.measurement?.webgpuOps?.[key];
+        const count = sample.instrumentation?.delta?.[`webgpu.${key}`];
+        record(key, supplied ?? (frameMeasurement?.frameCount > 0 && finiteNumber(count) ? count / frameMeasurement.frameCount : null));
       }
-      if (finiteNumber(m?.frameTimeMs?.p95)) {
-        frameTimeP95s.push(m.frameTimeMs.p95);
+      if (finiteNumber(frameTime?.mean)) {
+        frameTimeMeans.push(frameTime.mean);
       }
-      if (finiteNumber(m?.frameTimeMs?.p99)) {
-        frameTimeP99s.push(m.frameTimeMs.p99);
+      if (finiteNumber(frameTime?.p95)) {
+        frameTimeP95s.push(frameTime.p95);
       }
-      if (finiteNumber(m?.frameTimeMs?.p99_9)) {
-        frameTimeP99_9s.push(m.frameTimeMs.p99_9);
+      if (finiteNumber(frameTime?.max)) {
+        frameTimeMaxes.push(frameTime.max);
       }
-      if (finiteNumber(m?.frameTimeMs?.max)) {
-        frameTimeMaxes.push(m.frameTimeMs.max);
+      if (finiteNumber(frameMeasurement?.frameCount)) {
+        observedFrameCount += frameMeasurement.frameCount;
       }
-      if (finiteNumber(m?.maxJitter)) {
-        maxJitters.push(m.maxJitter);
+      if (finiteNumber(frameMeasurement?.slowFrameCount)) {
+        slowFrameCount += frameMeasurement.slowFrameCount;
       }
-      if (m?.cadence) {
-        cadences.push(m.cadence);
+      for (const [key, value] of Object.entries(sample.instrumentation?.delta || {})) {
+        if (finiteNumber(value)) {
+          instrumentationCounters[key] = (instrumentationCounters[key] || 0) + value;
+        }
       }
-      if (finiteNumber(m?.gpuTimeNs)) {
-        gpuTimes.push(m.gpuTimeNs);
-      }
-      if (finiteNumber(m?.computeTimeNs)) {
-        computeTimes.push(m.computeTimeNs);
-      }
-      if (finiteNumber(m?.renderTimeNs)) {
-        renderTimes.push(m.renderTimeNs);
-      }
-      if (m?.passes) {
-        latestPasses = m.passes;
-      }
-
-      const ops = m?.webgpuOps;
-      if (ops) {
-        if (finiteNumber(ops.drawCalls)) drawCalls.push(ops.drawCalls);
-        if (finiteNumber(ops.dispatchCalls)) dispatchCalls.push(ops.dispatchCalls);
-        if (finiteNumber(ops.renderPasses)) renderPasses.push(ops.renderPasses);
-        if (finiteNumber(ops.computePasses)) computePasses.push(ops.computePasses);
-        if (finiteNumber(ops.setPipelineCalls)) pipelineCalls.push(ops.setPipelineCalls);
-        if (finiteNumber(ops.setBindGroupCalls)) bindGroupCalls.push(ops.setBindGroupCalls);
-      }
-
       if (finiteNumber(sample.memory?.delta?.performanceMemory?.usedJSHeapSize)) {
         jsHeapDeltas.push(sample.memory.delta.performanceMemory.usedJSHeapSize);
       }
@@ -505,67 +531,33 @@ export async function collectInPage(options = {}) {
       if (finiteNumber(sample.memory?.delta?.userAgentSpecificMemoryBytes)) {
         userAgentMemoryDeltas.push(sample.memory.delta.userAgentSpecificMemoryBytes);
       }
-      if (finiteNumber(sample.memory?.delta?.createdCount)) {
-        createdCounts.push(sample.memory.delta.createdCount);
-      }
-      if (finiteNumber(sample.memory?.delta?.releasedCount)) {
-        releasedCounts.push(sample.memory.delta.releasedCount);
-      }
-      if (finiteNumber(sample.memory?.delta?.leakCount)) {
-        leakCounts.push(sample.memory.delta.leakCount);
-      }
     }
 
-    let consensusCadence = null;
-    if (cadences.length > 0) {
-      const hzMap = {};
-      for (const c of cadences) {
-        hzMap[c.hz] = (hzMap[c.hz] || 0) + 1;
-      }
-      let topHz = null;
-      let topCount = 0;
-      for (const hz in hzMap) {
-        if (hzMap[hz] > topCount) {
-          topCount = hzMap[hz];
-          topHz = Number(hz);
-        }
-      }
-      const match = cadences.find(c => c.hz === topHz);
-      consensusCadence = match || cadences[0];
-    }
-
+    const cadenceCounts = new Map();
+    for (const cadence of cadences) cadenceCounts.set(cadence.hz, (cadenceCounts.get(cadence.hz) || 0) + 1);
     return {
+      ...Object.fromEntries(Object.entries(extra).map(([key, values]) => [key, stats(values)])),
+      cadence: cadences.sort((a, b) => cadenceCounts.get(b.hz) - cadenceCounts.get(a.hz))[0] || null,
+      passes,
       elapsedMs: stats(elapsed),
       fps: stats(fps),
+      frameTimeMsMax: stats(frameTimeMaxes),
       frameTimeMsMean: stats(frameTimeMeans),
       frameTimeMsP95: stats(frameTimeP95s),
-      frameTimeMsP99: stats(frameTimeP99s),
-      frameTimeMsP99_9: stats(frameTimeP99_9s),
-      frameTimeMsMax: stats(frameTimeMaxes),
-      maxJitter: stats(maxJitters),
+      instrumentationCounters,
       jsHeapDeltaBytes: stats(jsHeapDeltas),
+      observedFrameCount,
       sampleCount: samples.length,
+      slowFrameCount,
       trackedGpuDeltaBytes: stats(trackedGpuDeltas),
       trackedGpuTotalBytes: stats(trackedGpuTotals),
-      userAgentMemoryDeltaBytes: stats(userAgentMemoryDeltas),
-      createdCount: stats(createdCounts),
-      releasedCount: stats(releasedCounts),
-      leakCount: stats(leakCounts),
-      gpuTimeNs: stats(gpuTimes),
-      computeTimeNs: stats(computeTimes),
-      renderTimeNs: stats(renderTimes),
-      drawCalls: stats(drawCalls),
-      dispatchCalls: stats(dispatchCalls),
-      renderPasses: stats(renderPasses),
-      computePasses: stats(computePasses),
-      setPipelineCalls: stats(pipelineCalls),
-      setBindGroupCalls: stats(bindGroupCalls),
-      cadence: consensusCadence,
-      passes: latestPasses
+      userAgentMemoryDeltaBytes: stats(userAgentMemoryDeltas)
     };
   }
 
   const hookFound = typeof globalThis[config.hookName] === "function";
+  const slowFrames = [];
+  const sampling = { adaptive: config.adaptive, stoppedEarly: false, requestedSamples: config.samples, coefficientOfVariation: null };
   const warnings = [];
   if (!hookFound) {
     warnings.push(`No ${config.hookName} hook found; report uses requestAnimationFrame sampling only.`);
@@ -574,24 +566,17 @@ export async function collectInPage(options = {}) {
   const apiSupport = await detectApis();
   await settleFrames(2);
 
-  const warmupStart = performance.now();
-  let warmupLagSpikeMs = 0;
+  const warmupStartedAt = performance.now();
+  let lagSpikeMs = 0;
   for (let index = 0; index < config.warmup; index += 1) {
-    if (hookFound) {
-      const w = await runHook("warmup", index);
-      if (w?.frameTimeMs?.max > warmupLagSpikeMs) {
-        warmupLagSpikeMs = w.frameTimeMs.max;
-      }
-    } else {
-      const w = await sampleFrames(Math.min(250, config.durationMs));
-      if (w?.frameTimeMs?.max > warmupLagSpikeMs) {
-        warmupLagSpikeMs = w.frameTimeMs.max;
-      }
-    }
+    const measurement = hookFound ? await runHook("warmup", index) : await sampleFrames(Math.min(250, config.durationMs));
+    if (finiteNumber(measurement?.frameTimeMs?.max)) lagSpikeMs = Math.max(lagSpikeMs, measurement.frameTimeMs.max);
   }
-  const warmupDurationMs = performance.now() - warmupStart;
+  const warmup = { durationMs: performance.now() - warmupStartedAt, lagSpikeMs, settled: !warnings.some(w => w.startsWith("Frame settling")) };
+  slowFrames.length = 0;
 
   const globalBefore = await memorySnapshot();
+  const globalInstrumentationBefore = instrumentationSnapshot();
   const samples = [];
 
   for (let index = 0; index < config.samples; index += 1) {
@@ -601,12 +586,35 @@ export async function collectInPage(options = {}) {
     }
 
     const before = await memorySnapshot();
+    const instrumentationBefore = instrumentationSnapshot();
     const startedAtMs = performance.now();
     let measurement;
     let error = null;
 
     try {
-      measurement = hookFound ? await runHook("sample", index) : await sampleFrames(config.durationMs);
+      if (hookFound) {
+        const [hookResult, frameResult] = await Promise.allSettled([
+          runHook("sample", index),
+          sampleFrames(config.durationMs)
+        ]);
+        if (hookResult.status === "rejected") throw hookResult.reason;
+        if (frameResult.status === "rejected") throw frameResult.reason;
+        const hookMeasurement = hookResult.value;
+        const observedFrames = frameResult.value;
+        if (hookMeasurement && typeof hookMeasurement === "object" && !Array.isArray(hookMeasurement)) {
+          measurement = {
+            ...hookMeasurement,
+            observedFrames
+          };
+        } else {
+          measurement = {
+            observedFrames,
+            value: hookMeasurement
+          };
+        }
+      } else {
+        measurement = await sampleFrames(config.durationMs);
+      }
       const app = appSnapshot();
       if (app) {
         if (measurement && typeof measurement === "object" && !Array.isArray(measurement)) {
@@ -625,11 +633,17 @@ export async function collectInPage(options = {}) {
 
     const endedAtMs = performance.now();
     const after = await memorySnapshot();
+    const instrumentationAfter = instrumentationSnapshot();
 
     samples.push({
       elapsedMs: endedAtMs - startedAtMs,
       error,
       index,
+      instrumentation: {
+        after: instrumentationAfter,
+        before: instrumentationBefore,
+        delta: deltaInstrumentation(instrumentationBefore, instrumentationAfter)
+      },
       measurement,
       memory: {
         after,
@@ -642,25 +656,20 @@ export async function collectInPage(options = {}) {
     if (error) {
       break;
     }
-
-    if (config.adaptive && samples.length >= 3) {
-      const validFps = samples.map((s) => s.measurement?.fps).filter(finiteNumber);
-      if (validFps.length >= 3) {
-        const meanFps = validFps.reduce((a, b) => a + b, 0) / validFps.length;
-        if (meanFps > 0) {
-          const variance = validFps.reduce((sum, v) => sum + Math.pow(v - meanFps, 2), 0) / validFps.length;
-          const stdDev = Math.sqrt(variance);
-          const cv = stdDev / meanFps;
-          if (cv < 0.015) {
-            // Statistical convergence reached (CV < 1.5%); stop sampling early to save time
-            break;
-          }
-        }
+    if (config.adaptive && samples.length >= 3 && samples.length < config.samples) {
+      const fps = samples.map(sample => sample.measurement?.fps ?? sample.measurement?.observedFrames?.fps);
+      const convergence = stats(fps);
+      sampling.coefficientOfVariation = convergence?.coefficientOfVariation ?? null;
+      if (convergence?.count === samples.length && convergence.mean > 0 && convergence.coefficientOfVariation < 0.015) {
+        sampling.stoppedEarly = true;
+        sampling.reason = "fps-converged";
+        break;
       }
     }
   }
 
   const globalAfter = await memorySnapshot();
+  const globalInstrumentationAfter = instrumentationSnapshot(true);
 
   return {
     apiSupport,
@@ -670,20 +679,22 @@ export async function collectInPage(options = {}) {
       name: config.hookName
     },
     location: globalThis.location?.href || null,
+    instrumentation: {
+      after: globalInstrumentationAfter,
+      before: globalInstrumentationBefore,
+      delta: deltaInstrumentation(globalInstrumentationBefore, globalInstrumentationAfter)
+    },
     memory: {
       after: globalAfter,
       before: globalBefore,
       delta: deltaMemory(globalBefore, globalAfter)
     },
     samples,
+    sampling,
+    slowFrames,
+    warmup,
     summary: summarizeSamples(samples),
     userAgent: navigator.userAgent,
-    warnings,
-    slowFrames: globalThis.__gpuSlowFrames || [],
-    warmup: {
-      durationMs: Math.round(warmupDurationMs * 100) / 100,
-      lagSpikeMs: Math.round(warmupLagSpikeMs * 100) / 100,
-      settled: true
-    }
+    warnings
   };
 }

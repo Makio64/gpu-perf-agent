@@ -64,7 +64,12 @@ async function startStaticServer(root) {
   });
 
   return {
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => new Promise((resolve) => {
+      server.close(resolve);
+      // Chrome may retain speculative/preconnect sockets after its target is closed.
+      // This server belongs only to that target, so no remaining request is useful.
+      server.closeAllConnections();
+    }),
     port: server.address().port
   };
 }

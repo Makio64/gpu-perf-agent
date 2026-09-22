@@ -1,266 +1,266 @@
 export async function requestTimedWebGPUDevice(adapter, descriptor = {}) {
+  if (!adapter?.requestDevice) throw new TypeError('A WebGPU adapter is required.');
   const requiredFeatures = new Set(descriptor.requiredFeatures || []);
-  const timestampQueryAvailable = Boolean(adapter?.features?.has?.("timestamp-query"));
+  const timestampQueryAvailable = Boolean(adapter.features?.has('timestamp-query'));
+  if (timestampQueryAvailable) requiredFeatures.add('timestamp-query');
+  const device = await adapter.requestDevice({ ...descriptor, requiredFeatures: [...requiredFeatures] });
+  return { device, timer: timestampQueryAvailable ? createWebGPUTimer(device) : null, timestampQueryAvailable };
+}
 
-  if (timestampQueryAvailable) {
-    requiredFeatures.add("timestamp-query");
-  }
-
-  const device = await adapter.requestDevice({
-    ...descriptor,
-    requiredFeatures: Array.from(requiredFeatures)
-  });
-
+/** One timed pass per measurement. Use createBatch() for multiple passes. */
+export function createWebGPUTimer(device, options = {}) {
+  const batch = createBatchedWebGPUTimer(device, { ...options, capacity: 1 });
+  if (!batch) return null;
+  let measuring = false;
+  const assertManual = () => {
+    if (measuring) throw new Error('WebGPU timer is measuring; use a separate timer for overlapping work.');
+  };
+  const readNanoseconds = async () => {
+    const measurements = await batch.read();
+    if (!measurements.length) throw new Error('Resolve and submit a timed pass before reading it.');
+    return measurements[0].durationNs;
+  };
+  const helpers = {
+    beginComputePass: batch.beginComputePass,
+    beginRenderPass: batch.beginRenderPass,
+    querySet: batch.querySet,
+    timestampWrites: (extra) => batch.timestampWrites(null, extra)
+  };
   return {
-    device,
-    timer: timestampQueryAvailable ? createWebGPUTimer(device) : null,
-    timestampQueryAvailable
+    querySet: batch.querySet,
+    get state() { return batch.state; },
+    beginComputePass(...args) { assertManual(); return batch.beginComputePass(...args); },
+    beginRenderPass(...args) { assertManual(); return batch.beginRenderPass(...args); },
+    timestampWrites(extra) { assertManual(); return helpers.timestampWrites(extra); },
+    resolve(encoder) { assertManual(); return batch.resolve(encoder); },
+    async readNanoseconds() { assertManual(); return readNanoseconds(); },
+    reset() { assertManual(); return batch.reset(); },
+    destroy: batch.destroy,
+    createBatch: (batchOptions) => {
+      if (batch.state === 'destroyed') throw new Error('WebGPU timer is destroyed.');
+      return createBatchedWebGPUTimer(device, batchOptions);
+    },
+    async measure(recordCommands) {
+      assertManual();
+      if (typeof recordCommands !== 'function') throw new TypeError('recordCommands must be a function.');
+      if (batch.state !== 'idle') throw new Error(`WebGPU timer is ${batch.state}; finish or reset the previous measurement.`);
+      measuring = true;
+      try {
+        const encoder = device.createCommandEncoder();
+        await recordCommands(encoder, helpers);
+        if (batch.resolve(encoder) !== 1) throw new Error('Record one timed pass using the supplied timer helpers.');
+        device.queue.submit([encoder.finish()]);
+        // mapAsync waits for this result buffer. A queue-wide fence adds unnecessary synchronization.
+        return await readNanoseconds();
+      } catch (error) {
+        if (batch.state === 'recording' || batch.state === 'idle') batch.reset();
+        // Submission failures leave uncertain GPU state; destroy instead of reusing those queries.
+        else if (batch.state === 'resolved') batch.destroy();
+        throw error;
+      } finally { measuring = false; }
+    }
   };
 }
 
-export function createWebGPUTimer(device) {
-  if (!device?.features?.has?.("timestamp-query")) {
-    return null;
+/** Resolve and map once for many passes; never reuse a batch while its read is pending. */
+export function createBatchedWebGPUTimer(device, options = {}) {
+  if (!device?.features?.has('timestamp-query')) return null;
+  // WebGPU permits at most 4096 queries per query set, two per timed pass.
+  const capacity = positiveNumber(options.capacity ?? 64, 'capacity', 2048, true);
+  const timeoutMs = positiveNumber(options.timeoutMs ?? 10000, 'timeoutMs', 2147483647);
+  const byteSize = capacity * 16;
+  let querySet, resolveBuffer, resultBuffer;
+  try {
+    querySet = device.createQuerySet({ count: capacity * 2, label: `${options.label || 'gpu-perf-agent'}:queries`, type: 'timestamp' });
+    resolveBuffer = device.createBuffer({ label: `${options.label || 'gpu-perf-agent'}:resolve`, size: byteSize, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.QUERY_RESOLVE });
+    resultBuffer = device.createBuffer({ label: `${options.label || 'gpu-perf-agent'}:results`, size: byteSize, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  } catch (error) {
+    querySet?.destroy(); resolveBuffer?.destroy(); resultBuffer?.destroy();
+    throw error;
+  }
+  const labels = [];
+  let count = 0;
+  let state = 'idle';
+  let cancelRead = null;
+
+  function assertRecording() {
+    if (state !== 'idle' && state !== 'recording') throw new Error(`WebGPU timer is ${state}; read the resolved batch before recording again.`);
   }
 
-  const querySet = device.createQuerySet({
-    count: 2,
-    type: "timestamp"
-  });
-  const resolveBuffer = device.createBuffer({
-    size: 16,
-    usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.QUERY_RESOLVE
-  });
-  const resultBuffer = device.createBuffer({
-    size: 16,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-  });
-
-  function timestampWrites(extra = {}) {
-    return {
-      beginningOfPassWriteIndex: 0,
-      endOfPassWriteIndex: 1,
-      querySet,
-      ...extra
-    };
+  function timestampWrites(label = null, extra = {}) {
+    assertRecording();
+    if (count >= capacity) throw new Error(`Batched WebGPU timer capacity exceeded (${capacity}).`);
+    const writes = { beginningOfPassWriteIndex: count * 2, endOfPassWriteIndex: count * 2 + 1, querySet };
+    for (const key of Object.keys(extra)) {
+      if (!Object.hasOwn(writes, key) || extra[key] !== writes[key]) throw new Error('Timer querySet and query indices cannot be overridden.');
+    }
+    labels[count++] = label;
+    state = 'recording';
+    return writes;
   }
 
-  function beginRenderPass(encoder, descriptor) {
-    return encoder.beginRenderPass({
-      ...descriptor,
-      timestampWrites: descriptor.timestampWrites || timestampWrites()
-    });
-  }
-
-  function beginComputePass(encoder, descriptor = {}) {
-    return encoder.beginComputePass({
-      ...descriptor,
-      timestampWrites: descriptor.timestampWrites || timestampWrites()
-    });
+  function beginPass(encoder, method, descriptor, label) {
+    assertRecording();
+    const beforeCount = count;
+    const writes = descriptor.timestampWrites || timestampWrites(label);
+    if (writes.querySet !== querySet || !Number.isInteger(writes.beginningOfPassWriteIndex)
+        || writes.beginningOfPassWriteIndex < 0 || writes.beginningOfPassWriteIndex % 2 !== 0
+        || writes.endOfPassWriteIndex !== writes.beginningOfPassWriteIndex + 1
+        || writes.endOfPassWriteIndex >= count * 2) {
+      throw new Error('Pass timestampWrites must be reserved by this timer.');
+    }
+    try { return encoder[method]({ ...descriptor, timestampWrites: writes }); }
+    catch (error) {
+      count = beforeCount; labels.length = count; state = count ? 'recording' : 'idle';
+      throw error;
+    }
   }
 
   function resolve(encoder) {
-    encoder.resolveQuerySet(querySet, 0, 2, resolveBuffer, 0);
-    encoder.copyBufferToBuffer(resolveBuffer, 0, resultBuffer, 0, 16);
+    assertRecording();
+    if (!count) return 0;
+    encoder.resolveQuerySet(querySet, 0, count * 2, resolveBuffer, 0);
+    encoder.copyBufferToBuffer(resolveBuffer, 0, resultBuffer, 0, count * 16);
+    state = 'resolved';
+    return count;
   }
 
-  async function readNanoseconds() {
-    await resultBuffer.mapAsync(GPUMapMode.READ);
-    const copy = resultBuffer.getMappedRange().slice(0);
-    resultBuffer.unmap();
-    const values = new BigUint64Array(copy);
-    return Number(values[1] - values[0]);
+  function reset() {
+    assertRecording();
+    count = 0; labels.length = 0; state = 'idle';
   }
 
-  async function measure(recordCommands) {
-    const encoder = device.createCommandEncoder();
-    await recordCommands(encoder, {
-      beginComputePass,
-      beginRenderPass,
-      querySet,
-      timestampWrites
-    });
-    resolve(encoder);
-    device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
-    return readNanoseconds();
+  async function read() {
+    if (state === 'idle') return [];
+    if (state !== 'resolved') throw new Error(`WebGPU timer is ${state}; resolve and submit before reading (only one read may be pending).`);
+    state = 'reading';
+    let deadline;
+    try {
+      const cancelled = new Promise((_, reject) => {
+        cancelRead = reject;
+        deadline = setTimeout(() => reject(new Error(`WebGPU timestamp read timed out after ${timeoutMs} ms.`)), timeoutMs);
+      });
+      await Promise.race([resultBuffer.mapAsync(GPUMapMode.READ, 0, count * 16), cancelled]);
+      if (state === 'destroyed') throw new Error('WebGPU timer is destroyed.');
+      // Read while mapped: no ArrayBuffer.slice() or copy of the entire result buffer.
+      const values = new BigUint64Array(resultBuffer.getMappedRange(0, count * 16));
+      const measurements = [];
+      for (let index = 0; index < count; index++) {
+        const startNs = values[index * 2], endNs = values[index * 2 + 1];
+        if (endNs < startNs) throw new Error('Invalid WebGPU timestamps; discard this measurement.');
+        const durationNs = Number(endNs - startNs);
+        measurements.push({ durationMs: durationNs / 1e6, durationNs, endNs: endNs.toString(), index, label: labels[index] ?? null, startNs: startNs.toString() });
+      }
+      return measurements;
+    } finally {
+      clearTimeout(deadline);
+      cancelRead = null;
+      resultBuffer.unmap();
+      count = 0; labels.length = 0;
+      if (state !== 'destroyed') state = 'idle';
+    }
+  }
+
+  function destroy() {
+    if (state === 'destroyed') return;
+    state = 'destroyed';
+    cancelRead?.(new Error('WebGPU timer was destroyed during readback.'));
+    querySet.destroy(); resolveBuffer.destroy(); resultBuffer.destroy();
   }
 
   return {
-    beginComputePass,
-    beginRenderPass,
-    measure,
-    querySet,
-    readNanoseconds,
-    resolve,
-    timestampWrites
+    beginComputePass: (encoder, descriptor = {}, label = descriptor.label ?? null) => beginPass(encoder, 'beginComputePass', descriptor, label),
+    beginRenderPass: (encoder, descriptor = {}, label = descriptor.label ?? null) => beginPass(encoder, 'beginRenderPass', descriptor, label),
+    capacity, destroy,
+    get count() { return count; },
+    get state() { return state; },
+    querySet, read, reset, resolve, timestampWrites
   };
 }
 
-export function createWebGPURingTimer(device, poolSize = 8, maxPassesPerFrame = 15) {
-  if (!device?.features?.has?.("timestamp-query")) {
-    return null;
-  }
-
-  const maxQueries = (maxPassesPerFrame + 1) * 2;
-  const bufferByteSize = maxQueries * 8;
-  const querySets = [];
-  const resolveBuffers = [];
-  const resultBuffers = [];
-  const states = new Array(poolSize).fill("free"); // "free", "pending", "reading"
-  const passMeta = new Array(poolSize).fill(null).map(() => []);
-
-  for (let i = 0; i < poolSize; i++) {
-    querySets.push(device.createQuerySet({ count: maxQueries, type: "timestamp" }));
-    resolveBuffers.push(device.createBuffer({
-      size: bufferByteSize,
-      usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.QUERY_RESOLVE
-    }));
-    resultBuffers.push(device.createBuffer({
-      size: bufferByteSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-    }));
-  }
-
-  let activeIndex = 0;
-
-  function getNextSlot() {
-    for (let i = 0; i < poolSize; i++) {
-      const idx = (activeIndex + i) % poolSize;
-      if (states[idx] === "free") {
-        activeIndex = idx;
-        passMeta[idx].length = 0;
-        return idx;
-      }
-    }
-    return -1;
-  }
-
-  function allocatePassTimestamp(idx, type, label) {
-    if (idx < 0 || idx >= poolSize || states[idx] !== "free") return null;
-    const metaList = passMeta[idx];
-    if (metaList.length >= maxPassesPerFrame) return null;
-
-    const pairIndex = metaList.length + 1;
-    const startIndex = pairIndex * 2;
-    const endIndex = pairIndex * 2 + 1;
-    metaList.push({ type, label: label || type, startIndex, endIndex });
-
-    return {
-      querySet: querySets[idx],
-      beginningOfPassWriteIndex: startIndex,
-      endOfPassWriteIndex: endIndex
-    };
-  }
-
-  return {
-    querySets,
-    resolveBuffers,
-    resultBuffers,
-    states,
-    getNextSlot,
-    allocatePassTimestamp,
-    resolve(encoder, idx) {
-      const queryCount = Math.max(2, (passMeta[idx].length + 1) * 2);
-      encoder.resolveQuerySet(querySets[idx], 0, queryCount, resolveBuffers[idx], 0);
-      encoder.copyBufferToBuffer(resolveBuffers[idx], 0, resultBuffers[idx], 0, queryCount * 8);
-      states[idx] = "pending";
-    },
-    async readNanoseconds(idx) {
-      if (states[idx] !== "pending") return 0;
-      states[idx] = "reading";
-      const buffer = resultBuffers[idx];
-      try {
-        await buffer.mapAsync(GPUMapMode.READ);
-        const copy = buffer.getMappedRange().slice(0);
-        buffer.unmap();
-        states[idx] = "free";
-
-        const values = new BigUint64Array(copy);
-        const meta = passMeta[idx] || [];
-        let computeDurationNs = 0;
-        let renderDurationNs = 0;
-        const passes = [];
-
-        for (const p of meta) {
-          const start = values[p.startIndex];
-          const end = values[p.endIndex];
-          if (end > start) {
-            const diff = Number(end - start);
-            if (p.type === "compute") computeDurationNs += diff;
-            else renderDurationNs += diff;
-            passes.push({ type: p.type, label: p.label, durationNs: diff });
-          }
-        }
-
-        let durationNs = 0;
-        if (values[1] > values[0]) {
-          durationNs = Number(values[1] - values[0]);
-        } else if (computeDurationNs + renderDurationNs > 0) {
-          durationNs = computeDurationNs + renderDurationNs;
-        }
-
-        passMeta[idx].length = 0;
-
-        return {
-          durationNs,
-          computeDurationNs,
-          renderDurationNs,
-          passes,
-          valueOf() { return this.durationNs; },
-          [Symbol.toPrimitive](hint) { return hint === "string" ? String(this.durationNs) : this.durationNs; }
-        };
-      } catch (e) {
-        states[idx] = "free";
-        passMeta[idx].length = 0;
-        return 0;
-      }
-    }
-  };
-}
-
-export function createWebGL2Timer(gl) {
-  const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
-  if (!ext) {
-    return null;
-  }
+export function createWebGL2Timer(gl, options = {}) {
+  const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if (!ext) return null;
+  const timeoutMs = positiveNumber(options.timeoutMs ?? 10000, 'timeoutMs', 2147483647);
+  const pollIntervalMs = positiveNumber(options.pollIntervalMs ?? 4, 'pollIntervalMs', 1000);
+  const maxPending = positiveNumber(options.maxPending ?? 64, 'maxPending', 4096, true);
+  const pending = new Map();
+  let destroyed = false;
+  let drawing = false;
 
   async function measure(draw) {
+    if (destroyed) return Promise.reject(new Error('WebGL2 timer is destroyed.'));
+    if (drawing) return Promise.reject(new Error('Nested WebGL2 timer measurements are not supported.'));
+    if (pending.size >= maxPending) return Promise.reject(new Error(`WebGL2 timer has ${maxPending} pending queries; await a measurement before submitting more.`));
+    if (typeof draw !== 'function') return Promise.reject(new TypeError('draw must be a synchronous function.'));
     const query = gl.createQuery();
-    gl.beginQuery(ext.TIME_ELAPSED_EXT, query);
-    draw();
-    gl.endQuery(ext.TIME_ELAPSED_EXT);
+    if (!query) return Promise.reject(new Error('Could not allocate WebGL2 timer query.'));
+    let began = false;
+    try {
+      if (gl.getQuery?.(ext.TIME_ELAPSED_EXT, gl.CURRENT_QUERY)) throw new Error('Another elapsed-time query is already active on this WebGL context.');
+      drawing = true;
+      gl.beginQuery(ext.TIME_ELAPSED_EXT, query);
+      began = true;
+      try {
+        const result = draw();
+        if (destroyed) throw new Error('WebGL2 timer was destroyed while recording.');
+        if (result?.then) {
+          Promise.resolve(result).catch(() => {});
+          throw new TypeError('draw must be synchronous; asynchronous work cannot be enclosed by a WebGL timer query.');
+        }
+      } finally {
+        if (began) gl.endQuery(ext.TIME_ELAPSED_EXT);
+      }
+    } catch (error) {
+      gl.deleteQuery(query);
+      return Promise.reject(error);
+    } finally { drawing = false; }
 
-    const nanoseconds = await waitForQuery(gl, ext, query);
-    gl.deleteQuery(query);
-    return nanoseconds;
+    return new Promise((resolve, reject) => {
+      let pollTimer, deadline;
+      const finish = (error, value) => {
+        if (!pending.delete(query)) return;
+        clearTimeout(pollTimer); clearTimeout(deadline);
+        gl.deleteQuery(query);
+        if (error) reject(error); else resolve(value);
+      };
+      pending.set(query, finish);
+      const poll = () => {
+        try {
+          if (gl.isContextLost?.()) throw new Error('WebGL2 context was lost; discard this sample.');
+          if (gl.getParameter(ext.GPU_DISJOINT_EXT)) {
+            // Disjoint invalidates every outstanding timing query on this context.
+            const error = new Error('WebGL2 timer query became disjoint; discard pending samples.');
+            for (const done of [...pending.values()]) done(error);
+            return;
+          }
+          if (gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) {
+            const value = Number(gl.getQueryParameter(query, gl.QUERY_RESULT));
+            if (!Number.isFinite(value) || value < 0) throw new Error('Invalid WebGL2 timer result.');
+            finish(null, value);
+          } else pollTimer = setTimeout(poll, pollIntervalMs);
+        } catch (error) { finish(error); }
+      };
+      deadline = setTimeout(() => finish(new Error(`WebGL2 timer query timed out after ${timeoutMs} ms.`)), timeoutMs);
+      // Query availability cannot advance until control returns to the browser; this also works in workers and hidden tabs.
+      pollTimer = setTimeout(poll, 0);
+    });
   }
 
   return {
-    extension: ext,
-    measure
+    extension: ext, measure,
+    get pendingCount() { return pending.size; },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (const finish of [...pending.values()]) finish(new Error('WebGL2 timer was destroyed.'));
+    }
   };
 }
 
-function waitForQuery(gl, ext, query) {
-  return new Promise((resolve, reject) => {
-    function poll() {
-      const available = gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE);
-      const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
-
-      if (available && !disjoint) {
-        resolve(Number(gl.getQueryParameter(query, gl.QUERY_RESULT)));
-        return;
-      }
-
-      if (disjoint) {
-        reject(new Error("WebGL2 timer query became disjoint; discard this sample."));
-        return;
-      }
-
-      requestAnimationFrame(poll);
-    }
-
-    poll();
-  });
+function positiveNumber(value, name, max, integer = false) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > max || (integer && !Number.isInteger(value))) {
+    throw new TypeError(`${name} must be ${integer ? 'an integer' : 'a finite number'} greater than zero and at most ${max}.`);
+  }
+  return value;
 }

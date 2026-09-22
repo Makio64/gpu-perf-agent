@@ -42,7 +42,7 @@ export function generateHtmlReport(report) {
   const drawCalls = ops.drawCalls ?? inPageSummary.drawCalls?.mean ?? null;
   const dispatchCalls = ops.dispatchCalls ?? inPageSummary.dispatchCalls?.mean ?? null;
 
-  const verdict = summary.verdict || "unknown";
+  const verdict = analysis.validity?.valid === false ? "invalid" : summary.verdict || "unknown";
   const url = (typeof report.target === "string" ? report.target : (report.target?.file || report.target?.url)) ||
               report.inPage?.location ||
               report.location ||
@@ -153,12 +153,12 @@ export function generateHtmlReport(report) {
                 <tr>
                   <td>${Math.round(f.timestamp)}ms</td>
                   <td class="bad">${f.frameDurationMs.toFixed(1)}ms</td>
-                  <td>${f.stats?.renderPasses ?? 0}</td>
-                  <td>${f.stats?.computePasses ?? 0}</td>
-                  <td>${f.stats?.drawCalls ?? 0}</td>
-                  <td>${f.stats?.dispatchCalls ?? 0}</td>
-                  <td>${f.stats?.syncPipelines ?? 0}</td>
-                  <td>${f.stats?.bindGroupsCreated ?? 0}</td>
+                  <td>${f.stats?.renderPasses ?? "—"}</td>
+                  <td>${f.stats?.computePasses ?? "—"}</td>
+                  <td>${f.stats?.drawCalls ?? "—"}</td>
+                  <td>${f.stats?.dispatchCalls ?? "—"}</td>
+                  <td>${f.stats?.syncPipelines ?? "—"}</td>
+                  <td>${f.stats?.bindGroupsCreated ?? "—"}</td>
                 </tr>
               `).join("")}
             </tbody>
@@ -381,7 +381,7 @@ export function generateHtmlReport(report) {
       <div class="header-meta">
         <div class="verdict-badge" style="color: ${verdictColor};">
           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor"></span>
-          VERDICT: ${verdict.toUpperCase()}
+          VERDICT: ${escapeHtml(verdict.toUpperCase())}
         </div>
         <div class="adapter-badge">${escapeHtml(adapterDesc)}</div>
         <div class="meta-time">${new Date(timestamp).toLocaleString()}</div>

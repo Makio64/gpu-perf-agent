@@ -89,3 +89,9 @@ test("html-report: renders recommendation cards and slow frames table when prese
   assert(html.includes("Slow Frame Timeline"));
   assert(html.includes("42.5ms"));
 });
+
+test('html-report: invalid evidence overrides a healthy performance verdict', () => {
+  const html = generateHtmlReport({summary:{verdict:'excellent'},diagnostics:{validity:{valid:false,issues:[{code:'sample-errors'}]}}});
+  assert.ok(html.includes('VERDICT: INVALID'));
+  assert.ok(!html.includes('VERDICT: EXCELLENT'));
+});

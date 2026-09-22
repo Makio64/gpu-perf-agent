@@ -1,152 +1,55 @@
 ---
 name: gpu-perf-agent
-description: >-
-  Profiles WebGPU and WebGL2 pages on demand using auto-instrumentation and
-  browser trace analysis to diagnose performance bottlenecks, VRAM consumption,
-  frame stutter, and JS heap churn. Use when asked to profile, benchmark, or
-  find regressions in a WebGPU/WebGL2/three.js page, or to compare GPU
-  performance between two builds.
+description: Profile WebGPU and WebGL pages, diagnose frame pacing and declared GPU allocations, and compare performance across builds with measured regression evidence.
 ---
 
-# WebGPU & WebGL2 Performance Profiling
+# GPU performance profiling
 
-## Overview
-Profile any WebGPU or WebGL2 web application to capture declared VRAM footprints (textures/buffers), frame metrics (average FPS, frame-time p95/variance), and CPU memory behavior (JS heap growth rate). The tool prints automated performance recommendations and supports comparative regression checks between a base and a candidate run.
+Requires Node.js 22+ and Chrome/Chromium. Use a project's installed `gpu-perf-agent`, `npx gpu-perf-agent`, or `node src/cli.js` from the tool checkout. The default CDP runner has no required npm dependencies. `doctor --quick --json` checks local setup; a full `doctor --json` also probes browser capabilities.
 
-## Setup
-The CLI ships in the `gpu-perf-agent` npm package (binary has the same name).
+## Efficient capture
 
 ```bash
-# One-off (no install):
-npx gpu-perf-agent doctor
-
-# Or install into the project:
-npm install -D gpu-perf-agent
-npx gpu-perf-agent doctor
-```
-
-The fast runner uses an installed Chrome/Chromium directly. If none is found, install one via `npx playwright install chromium` or point at a binary with `--executable-path` / `CHROME_PATH`.
-
-All commands below assume `gpu-perf-agent` is on the path (via `npx gpu-perf-agent ...`). When working inside a checkout of the tool itself, `node src/cli.js ...` is equivalent.
-
-## Agent Fast Path & MCP Server
-
-### 1. `agent` (Recommended for Coding Agents)
-Runs an ultra-fast profiling pass with agent-optimized defaults: 3 samples, 500ms duration, `--adaptive` early-stopping, and `--auto-instrument`. Outputs an ultra-dense Markdown digest in **< 250 tokens** directly to stdout, including actionable copy-pasteable `codeHint` and `agentPrompt` tasks:
-
-```bash
-# Profile a local file or live URL:
-npx gpu-perf-agent agent --file examples/webgpu-clear.html --out reports/base.json
-npx gpu-perf-agent agent --url http://localhost:5173 --out reports/base.json
-
-# Fast comparison (< 50 tokens delta):
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --out reports/base.json
+# After a change, repeat with the same settings:
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --out reports/candidate.json
 npx gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
 ```
 
-### 2. `mcp` (Model Context Protocol Server)
-Zero-dependency stdio JSON-RPC server for integration with Claude Desktop, Cursor, Antigravity, and AI agent frameworks:
-```bash
-npx gpu-perf-agent mcp
-```
-Provides tools:
-- `profile_webgpu`: Profiles URL or file, returns markdown digest and report object.
-- `compare_webgpu_reports`: Compares baseline and candidate reports for regressions.
+`agent` uses instrumentation, six 250 ms samples, and two warmups. It saves full evidence and prints a bounded digest with up to three warnings. `--json` prints structured compact output. Use the saved report for detailed recommendations and measurements. Missing evidence is not a zero measurement.
 
-## General Commands
-
-### 1. `doctor`
-Checks that the local system and headless Chrome support WebGPU/WebGL2. Always run this first.
-```bash
-npx gpu-perf-agent doctor
-```
-
-### 2. `run`
-Profiles a local file or live URL with custom parameters.
-*   `--url <url>`: target URL, or `--file <path>`: local HTML file (served over localhost automatically).
-*   `--auto-instrument`: injects tracking code that hooks buffer/texture allocations. Without it, tracked VRAM reads `0.00 MiB`.
-*   `--adaptive`: stop sampling early when FPS variance converges (CV < 1.5%).
-*   `--cdp <port|url>`: attach to an already running Chrome (e.g. `--cdp 9222`) for zero browser startup latency.
-*   `--agent`: output the concise LLM markdown digest to stdout instead of terminal tables.
-*   `--samples <n>` (default `5`) and `--duration-ms <ms>` (default `1000`): sampling shape.
-*   `--trace`: include a Chrome trace summary (GPU, frame, memory-infra events). Add `--raw-trace` to keep the raw trace file.
-*   `--out <file>`: destination for the JSON report.
-*   `--chromium-arg=<arg>`: extra Chromium flags, repeatable (e.g. `--chromium-arg=--ignore-certificate-errors`).
-*   `--html`: generate a self-contained, zero-dependency interactive HTML report alongside the JSON.
-*   `--html-out <path>`: custom output destination for the HTML report.
-*   `--json`: print a machine-readable `{ out, verdict, summary, diagnostics }` object to stdout.
-*   `--screenshot`: capture a screenshot for visual validation.
+For repeated captures, reuse Chrome:
 
 ```bash
-npx gpu-perf-agent run --url http://localhost:8080 --auto-instrument --samples 3 --out reports/run-1.json --agent
+npx gpu-perf-agent serve --port 9099 --auto-instrument
+npx gpu-perf-agent agent --server http://127.0.0.1:9099 --url http://127.0.0.1:5173 --out reports/candidate.json
 ```
 
-### 3. `compare`
-Compares a base and candidate report; exits `1` when a metric regresses beyond the threshold (percent, default `5`).
-```bash
-npx gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --threshold 5 --agent
-```
+Each job gets a fresh browser context by default. Use `--context shared` only for intentional stateful measurements. Configure browser launch flags on `serve`. Paths in HTTP jobs are resolved on the service machine. `run --cdp 9222` also attaches to an existing debug-enabled Chrome; it creates profiling pages and leaves the browser running afterward.
 
-### 4. `serve`
-For repeated agent loops, launch Chrome once and POST jobs to a local server:
-```bash
-npx gpu-perf-agent serve --port 9099
-# then: POST http://127.0.0.1:9099/run with {"url": "...", "samples": 5, "durationMs": 1000}
-```
+## Choosing measurement settings
 
-### 5. `xctrace` (macOS only)
-Records an Xcode Instruments trace (e.g. `Metal System Trace`) for native GPU analysis:
-```bash
-npx gpu-perf-agent xctrace --url http://localhost:8080 --template "Metal System Trace" --time-limit 15s --out reports/metal.trace
-```
+- `--file page.html --file-root .` serves local HTML and its project imports. A running dev server is preferable for bundled applications.
+- `--api webgpu`, `--api webgl2`, or `--api webgl` avoids unrelated API probes; `auto` probes WebGPU and WebGL2.
+- `--wait-for-hook` waits for asynchronous `globalThis.__gpuReportBench` setup. `--wait-condition 'window.ready === true'` supports custom readiness, bounded by `--wait-condition-timeout` in milliseconds.
+- Keep fixed sampling for comparisons. `--adaptive` may stop after three samples when FPS CV is below 1.5%; it is a turnaround aid, not proof of statistical convergence or GPU stability.
+- `--preset confirm` provides 15 × 500 ms samples with four warmups. Use `ab` with `--base-url`, `--candidate-url`, and `--rounds 4` to interleave A/B runs in one browser. Local alternatives are `--base-file` and `--candidate-file`.
+- `--trace` adds Chrome diagnostics; `--minimal-trace` limits categories to GPU events. `--raw-trace` retains the trace. Keep tracing settings identical between compared captures.
+- `--html` writes an interactive HTML report; `--html-out` sets its path. `--screenshot` saves a PNG. Screenshot capture alone does not establish visual equivalence.
+- `--executable-path` or `CHROME_PATH` selects a browser. The optional `--runner playwright` needs Playwright installed separately.
 
-## Reading the Report
-Every report JSON (file, `--json` stdout, and `serve` responses) has a top-level `summary` and `diagnostics` — read this first, before any nested data:
+## Interpreting evidence
 
-| Field | Meaning |
-| --- | --- |
-| `summary.verdict` | `excellent` \| `good` \| `needs-work` \| `poor` — overall health in one word. |
-| `summary.fps` | Mean frames per second. |
-| `summary.cadence` | Detected refresh rate (`{ hz, intervalMs, hitRate }`) e.g. 60Hz or 120Hz and % of frames hitting interval. |
-| `summary.frameTimeMsMean` / `frameTimeMsP95` / `frameTimeMsMax` | Frame time distribution; a large p95−mean gap means stutter. |
-| `summary.gpuFrameMsMean` | Mean GPU time per frame in ms (when GPU timing hooks are active). >13 ms means GPU-bound. |
-| `summary.pipelines` | `{ syncCount, asyncCount, shaderModules }` — synchronous pipeline compiles cause main-thread jank. |
-| `summary.bindGroups` | `{ createdCount, layoutCount }` — high creation counts indicate missing bind group pooling. |
-| `summary.warmup` | `{ durationMs, lagSpikeMs, settled }` — warmup duration and initial load lag spike. |
-| `summary.jsHeapGrowthMBPerSec` | JS heap growth rate. >5 MB/s = allocations in the render loop. |
-| `summary.trackedVram` | `{ totalMiB, textureMiB, bufferMiB, textureCount, bufferCount, leakedResources }` from `--auto-instrument`. |
-| `summary.slowFrameCount` | Frames exceeding `--slow-frame-threshold` (default 20 ms). |
-| `summary.warnings` | Actionable bottleneck descriptions with recommendations — treat each as an optimization task. |
-| `summary.recommendations` | Structured array of `{ id, category, severity, title, action, evidence, value, threshold, unit }`. |
+Read `diagnostics.validity` before `summary.verdict`. Failed hooks, uncaught runtime errors, missing requested capture data, and missing workload measurements invalidate a run. Inspect `inPage.samples`, `pageEvents`, and the validity issues before comparing it.
 
-Deeper data when needed: `inPage.samples[*]` (per-sample measurements and per-frame WebGPU op counts for slow frames), `trace.summary` (Chrome GPU/frame/memory-infra events), `cdp.before/after` (browser-level heap metrics).
+Exit codes: `0` means a valid capture or passing comparison, `1` means an execution error or regression, and `2` means invalid measurements or incompatible comparison settings. `--allow-mismatch` can waive configuration differences but cannot waive invalid measurements.
 
-## Optimization Loop (recommended agent workflow)
+Independent captures use Welch confidence intervals. `--paired` is only appropriate for genuinely matched samples; interleaved A/B comparisons pair rounds automatically. A regression's interval must cross the allowed threshold. Metrics without enough repeated evidence are labeled `threshold-only`. Budget files can set absolute limits and per-metric regression thresholds; a missing budget metric invalidates the gate.
 
-1. **Health check** — `npx gpu-perf-agent doctor --quick`. If WebGPU is unsupported, report the environment limitation.
-2. **Target verification** — confirm the target server is responsive before profiling.
-3. **Baseline** — profile the unmodified code with the agent fast-path:
-   ```bash
-   npx gpu-perf-agent agent --url <url> --out reports/base.json
-   ```
-4. **Diagnose** — read the Markdown digest on stdout. It lists the verdict and top actionable recommendations with exact copy-pasteable `Code Hint` snippets and `Agent Task` instructions.
-5. **Optimize** — apply ONE targeted change to the codebase addressing the highest-severity recommendation.
-6. **Candidate** — re-profile with identical flags to `reports/candidate.json`:
-   ```bash
-   npx gpu-perf-agent agent --url <url> --out reports/candidate.json
-   ```
-7. **Verify & Diff** —
-   ```bash
-   npx gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
-   ```
-   Exit code `1` flags any metric regression. The delta lists all `Resolved Bottlenecks` with checkmarks and any remaining or new bottlenecks. Repeat from step 5 until verdict is `GOOD` or `EXCELLENT`.
-8. **Many iterations or zero startup delay?** — connect to an already running Chrome via `--cdp <port>` or use `npx gpu-perf-agent serve --port 9099`.
+`summary` includes frame time, FPS, available GPU timing, tracked allocations, draw pressure, structured warnings, and detailed recommendations. API counters describe observed operations, not measured pipeline stall duration. Declared allocation totals are not physical VRAM residency or proof of leaks. rAF timing measures browser frame cadence; GPU duration requires timing hooks. Confirm a recommendation against the workload before changing code.
 
-## Common Mistakes
-*   **Forgetting `--auto-instrument`** — tracked VRAM will read `0.00 MiB` because allocations are not hooked.
-*   **Self-signed HTTPS** — local HTTPS dev servers need `--chromium-arg=--ignore-certificate-errors` or the page will not render.
-*   **Mismatched compare runs** — base and candidate must use the same `--samples`, `--duration-ms`, and viewport, or the comparison is meaningless.
-*   **Parsing human output** — use `--json` on `run` and `compare` instead of scraping the console tables.
-*   **Stale servers** — confirm the target port is the server you think it is.
+Use the smallest useful capture, change the suspected bottleneck, and repeat with identical settings. Report uncertainty, unsupported APIs, missing metrics, and visual differences alongside any claimed improvement.
 
-## Limitations
-The web platform does not expose exact VRAM residency. For deep memory analysis combine all three layers: declared allocation tracking (`--auto-instrument`), Chrome trace memory-infra summaries (`--trace`), and native Instruments captures on macOS (`xctrace`).
+## MCP and API access
+
+`npx gpu-perf-agent mcp` starts the stdio JSON-RPC server with `profile_webgpu` and `compare_webgpu_reports`. MCP profiling retains three 500 ms samples and adaptive mode by default; override sampling arguments when comparing. Responses include text and the full report. Node exports include `runReport`, `FastCDPHarness`, `compareReports`, `generateHtmlReport`, and the detailed digest helpers under `gpu-perf-agent/agent`.
