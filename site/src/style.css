@@ -74,10 +74,25 @@ h2 { font-size: 21px; font-weight: 600; letter-spacing: -0.4px; }
 .eyebrow > span { width: 6px; height: 6px; border-radius: 50%; background: #ff8f69; }
 .mechanics-heading h2 { margin-top: 17px; font-size: 30px; line-height: 1.2; letter-spacing: -1px; }
 .mechanics-heading > p:last-child { max-width: 680px; margin-top: 12px; color: #c1c8b9; font-size: 15px; line-height: 1.7; }
+.flow-scheme { margin: 25px 0 0; padding: 20px; background: #2c3029; border: 1px solid #454a40; border-radius: 8px; }
+.flow-path { display: flex; align-items: center; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.flow-path li { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.flow-path li > span { padding: 10px 12px; border: 1px solid #606958; border-radius: 5px; font-size: 14px; line-height: 1.4; }
+.flow-path .flow-result > span { border-color: #ffae90; color: #ffbfaa; }
+.flow-scheme svg { flex: 0 0 20px; width: 20px; height: 20px; fill: none; stroke: #ffae90; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.flow-scheme figcaption { display: flex; align-items: flex-start; gap: 9px; margin-top: 16px; color: #c1c8b9; font-size: 14px; line-height: 1.6; }
+.flow-scheme figcaption svg { margin-top: 1px; }
 .mechanics-topics { margin-top: 28px; }
 .mechanics-topics > section { padding-block: 24px; border-top: 1px solid #454a40; }
 .mechanics-topics h3 { margin: 0 0 12px; padding-left: 14px; border-left: 2px solid #ffae90; font-size: 19px; font-weight: 500; line-height: 1.4; letter-spacing: -0.3px; }
 .mechanics-topics p { max-width: 68ch; color: #c1c8b9; font-size: 16px; line-height: 1.75; }
+.metric-tags { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 14px 0; list-style: none; }
+.metric-tags li { padding: 7px 11px; border: 1px solid #555e4e; border-radius: 5px; color: #e1e5da; font-size: 14px; line-height: 1.5; }
+.fact-list { margin: 0; max-width: 68ch; color: #c1c8b9; font-size: 16px; line-height: 1.75; }
+.fact-list > div + div { margin-top: 7px; }
+.fact-list dt { display: inline; color: #f3f3ea; font-weight: 600; }
+.fact-list dt::after { content: ": "; }
+.fact-list dd { display: inline; margin: 0; }
 .mechanics-topics > section:last-child { padding-bottom: 26px; border-bottom: 1px solid #454a40; }
 .measurement-note { margin-top: 16px; max-width: 660px; color: #aeb6a6; font-size: 12px; line-height: 1.8; }
 .measurement-note a { display: inline-block; color: #f3f3ea; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
@@ -101,6 +116,11 @@ h2 { font-size: 21px; font-weight: 600; letter-spacing: -0.4px; }
   .copy { min-height: 36px; }
   .mechanics { margin-top: 0; padding: 24px 20px; }
   .mechanics-heading h2 { font-size: 28px; }
+  .flow-scheme { padding: 16px; }
+  .flow-path { flex-direction: column; align-items: stretch; gap: 7px; }
+  .flow-path li { flex-direction: column; align-items: stretch; gap: 7px; }
+  .flow-path li > span { text-align: center; }
+  .flow-path li > svg { align-self: center; transform: rotate(90deg); }
   .footer { flex-wrap: wrap; padding-bottom: 24px; }
 }
 @media (prefers-reduced-motion: no-preference) {

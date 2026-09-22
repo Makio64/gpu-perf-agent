@@ -67,24 +67,47 @@
         <div class="mechanics-heading">
           <p class="eyebrow"><span aria-hidden="true"></span>Under the hood</p>
           <h2 id="mechanics-title">Give your agent a way to measure.</h2>
-          <p>The skill gives your coding agent a repeatable profiling workflow. It explains how to run the local CLI, interpret the measurements, and check a code change against a saved baseline.</p>
+          <p>The skill teaches your agent to profile locally, investigate a bottleneck, and verify its code changes with repeatable measurements.</p>
         </div>
+        <figure class="flow-scheme" aria-label="The profiling loop">
+          <ol class="flow-path">
+            <li><span>Capture baseline</span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12h15m-6-6 6 6-6 6" /></svg></li>
+            <li><span>Agent edits code</span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12h15m-6-6 6 6-6 6" /></svg></li>
+            <li><span>Capture again</span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12h15m-6-6 6 6-6 6" /></svg></li>
+            <li class="flow-result"><span>Compare</span></li>
+          </ol>
+          <figcaption><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 8h10a6 6 0 0 1 0 12h-3M8 4 4 8l4 4" /></svg><span>Repeat for each change. Keep the same scene and sampling settings.</span></figcaption>
+        </figure>
         <div class="mechanics-topics">
           <section aria-labelledby="capture-title">
             <h3 id="capture-title">Profile your running app.</h3>
-            <p>The CLI opens your WebGPU or WebGL app in Chrome, injects API instrumentation, and samples frame pacing, draw calls, and declared buffer and texture allocations. Optional Chrome traces add context about browser activity when a capture needs closer investigation.</p>
+            <p>The CLI instruments your WebGPU or WebGL page in Chrome.</p>
+            <ul class="metric-tags" aria-label="Captured measurements"><li>Frame pacing</li><li>Draw calls</li><li>Buffer &amp; texture allocations</li></ul>
+            <p>Optional Chrome traces add detail about browser activity.</p>
           </section>
           <section aria-labelledby="change-title">
             <h3 id="change-title">Give the agent evidence to act on.</h3>
-            <p>A compact diagnostic summary keeps the agent’s context small; the full capture is saved locally as JSON. The skill guides the agent to investigate the measurements, change one suspected bottleneck, and preserve the scene’s visual behavior before capturing again.</p>
+            <dl class="fact-list">
+              <div><dt>In context</dt><dd>A compact diagnosis keeps the agent focused.</dd></div>
+              <div><dt>On disk</dt><dd>The full JSON capture stays available for deeper inspection.</dd></div>
+              <div><dt>In your code</dt><dd>Target one suspected bottleneck and preserve the scene’s visual behavior.</dd></div>
+            </dl>
           </section>
           <section aria-labelledby="compare-title">
             <h3 id="compare-title">Check whether the change helped.</h3>
-            <p>Compare baseline and candidate reports with identical sampling settings. The tool reports metric changes, confidence intervals where repeated data supports them, and regressions against configured thresholds. Invalid captures, incompatible settings, and inconclusive results are flagged explicitly.</p>
+            <dl class="fact-list">
+              <div><dt>Compare</dt><dd>Metric changes and regressions against configured thresholds.</dd></div>
+              <div><dt>Quantify uncertainty</dt><dd>Confidence intervals where repeated samples support them.</dd></div>
+              <div><dt>Check validity</dt><dd>Invalid captures, incompatible settings, and inconclusive results are flagged.</dd></div>
+            </dl>
           </section>
           <section aria-labelledby="iterate-title">
             <h3 id="iterate-title">Keep the loop fast and inspectable.</h3>
-            <p>Reuse Chrome across captures to reduce startup overhead. Use longer sampling or interleaved A/B runs for stronger evidence. Saved JSON, optional HTML reports, and performance budgets make the results useful for code review and automated regression checks.</p>
+            <dl class="fact-list">
+              <div><dt>Faster iteration</dt><dd>Reuse Chrome to reduce startup overhead.</dd></div>
+              <div><dt>Stronger evidence</dt><dd>Use longer sampling or interleaved A/B runs.</dd></div>
+              <div><dt>Review &amp; CI</dt><dd>Inspect JSON or optional HTML reports; enforce performance budgets.</dd></div>
+            </dl>
           </section>
         </div>
         <p class="measurement-note">Frame pacing measures browser cadence; GPU duration requires timing hooks. Allocation totals estimate declared storage, not physical VRAM residency. <a href="https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md">Read the measurement reference <span aria-hidden="true">↗</span></a></p>
