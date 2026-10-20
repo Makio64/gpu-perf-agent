@@ -1,0 +1,206 @@
+{
+  "verdict": "needs-work",
+  "verdictReasons": [
+    {
+      "code": "gpu-near-budget",
+      "role": "cause",
+      "severity": "medium",
+      "value": 13.9,
+      "threshold": 13.3,
+      "unit": "ms",
+      "message": "GPU 13.9 ms/frame is 83% of the 16.7 ms budget",
+      "next": "Reduce pass shadow (9.1 ms exclusive)"
+    }
+  ],
+  "bottleneck": {
+    "class": "vsync-capped",
+    "subtype": null,
+    "hz": 60,
+    "budgetMs": 16.67,
+    "fps": 60,
+    "pageFps": 60,
+    "mainThreadBusy": 0.08,
+    "cpuMsPerFrame": 1.3,
+    "gpuMs": 13.9,
+    "gpuSource": "auto",
+    "gpuSaturated": false,
+    "gpuShare": 0.83,
+    "headroomMs": 2.77,
+    "primaryMetric": "health.autoGpuFrameMs.p50",
+    "reason": "fps pinned at 60 Hz; GPU 83% of budget"
+  },
+  "fps": 60,
+  "pageFps": 60,
+  "activeFrameRatio": 1,
+  "frameTimeMsMean": 16.67,
+  "frameTimeMsP95": 16.8,
+  "frameTimeMsMax": 17.1,
+  "slowFrameCount": 0,
+  "slowFrameRate": 0,
+  "observedFrameCount": 90,
+  "sampleCount": 6,
+  "idleSampleCount": 0,
+  "gpu": {
+    "source": "auto",
+    "frameMsP50": 13.9,
+    "frameMsP95": 14.6,
+    "timedFrames": 88,
+    "provenance": "auto.frame-busy",
+    "stability": {
+      "status": "stable",
+      "clockSensitive": false,
+      "reasons": [],
+      "cv": 0.004,
+      "ratio": 1.01
+    },
+    "plausibility": {
+      "status": "ok",
+      "implausibleSamples": 0
+    },
+    "passes": [
+      {
+        "key": "shadow",
+        "type": "render",
+        "exclusiveMs": 9.1,
+        "durationMs": 9.2,
+        "share": 0.65,
+        "overlapped": false,
+        "site": "renderShadow app.js:68"
+      }
+    ],
+    "hook": null
+  },
+  "gpuFrameMsMean": null,
+  "gpuFrameMsP95": null,
+  "cpuMsPerFrame": 1.3,
+  "mainThreadBusy": 0.08,
+  "heap": {
+    "available": true,
+    "method": "gc-bracket",
+    "retainedMiBPerSec": 0,
+    "retainedBytes": 1200,
+    "allocKiBPerFrame": 1.1
+  },
+  "jsHeapGrowthMBPerSec": 0,
+  "trackedVram": {
+    "available": true,
+    "bufferCount": 1,
+    "bufferMiB": 16,
+    "leakedResources": 0,
+    "textureCount": 0,
+    "textureMiB": 0,
+    "totalMiB": 16
+  },
+  "drawCallsPerFrame": 200,
+  "webgpuOps": {
+    "drawCalls": 200,
+    "dispatchCalls": 1,
+    "renderPasses": 2,
+    "computePasses": 1,
+    "setPipelineCalls": null,
+    "setBindGroupCalls": null,
+    "bundleDrawCalls": 0
+  },
+  "glOps": {
+    "drawCalls": 0,
+    "clearCalls": 0
+  },
+  "perFrame": {
+    "createBindGroup": 0,
+    "createBuffer": 0,
+    "createTexture": 0,
+    "createView": 1,
+    "createSampler": 0,
+    "createShaderModule": 0,
+    "createPipelinesSync": 0,
+    "createPipelinesAsync": 0,
+    "writeBufferBytes": 4096,
+    "writeTextureBytes": 0,
+    "drawCalls": 200,
+    "bundleDraws": 0,
+    "dispatches": 1,
+    "renderPasses": 2,
+    "computePasses": 1,
+    "glDrawCalls": 0,
+    "glClears": 0,
+    "nonZeroSamples": {
+      "createBindGroup": 0,
+      "createBuffer": 0,
+      "createTexture": 0
+    }
+  },
+  "churnSites": {},
+  "pipelines": {
+    "syncCount": 3,
+    "asyncCount": 0,
+    "shaderModules": 2,
+    "syncInWindow": 0
+  },
+  "gpuErrors": {
+    "total": 0,
+    "inWindow": 0,
+    "top": []
+  },
+  "hitches": [
+    {
+      "durationMs": 70.1,
+      "blockingMs": 21,
+      "where": "frame @ app.js (char 2037)",
+      "loaf": true
+    }
+  ],
+  "findings": [
+    {
+      "code": "gpu-near-budget",
+      "role": "cause",
+      "severity": "medium",
+      "value": 13.9,
+      "threshold": 13.3,
+      "unit": "ms",
+      "message": "GPU 13.9 ms/frame is 83% of the 16.7 ms budget",
+      "next": "Reduce pass shadow (9.1 ms exclusive)",
+      "aliases": [
+        "high-gpu-time"
+      ]
+    },
+    {
+      "code": "startup-sync-pipelines",
+      "role": "info",
+      "severity": "info",
+      "value": 3,
+      "threshold": 0,
+      "unit": "count",
+      "message": "3 sync pipelines created at startup (none during sampling).",
+      "next": "Use createRenderPipelineAsync for startup pipelines.",
+      "aliases": []
+    }
+  ],
+  "warnings": [
+    {
+      "code": "gpu-near-budget",
+      "message": "GPU 13.9 ms/frame is 83% of the 16.7 ms budget",
+      "metric": "gpuMs",
+      "recommendation": "Reduce pass shadow (9.1 ms exclusive)",
+      "severity": "medium",
+      "threshold": 13.3,
+      "value": 13.9
+    }
+  ],
+  "warningCount": 1,
+  "recommendations": [
+    {
+      "id": "gpu-near-budget",
+      "category": "gpu",
+      "severity": "medium",
+      "title": "GPU 13.9 ms/frame is 83% of the 16.7 ms budget",
+      "action": "Reduce pass shadow (9.1 ms exclusive)",
+      "evidence": "health.autoGpuFrameMs.p50 13.9 ms",
+      "value": 13.9,
+      "threshold": 13.3,
+      "unit": "ms"
+    }
+  ],
+  "highlights": [
+    "3 sync pipelines created at startup (none during sampling)."
+  ]
+}

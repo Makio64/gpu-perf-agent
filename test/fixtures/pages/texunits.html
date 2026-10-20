@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"></head><body><canvas id="c" width="64" height="64"></canvas><script>
+const gl = document.getElementById("c").getContext("webgl2");
+const A = gl.createTexture(), B = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, A);
+gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, B);
+// Upload 1024x1024 RGBA8 (4 MiB) to A on unit 0 without re-binding (state-cached engines skip redundant binds).
+gl.activeTexture(gl.TEXTURE0);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1024, 1024, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+// Upload 4x4 (64 B) to B on unit 1.
+gl.activeTexture(gl.TEXTURE1);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+function loop() { gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS, 0, 1); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+</script></body></html>

@@ -23,7 +23,7 @@ test("profiles an external-style sibling project with auto-instrumentation", { s
       warmup: 1,
       waitUntil: "load"
     });
-    assert.equal(report.schemaVersion, 2);
+    assert.equal(report.schemaVersion, 3);
     assert.equal(report.diagnostics.validity.valid, true, JSON.stringify(report.diagnostics.validity));
     assert.equal(report.options.autoInstrument, true);
     assert.equal(report.inPage.hook.found, true);
@@ -204,11 +204,17 @@ test('CDP attachment preserves the external browser and cleans up owned contexts
     await device.createComputePipelineAsync({layout:'auto',compute:{module,entryPoint:'main'}});
     globalThis.__gpuReportBench = () => ({fps:60});
   </script>`);
-  const owner = await FastCDPHarness.launch();
+  // Owned Chrome talks CDP over a pipe; open a debugging port too so it can be attached to.
+  const owner = await FastCDPHarness.launch({chromiumArgs:['--remote-debugging-port=0']});
   let attached;
   try {
-    attached = await FastCDPHarness.launch({cdpUrl:owner.launch.webSocketUrl, contextMode:'shared'});
-    const report = await attached.run({file,waitUntil:'load',waitCondition:'typeof __gpuReportBench === "function"',waitConditionTimeoutMs:3000,screenshot:true,autoInstrument:true,samples:1,warmup:0,durationMs:100});
+    let webSocketUrl;
+    for (let tries = 0; !webSocketUrl && tries < 100; tries++) {
+      webSocketUrl = /DevTools listening on (ws:\/\/\S+)/.exec(owner.stderrTail(65536))?.[1];
+      if (!webSocketUrl) await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    attached = await FastCDPHarness.launch({cdpUrl:webSocketUrl, contextMode:'shared'});
+    const report = await attached.run({file,waitUntil:'load',waitCondition:'typeof __gpuReportBench === "function"',waitConditionTimeoutMs:3000,screenshot:true,autoInstrument:true,allowIdle:true,samples:1,warmup:0,durationMs:100});
     assert.equal(report.diagnostics.validity.valid, true, JSON.stringify(report.diagnostics.validity));
     assert.equal(report.options.cdpAttached, true);
     assert.ok(report.screenshotSize > 100);
@@ -300,7 +306,8 @@ test('A/B CLI waits for async scene readiness and custom hooks with compact evid
       assert.equal(run.inPage.samples[0].measurement.ready, true);
       assert.equal(run.inPage.samples[0].measurement.density, 2);
     }
-    const gpu = report.comparison.rows.find(row => row.key === 'gpu.durationNs.mean');
+    // §4.1: the hook's gpuTimeNs feeds health.gpuFrameMs.mean; gpu.durationNs.mean is deduplicated.
+    const gpu = report.comparison.rows.find(row => row.key === 'health.gpuFrameMs.mean');
     assert.equal(gpu.evidence, 'paired-samples');
     assert.equal(gpu.confidence95.low, 0);
     assert.equal(gpu.confidence95.high, 0);

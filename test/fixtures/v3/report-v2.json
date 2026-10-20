@@ -1,0 +1,2435 @@
+{
+  "screenshotSize": null,
+  "artifacts": {
+    "screenshotPath": null
+  },
+  "timings": {
+    "navigationMs": 912.187667,
+    "samplingMs": 2182.119084,
+    "totalMs": 3107.562458
+  },
+  "browser": {
+    "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "pid": 17132,
+    "version": {
+      "protocolVersion": "1.3",
+      "product": "Chrome/155.0.8059.85",
+      "revision": "@0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+      "jsVersion": "15.5.35.25"
+    }
+  },
+  "cdp": {
+    "after": {
+      "domCounters": {
+        "documents": 4,
+        "nodes": 38,
+        "jsEventListeners": 0
+      },
+      "performanceMetrics": {
+        "Timestamp": 448572.806266,
+        "AudioHandlers": 0,
+        "AudioWorkletProcessors": 0,
+        "Documents": 4,
+        "Frames": 4,
+        "JSEventListeners": 0,
+        "LayoutObjects": 9,
+        "MediaKeySessions": 0,
+        "MediaKeys": 0,
+        "Nodes": 38,
+        "Resources": 3,
+        "ContextLifecycleStateObservers": 8,
+        "V8PerContextDatas": 2,
+        "WorkerGlobalScopes": 0,
+        "UACSSResources": 0,
+        "RTCPeerConnections": 0,
+        "ResourceFetchers": 4,
+        "AdSubframes": 0,
+        "DetachedScriptStates": 1,
+        "ArrayBufferContents": 0,
+        "LayoutCount": 2,
+        "RecalcStyleCount": 2,
+        "LayoutDuration": 0.000066,
+        "RecalcStyleDuration": 0.000514,
+        "DevToolsCommandDuration": 0.020325,
+        "ScriptDuration": 0.008126,
+        "V8CompileDuration": 0,
+        "TaskDuration": 0.086539,
+        "TaskOtherDuration": 0.057508,
+        "ThreadTime": 0.068788,
+        "ProcessTime": 0.195263,
+        "JSHeapUsedSize": 1603076,
+        "JSHeapTotalSize": 2883584,
+        "FirstMeaningfulPaint": 448570.355978,
+        "DomContentLoaded": 448570.312741,
+        "NavigationStart": 448570.240668
+      }
+    },
+    "before": {
+      "domCounters": {
+        "documents": 4,
+        "nodes": 37,
+        "jsEventListeners": 0
+      },
+      "performanceMetrics": {
+        "Timestamp": 448570.617326,
+        "AudioHandlers": 0,
+        "AudioWorkletProcessors": 0,
+        "Documents": 4,
+        "Frames": 4,
+        "JSEventListeners": 0,
+        "LayoutObjects": 9,
+        "MediaKeySessions": 0,
+        "MediaKeys": 0,
+        "Nodes": 37,
+        "Resources": 3,
+        "ContextLifecycleStateObservers": 8,
+        "V8PerContextDatas": 2,
+        "WorkerGlobalScopes": 0,
+        "UACSSResources": 0,
+        "RTCPeerConnections": 0,
+        "ResourceFetchers": 4,
+        "AdSubframes": 0,
+        "DetachedScriptStates": 1,
+        "ArrayBufferContents": 0,
+        "LayoutCount": 2,
+        "RecalcStyleCount": 2,
+        "LayoutDuration": 0.000066,
+        "RecalcStyleDuration": 0.000514,
+        "DevToolsCommandDuration": 0.000012,
+        "ScriptDuration": 0.006089,
+        "V8CompileDuration": 0,
+        "TaskDuration": 0.019336,
+        "TaskOtherDuration": 0.012655,
+        "ThreadTime": 0.012287,
+        "ProcessTime": 0.090853,
+        "JSHeapUsedSize": 930012,
+        "JSHeapTotalSize": 1835008,
+        "FirstMeaningfulPaint": 0,
+        "DomContentLoaded": 448570.312741,
+        "NavigationStart": 448570.240668
+      }
+    }
+  },
+  "createdAt": "2026-10-20T06:31:23.125Z",
+  "host": {
+    "arch": "arm64",
+    "cpus": [
+      "Apple M3 Max"
+    ],
+    "hostname": "fixture-host",
+    "node": "v24.18.0",
+    "platform": "darwin",
+    "release": "24.6.0"
+  },
+  "inPage": {
+    "apiSupport": {
+      "webgpu": {
+        "available": true,
+        "adapter": {
+          "vendor": "apple",
+          "architecture": "metal-3",
+          "device": "",
+          "description": "",
+          "subgroupMinSize": 32,
+          "subgroupMaxSize": 32,
+          "isFallbackAdapter": false
+        },
+        "error": null,
+        "features": [
+          "depth32float-stencil8",
+          "chromium-experimental-subgroup-matrix",
+          "rg11b10ufloat-renderable",
+          "bgra8unorm-storage"
+        ],
+        "limits": {
+          "maxTextureDimension1D": 16384,
+          "maxTextureDimension2D": 16384,
+          "maxTextureDimension3D": 2048,
+          "maxTextureArrayLayers": 2048,
+          "maxBindGroups": 4,
+          "maxBindGroupsPlusVertexBuffers": 24,
+          "maxBindingsPerBindGroup": 1000,
+          "maxDynamicUniformBuffersPerPipelineLayout": 10,
+          "maxDynamicStorageBuffersPerPipelineLayout": 8,
+          "maxSampledTexturesPerShaderStage": 48,
+          "maxSamplersPerShaderStage": 16,
+          "maxStorageBuffersPerShaderStage": 10,
+          "maxStorageTexturesPerShaderStage": 8,
+          "maxUniformBuffersPerShaderStage": 12,
+          "maxUniformBufferBindingSize": 65536,
+          "maxStorageBufferBindingSize": 4294967292,
+          "minUniformBufferOffsetAlignment": 256,
+          "minStorageBufferOffsetAlignment": 256,
+          "maxVertexBuffers": 8,
+          "maxBufferSize": 4294967292,
+          "maxVertexAttributes": 30,
+          "maxVertexBufferArrayStride": 2048,
+          "maxInterStageShaderVariables": 28,
+          "maxColorAttachments": 8,
+          "maxColorAttachmentBytesPerSample": 128,
+          "maxComputeWorkgroupStorageSize": 32768,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupSizeX": 1024,
+          "maxComputeWorkgroupSizeY": 1024,
+          "maxComputeWorkgroupSizeZ": 64,
+          "maxComputeWorkgroupsPerDimension": 65535,
+          "maxImmediateSize": 64,
+          "maxStorageBuffersInFragmentStage": 10,
+          "maxStorageTexturesInFragmentStage": 8,
+          "maxStorageBuffersInVertexStage": 10,
+          "maxStorageTexturesInVertexStage": 8
+        }
+      },
+      "webgl2": {
+        "available": true,
+        "contextAttributes": {
+          "alpha": true,
+          "antialias": false,
+          "depth": false,
+          "desynchronized": false,
+          "failIfMajorPerformanceCaveat": false,
+          "powerPreference": "default",
+          "premultipliedAlpha": true,
+          "preserveDrawingBuffer": false,
+          "stencil": false,
+          "xrCompatible": false
+        },
+        "extensions": [
+          "EXT_clip_control",
+          "EXT_color_buffer_float",
+          "EXT_color_buffer_half_float",
+          "EXT_conservative_depth"
+        ],
+        "renderer": "WebKit WebGL",
+        "shadingLanguageVersion": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "unmaskedRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)",
+        "unmaskedVendor": "Google Inc. (Apple)",
+        "vendor": "WebKit",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "error": null
+      }
+    },
+    "config": {
+      "adaptive": false,
+      "api": "auto",
+      "durationMs": 250,
+      "gc": false,
+      "deepMemory": false,
+      "hookName": "__gpuReportBench",
+      "samplingMode": "frames",
+      "samples": 6,
+      "slowFrameThresholdMs": 20,
+      "warmup": 2
+    },
+    "hook": {
+      "found": true,
+      "name": "__gpuReportBench"
+    },
+    "location": "http://127.0.0.1:57216/examples/webgpu-clear.html",
+    "instrumentation": {
+      "after": {
+        "counters": {
+          "webgpu.devices": 1,
+          "webgpu.resourcesCreated": 3,
+          "webgpu.commandEncoders": 137,
+          "webgpu.renderPasses": 137,
+          "webgpu.queueSubmits": 137,
+          "webgpu.commandBuffersSubmitted": 137,
+          "webgl2.contexts": 1,
+          "webgpu.resolveQuerySet": 8,
+          "webgpu.copyBufferToBuffer": 8
+        },
+        "errors": [],
+        "resources": {
+          "pipelines": {
+            "syncCount": 0,
+            "asyncCount": 0,
+            "shaderModules": 0
+          },
+          "bindGroups": {
+            "createdCount": 0,
+            "layoutCount": 0
+          },
+          "api": "auto",
+          "byApi": {
+            "webgpu": {
+              "bytes": 16777248,
+              "count": 3
+            }
+          },
+          "byKind": {
+            "buffer": {
+              "bytes": 16777248,
+              "count": 3
+            }
+          },
+          "history": [
+            {
+              "atMs": 95.30000001192093,
+              "bytes": 16,
+              "id": 1,
+              "kind": "buffer",
+              "type": "track"
+            },
+            {
+              "atMs": 95.40000003576279,
+              "bytes": 16,
+              "id": 2,
+              "kind": "buffer",
+              "type": "track"
+            },
+            {
+              "atMs": 95.69999998807907,
+              "bytes": 16777216,
+              "id": 3,
+              "kind": "buffer",
+              "type": "track"
+            }
+          ],
+          "liveResources": [],
+          "totalBytes": 16777248,
+          "totalResources": 3
+        },
+        "version": 1
+      },
+      "before": {
+        "counters": {
+          "webgpu.devices": 1,
+          "webgpu.resourcesCreated": 3,
+          "webgpu.commandEncoders": 35,
+          "webgpu.renderPasses": 35,
+          "webgpu.queueSubmits": 35,
+          "webgpu.commandBuffersSubmitted": 35,
+          "webgl2.contexts": 1,
+          "webgpu.resolveQuerySet": 2,
+          "webgpu.copyBufferToBuffer": 2
+        },
+        "errors": [],
+        "resources": {
+          "pipelines": {
+            "syncCount": 0,
+            "asyncCount": 0,
+            "shaderModules": 0
+          },
+          "bindGroups": {
+            "createdCount": 0,
+            "layoutCount": 0
+          },
+          "api": "auto",
+          "byApi": {
+            "webgpu": {
+              "bytes": 16777248,
+              "count": 3
+            }
+          },
+          "byKind": {
+            "buffer": {
+              "bytes": 16777248,
+              "count": 3
+            }
+          },
+          "history": [],
+          "liveResources": [],
+          "totalBytes": 16777248,
+          "totalResources": 3
+        },
+        "version": 1
+      },
+      "delta": {
+        "webgpu.devices": 0,
+        "webgpu.resourcesCreated": 0,
+        "webgpu.commandEncoders": 102,
+        "webgpu.renderPasses": 102,
+        "webgpu.queueSubmits": 102,
+        "webgpu.commandBuffersSubmitted": 102,
+        "webgl2.contexts": 0,
+        "webgpu.resolveQuerySet": 6,
+        "webgpu.copyBufferToBuffer": 6
+      }
+    },
+    "memory": {
+      "after": {
+        "atMs": 2551,
+        "performanceMemory": {
+          "jsHeapSizeLimit": 4395630592,
+          "totalJSHeapSize": 2656121,
+          "usedJSHeapSize": 1463073
+        },
+        "trackedGpuMemory": {
+          "api": "webgpu",
+          "byKind": {
+            "buffer": {
+              "bytes": 16777216,
+              "count": 1
+            }
+          },
+          "liveResources": [],
+          "truncatedResources": 0,
+          "createdCount": 1,
+          "releasedCount": 0,
+          "createdByKind": {
+            "buffer": 1
+          },
+          "releasedByKind": {},
+          "pipelines": {
+            "syncCount": 0,
+            "asyncCount": 0,
+            "shaderModules": 0,
+            "syncPipelines": []
+          },
+          "bindGroups": {
+            "createdCount": 0,
+            "layoutCount": 0
+          },
+          "totalBytes": 16777216,
+          "totalResources": 1
+        },
+        "userAgentSpecificMemory": null
+      },
+      "before": {
+        "atMs": 951.4000000357628,
+        "performanceMemory": {
+          "jsHeapSizeLimit": 4395630592,
+          "totalJSHeapSize": 2918260,
+          "usedJSHeapSize": 1629212
+        },
+        "trackedGpuMemory": {
+          "api": "webgpu",
+          "byKind": {
+            "buffer": {
+              "bytes": 16777216,
+              "count": 1
+            }
+          },
+          "liveResources": [],
+          "truncatedResources": 0,
+          "createdCount": 1,
+          "releasedCount": 0,
+          "createdByKind": {
+            "buffer": 1
+          },
+          "releasedByKind": {},
+          "pipelines": {
+            "syncCount": 0,
+            "asyncCount": 0,
+            "shaderModules": 0,
+            "syncPipelines": []
+          },
+          "bindGroups": {
+            "createdCount": 0,
+            "layoutCount": 0
+          },
+          "totalBytes": 16777216,
+          "totalResources": 1
+        },
+        "userAgentSpecificMemory": null
+      },
+      "delta": {
+        "performanceMemory": {
+          "jsHeapSizeLimit": 0,
+          "totalJSHeapSize": -262139,
+          "usedJSHeapSize": -166139
+        },
+        "trackedGpuMemoryBytes": 0
+      }
+    },
+    "samples": [
+      {
+        "elapsedMs": 265.4000000357628,
+        "error": null,
+        "index": 0,
+        "instrumentation": {
+          "after": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 52,
+              "webgpu.renderPasses": 52,
+              "webgpu.queueSubmits": 52,
+              "webgpu.commandBuffersSubmitted": 52,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 3,
+              "webgpu.copyBufferToBuffer": 3
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "before": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 35,
+              "webgpu.renderPasses": 35,
+              "webgpu.queueSubmits": 35,
+              "webgpu.commandBuffersSubmitted": 35,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 2,
+              "webgpu.copyBufferToBuffer": 2
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "delta": {
+            "webgpu.devices": 0,
+            "webgpu.resourcesCreated": 0,
+            "webgpu.commandEncoders": 17,
+            "webgpu.renderPasses": 17,
+            "webgpu.queueSubmits": 17,
+            "webgpu.commandBuffersSubmitted": 17,
+            "webgl2.contexts": 0,
+            "webgpu.resolveQuerySet": 1,
+            "webgpu.copyBufferToBuffer": 1
+          }
+        },
+        "measurement": {
+          "api": "webgpu",
+          "fps": 60,
+          "frameCount": 16,
+          "frameTimeMs": {
+            "count": 15,
+            "max": 16.700000000000045,
+            "mean": 16.666666666666668,
+            "min": 16.59999999999991
+          },
+          "gpuTimeNs": 16124,
+          "phase": "sample",
+          "scratchBufferSize": 16777216,
+          "timestampQueryAvailable": true,
+          "trackedGpuMemory": {
+            "api": "webgpu",
+            "byKind": {
+              "buffer": {
+                "bytes": 16777216,
+                "count": 1
+              }
+            },
+            "liveResources": [],
+            "truncatedResources": 0,
+            "createdCount": 1,
+            "releasedCount": 0,
+            "createdByKind": {
+              "buffer": 1
+            },
+            "releasedByKind": {},
+            "pipelines": {
+              "syncCount": 0,
+              "asyncCount": 0,
+              "shaderModules": 0,
+              "syncPipelines": []
+            },
+            "bindGroups": {
+              "createdCount": 0,
+              "layoutCount": 0
+            },
+            "totalBytes": 16777216,
+            "totalResources": 1
+          },
+          "observedFrames": {
+            "durationMs": 233.4000000000001,
+            "observationWindowMs": 250.69999998807907,
+            "fps": 59.98286203941729,
+            "frameCount": 15,
+            "frameTimeMs": {
+              "coefficientOfVariation": 0.002709749494578142,
+              "count": 14,
+              "min": 16.59999999999991,
+              "max": 16.700000000000045,
+              "mean": 16.671428571428578,
+              "p50": 16.700000000000045,
+              "p90": 16.700000000000045,
+              "p95": 16.700000000000045,
+              "p99": 16.700000000000045,
+              "p99_9": 16.700000000000045,
+              "stddev": 0.04517539514532418,
+              "variance": 0.00204081632653618
+            },
+            "cadence": {
+              "hz": 60,
+              "intervalMs": 16.67,
+              "hitRate": 1
+            },
+            "maxJitter": 0.10000000000013642,
+            "slowFrameCount": 0,
+            "type": "raf"
+          }
+        },
+        "memory": {
+          "after": {
+            "atMs": 1217.6000000238419,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2918265,
+              "usedJSHeapSize": 2475241
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "before": {
+            "atMs": 952.1999999880791,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2918260,
+              "usedJSHeapSize": 1648324
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "delta": {
+            "performanceMemory": {
+              "jsHeapSizeLimit": 0,
+              "totalJSHeapSize": 5,
+              "usedJSHeapSize": 826917
+            },
+            "trackedGpuMemoryBytes": 0
+          }
+        },
+        "startedAtMs": 952.1999999880791
+      },
+      {
+        "elapsedMs": 266.7000000476837,
+        "error": null,
+        "index": 1,
+        "instrumentation": {
+          "after": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 69,
+              "webgpu.renderPasses": 69,
+              "webgpu.queueSubmits": 69,
+              "webgpu.commandBuffersSubmitted": 69,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 4,
+              "webgpu.copyBufferToBuffer": 4
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "before": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 52,
+              "webgpu.renderPasses": 52,
+              "webgpu.queueSubmits": 52,
+              "webgpu.commandBuffersSubmitted": 52,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 3,
+              "webgpu.copyBufferToBuffer": 3
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "delta": {
+            "webgpu.devices": 0,
+            "webgpu.resourcesCreated": 0,
+            "webgpu.commandEncoders": 17,
+            "webgpu.renderPasses": 17,
+            "webgpu.queueSubmits": 17,
+            "webgpu.commandBuffersSubmitted": 17,
+            "webgl2.contexts": 0,
+            "webgpu.resolveQuerySet": 1,
+            "webgpu.copyBufferToBuffer": 1
+          }
+        },
+        "measurement": {
+          "api": "webgpu",
+          "fps": 60,
+          "frameCount": 16,
+          "frameTimeMs": {
+            "count": 15,
+            "max": 16.800000000000182,
+            "mean": 16.666666666666668,
+            "min": 16.59999999999991
+          },
+          "gpuTimeNs": 38084,
+          "phase": "sample",
+          "scratchBufferSize": 16777216,
+          "timestampQueryAvailable": true,
+          "trackedGpuMemory": {
+            "api": "webgpu",
+            "byKind": {
+              "buffer": {
+                "bytes": 16777216,
+                "count": 1
+              }
+            },
+            "liveResources": [],
+            "truncatedResources": 0,
+            "createdCount": 1,
+            "releasedCount": 0,
+            "createdByKind": {
+              "buffer": 1
+            },
+            "releasedByKind": {},
+            "pipelines": {
+              "syncCount": 0,
+              "asyncCount": 0,
+              "shaderModules": 0,
+              "syncPipelines": []
+            },
+            "bindGroups": {
+              "createdCount": 0,
+              "layoutCount": 0
+            },
+            "totalBytes": 16777216,
+            "totalResources": 1
+          },
+          "observedFrames": {
+            "durationMs": 233.29999999999995,
+            "observationWindowMs": 251.10000002384186,
+            "fps": 60.008572653236186,
+            "frameCount": 15,
+            "frameTimeMs": {
+              "coefficientOfVariation": 0.0036622390678650615,
+              "count": 14,
+              "min": 16.59999999999991,
+              "max": 16.800000000000182,
+              "mean": 16.66428571428571,
+              "p50": 16.700000000000045,
+              "p90": 16.700000000000045,
+              "p95": 16.735000000000092,
+              "p99": 16.787000000000162,
+              "p99_9": 16.79870000000018,
+              "stddev": 0.061028598180922766,
+              "variance": 0.0037244897959285298
+            },
+            "cadence": {
+              "hz": 60,
+              "intervalMs": 16.67,
+              "hitRate": 1
+            },
+            "maxJitter": 0.20000000000027285,
+            "slowFrameCount": 0,
+            "type": "raf"
+          }
+        },
+        "memory": {
+          "after": {
+            "atMs": 1484.4000000357628,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2983801,
+              "usedJSHeapSize": 2540561
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "before": {
+            "atMs": 1217.699999988079,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2918265,
+              "usedJSHeapSize": 2492641
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "delta": {
+            "performanceMemory": {
+              "jsHeapSizeLimit": 0,
+              "totalJSHeapSize": 65536,
+              "usedJSHeapSize": 47920
+            },
+            "trackedGpuMemoryBytes": 0
+          }
+        },
+        "startedAtMs": 1217.699999988079
+      },
+      {
+        "elapsedMs": 266.69999998807907,
+        "error": null,
+        "index": 2,
+        "instrumentation": {
+          "after": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 86,
+              "webgpu.renderPasses": 86,
+              "webgpu.queueSubmits": 86,
+              "webgpu.commandBuffersSubmitted": 86,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 5,
+              "webgpu.copyBufferToBuffer": 5
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "before": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 69,
+              "webgpu.renderPasses": 69,
+              "webgpu.queueSubmits": 69,
+              "webgpu.commandBuffersSubmitted": 69,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 4,
+              "webgpu.copyBufferToBuffer": 4
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "delta": {
+            "webgpu.devices": 0,
+            "webgpu.resourcesCreated": 0,
+            "webgpu.commandEncoders": 17,
+            "webgpu.renderPasses": 17,
+            "webgpu.queueSubmits": 17,
+            "webgpu.commandBuffersSubmitted": 17,
+            "webgl2.contexts": 0,
+            "webgpu.resolveQuerySet": 1,
+            "webgpu.copyBufferToBuffer": 1
+          }
+        },
+        "measurement": {
+          "api": "webgpu",
+          "fps": 60,
+          "frameCount": 16,
+          "frameTimeMs": {
+            "count": 15,
+            "max": 16.799999999999955,
+            "mean": 16.666666666666668,
+            "min": 16.59999999999991
+          },
+          "gpuTimeNs": 37000,
+          "phase": "sample",
+          "scratchBufferSize": 16777216,
+          "timestampQueryAvailable": true,
+          "trackedGpuMemory": {
+            "api": "webgpu",
+            "byKind": {
+              "buffer": {
+                "bytes": 16777216,
+                "count": 1
+              }
+            },
+            "liveResources": [],
+            "truncatedResources": 0,
+            "createdCount": 1,
+            "releasedCount": 0,
+            "createdByKind": {
+              "buffer": 1
+            },
+            "releasedByKind": {},
+            "pipelines": {
+              "syncCount": 0,
+              "asyncCount": 0,
+              "shaderModules": 0,
+              "syncPipelines": []
+            },
+            "bindGroups": {
+              "createdCount": 0,
+              "layoutCount": 0
+            },
+            "totalBytes": 16777216,
+            "totalResources": 1
+          },
+          "observedFrames": {
+            "durationMs": 233.4000000000001,
+            "observationWindowMs": 250.69999998807907,
+            "fps": 59.98286203941729,
+            "frameCount": 15,
+            "frameTimeMs": {
+              "coefficientOfVariation": 0.00353308108450679,
+              "count": 14,
+              "min": 16.59999999999991,
+              "max": 16.799999999999955,
+              "mean": 16.671428571428578,
+              "p50": 16.700000000000045,
+              "p90": 16.700000000000045,
+              "p95": 16.735000000000014,
+              "p99": 16.786999999999967,
+              "p99_9": 16.798699999999954,
+              "stddev": 0.05890150893742036,
+              "variance": 0.0034693877551050106
+            },
+            "cadence": {
+              "hz": 60,
+              "intervalMs": 16.67,
+              "hitRate": 1
+            },
+            "maxJitter": 0.20000000000004547,
+            "slowFrameCount": 0,
+            "type": "raf"
+          }
+        },
+        "memory": {
+          "after": {
+            "atMs": 1751.300000011921,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 3180409,
+              "usedJSHeapSize": 1890773
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "before": {
+            "atMs": 1484.6000000238419,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2983801,
+              "usedJSHeapSize": 1843385
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "delta": {
+            "performanceMemory": {
+              "jsHeapSizeLimit": 0,
+              "totalJSHeapSize": 196608,
+              "usedJSHeapSize": 47388
+            },
+            "trackedGpuMemoryBytes": 0
+          }
+        },
+        "startedAtMs": 1484.6000000238419
+      },
+      {
+        "elapsedMs": 266.19999998807907,
+        "error": null,
+        "index": 3,
+        "instrumentation": {
+          "after": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 103,
+              "webgpu.renderPasses": 103,
+              "webgpu.queueSubmits": 103,
+              "webgpu.commandBuffersSubmitted": 103,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 6,
+              "webgpu.copyBufferToBuffer": 6
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "before": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 86,
+              "webgpu.renderPasses": 86,
+              "webgpu.queueSubmits": 86,
+              "webgpu.commandBuffersSubmitted": 86,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 5,
+              "webgpu.copyBufferToBuffer": 5
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "delta": {
+            "webgpu.devices": 0,
+            "webgpu.resourcesCreated": 0,
+            "webgpu.commandEncoders": 17,
+            "webgpu.renderPasses": 17,
+            "webgpu.queueSubmits": 17,
+            "webgpu.commandBuffersSubmitted": 17,
+            "webgl2.contexts": 0,
+            "webgpu.resolveQuerySet": 1,
+            "webgpu.copyBufferToBuffer": 1
+          }
+        },
+        "measurement": {
+          "api": "webgpu",
+          "fps": 60,
+          "frameCount": 16,
+          "frameTimeMs": {
+            "count": 15,
+            "max": 16.800000000000182,
+            "mean": 16.666666666666668,
+            "min": 16.59999999999991
+          },
+          "gpuTimeNs": 37125,
+          "phase": "sample",
+          "scratchBufferSize": 16777216,
+          "timestampQueryAvailable": true,
+          "trackedGpuMemory": {
+            "api": "webgpu",
+            "byKind": {
+              "buffer": {
+                "bytes": 16777216,
+                "count": 1
+              }
+            },
+            "liveResources": [],
+            "truncatedResources": 0,
+            "createdCount": 1,
+            "releasedCount": 0,
+            "createdByKind": {
+              "buffer": 1
+            },
+            "releasedByKind": {},
+            "pipelines": {
+              "syncCount": 0,
+              "asyncCount": 0,
+              "shaderModules": 0,
+              "syncPipelines": []
+            },
+            "bindGroups": {
+              "createdCount": 0,
+              "layoutCount": 0
+            },
+            "totalBytes": 16777216,
+            "totalResources": 1
+          },
+          "observedFrames": {
+            "durationMs": 233.29999999999995,
+            "observationWindowMs": 250.19999998807907,
+            "fps": 60.008572653236186,
+            "frameCount": 15,
+            "frameTimeMs": {
+              "coefficientOfVariation": 0.0036622390678650615,
+              "count": 14,
+              "min": 16.59999999999991,
+              "max": 16.800000000000182,
+              "mean": 16.66428571428571,
+              "p50": 16.700000000000045,
+              "p90": 16.700000000000045,
+              "p95": 16.735000000000092,
+              "p99": 16.787000000000162,
+              "p99_9": 16.79870000000018,
+              "stddev": 0.061028598180922766,
+              "variance": 0.0037244897959285298
+            },
+            "cadence": {
+              "hz": 60,
+              "intervalMs": 16.67,
+              "hitRate": 1
+            },
+            "maxJitter": 0.20000000000027285,
+            "slowFrameCount": 0,
+            "type": "raf"
+          }
+        },
+        "memory": {
+          "after": {
+            "atMs": 2017.9000000357628,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2393977,
+              "usedJSHeapSize": 1299581
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "before": {
+            "atMs": 1751.5,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 3180409,
+              "usedJSHeapSize": 1904801
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "delta": {
+            "performanceMemory": {
+              "jsHeapSizeLimit": 0,
+              "totalJSHeapSize": -786432,
+              "usedJSHeapSize": -605220
+            },
+            "trackedGpuMemoryBytes": 0
+          }
+        },
+        "startedAtMs": 1751.6000000238419
+      },
+      {
+        "elapsedMs": 265.5999999642372,
+        "error": null,
+        "index": 4,
+        "instrumentation": {
+          "after": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 120,
+              "webgpu.renderPasses": 120,
+              "webgpu.queueSubmits": 120,
+              "webgpu.commandBuffersSubmitted": 120,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 7,
+              "webgpu.copyBufferToBuffer": 7
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "before": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 103,
+              "webgpu.renderPasses": 103,
+              "webgpu.queueSubmits": 103,
+              "webgpu.commandBuffersSubmitted": 103,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 6,
+              "webgpu.copyBufferToBuffer": 6
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "delta": {
+            "webgpu.devices": 0,
+            "webgpu.resourcesCreated": 0,
+            "webgpu.commandEncoders": 17,
+            "webgpu.renderPasses": 17,
+            "webgpu.queueSubmits": 17,
+            "webgpu.commandBuffersSubmitted": 17,
+            "webgl2.contexts": 0,
+            "webgpu.resolveQuerySet": 1,
+            "webgpu.copyBufferToBuffer": 1
+          }
+        },
+        "measurement": {
+          "api": "webgpu",
+          "fps": 60,
+          "frameCount": 16,
+          "frameTimeMs": {
+            "count": 15,
+            "max": 16.700000000000273,
+            "mean": 16.666666666666668,
+            "min": 16.59999999999991
+          },
+          "gpuTimeNs": 37666,
+          "phase": "sample",
+          "scratchBufferSize": 16777216,
+          "timestampQueryAvailable": true,
+          "trackedGpuMemory": {
+            "api": "webgpu",
+            "byKind": {
+              "buffer": {
+                "bytes": 16777216,
+                "count": 1
+              }
+            },
+            "liveResources": [],
+            "truncatedResources": 0,
+            "createdCount": 1,
+            "releasedCount": 0,
+            "createdByKind": {
+              "buffer": 1
+            },
+            "releasedByKind": {},
+            "pipelines": {
+              "syncCount": 0,
+              "asyncCount": 0,
+              "shaderModules": 0,
+              "syncPipelines": []
+            },
+            "bindGroups": {
+              "createdCount": 0,
+              "layoutCount": 0
+            },
+            "totalBytes": 16777216,
+            "totalResources": 1
+          },
+          "observedFrames": {
+            "durationMs": 233.30000000000018,
+            "observationWindowMs": 250.9000000357628,
+            "fps": 60.00857265323613,
+            "frameCount": 15,
+            "frameTimeMs": {
+              "coefficientOfVariation": 0.002875355307548311,
+              "count": 14,
+              "min": 16.59999999999991,
+              "max": 16.700000000000273,
+              "mean": 16.66428571428573,
+              "p50": 16.699999999999818,
+              "p90": 16.700000000000273,
+              "p95": 16.700000000000273,
+              "p99": 16.700000000000273,
+              "p99_9": 16.700000000000273,
+              "stddev": 0.04791574237507297,
+              "variance": 0.002295918367354363
+            },
+            "cadence": {
+              "hz": 60,
+              "intervalMs": 16.67,
+              "hitRate": 1
+            },
+            "maxJitter": 0.1000000000003638,
+            "slowFrameCount": 0,
+            "type": "raf"
+          }
+        },
+        "memory": {
+          "after": {
+            "atMs": 2284.199999988079,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2656121,
+              "usedJSHeapSize": 1386681
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "before": {
+            "atMs": 2018.4000000357628,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2656121,
+              "usedJSHeapSize": 1327769
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "delta": {
+            "performanceMemory": {
+              "jsHeapSizeLimit": 0,
+              "totalJSHeapSize": 0,
+              "usedJSHeapSize": 58912
+            },
+            "trackedGpuMemoryBytes": 0
+          }
+        },
+        "startedAtMs": 2018.6000000238419
+      },
+      {
+        "elapsedMs": 266.30000001192093,
+        "error": null,
+        "index": 5,
+        "instrumentation": {
+          "after": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 137,
+              "webgpu.renderPasses": 137,
+              "webgpu.queueSubmits": 137,
+              "webgpu.commandBuffersSubmitted": 137,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 8,
+              "webgpu.copyBufferToBuffer": 8
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "before": {
+            "counters": {
+              "webgpu.devices": 1,
+              "webgpu.resourcesCreated": 3,
+              "webgpu.commandEncoders": 120,
+              "webgpu.renderPasses": 120,
+              "webgpu.queueSubmits": 120,
+              "webgpu.commandBuffersSubmitted": 120,
+              "webgl2.contexts": 1,
+              "webgpu.resolveQuerySet": 7,
+              "webgpu.copyBufferToBuffer": 7
+            },
+            "errors": [],
+            "resources": {
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "api": "auto",
+              "byApi": {
+                "webgpu": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777248,
+                  "count": 3
+                }
+              },
+              "history": [],
+              "liveResources": [],
+              "totalBytes": 16777248,
+              "totalResources": 3
+            },
+            "version": 1
+          },
+          "delta": {
+            "webgpu.devices": 0,
+            "webgpu.resourcesCreated": 0,
+            "webgpu.commandEncoders": 17,
+            "webgpu.renderPasses": 17,
+            "webgpu.queueSubmits": 17,
+            "webgpu.commandBuffersSubmitted": 17,
+            "webgl2.contexts": 0,
+            "webgpu.resolveQuerySet": 1,
+            "webgpu.copyBufferToBuffer": 1
+          }
+        },
+        "measurement": {
+          "api": "webgpu",
+          "fps": 60,
+          "frameCount": 16,
+          "frameTimeMs": {
+            "count": 15,
+            "max": 16.799999999999727,
+            "mean": 16.666666666666668,
+            "min": 16.59999999999991
+          },
+          "gpuTimeNs": 36999,
+          "phase": "sample",
+          "scratchBufferSize": 16777216,
+          "timestampQueryAvailable": true,
+          "trackedGpuMemory": {
+            "api": "webgpu",
+            "byKind": {
+              "buffer": {
+                "bytes": 16777216,
+                "count": 1
+              }
+            },
+            "liveResources": [],
+            "truncatedResources": 0,
+            "createdCount": 1,
+            "releasedCount": 0,
+            "createdByKind": {
+              "buffer": 1
+            },
+            "releasedByKind": {},
+            "pipelines": {
+              "syncCount": 0,
+              "asyncCount": 0,
+              "shaderModules": 0,
+              "syncPipelines": []
+            },
+            "bindGroups": {
+              "createdCount": 0,
+              "layoutCount": 0
+            },
+            "totalBytes": 16777216,
+            "totalResources": 1
+          },
+          "observedFrames": {
+            "durationMs": 233.29999999999973,
+            "observationWindowMs": 250.5999999642372,
+            "fps": 60.00857265323624,
+            "frameCount": 15,
+            "frameTimeMs": {
+              "coefficientOfVariation": 0.0048683312008493025,
+              "count": 14,
+              "min": 16.59999999999991,
+              "max": 16.799999999999727,
+              "mean": 16.664285714285693,
+              "p50": 16.600000000000364,
+              "p90": 16.799999999999727,
+              "p95": 16.799999999999727,
+              "p99": 16.799999999999727,
+              "p99_9": 16.799999999999727,
+              "stddev": 0.08112726208272435,
+              "variance": 0.0065816326530390434
+            },
+            "cadence": {
+              "hz": 60,
+              "intervalMs": 16.67,
+              "hitRate": 1
+            },
+            "maxJitter": 0.1999999999998181,
+            "slowFrameCount": 0,
+            "type": "raf"
+          }
+        },
+        "memory": {
+          "after": {
+            "atMs": 2550.900000035763,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2656121,
+              "usedJSHeapSize": 1448981
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "before": {
+            "atMs": 2284.5,
+            "performanceMemory": {
+              "jsHeapSizeLimit": 4395630592,
+              "totalJSHeapSize": 2656121,
+              "usedJSHeapSize": 1401381
+            },
+            "trackedGpuMemory": {
+              "api": "webgpu",
+              "byKind": {
+                "buffer": {
+                  "bytes": 16777216,
+                  "count": 1
+                }
+              },
+              "liveResources": [],
+              "truncatedResources": 0,
+              "createdCount": 1,
+              "releasedCount": 0,
+              "createdByKind": {
+                "buffer": 1
+              },
+              "releasedByKind": {},
+              "pipelines": {
+                "syncCount": 0,
+                "asyncCount": 0,
+                "shaderModules": 0,
+                "syncPipelines": []
+              },
+              "bindGroups": {
+                "createdCount": 0,
+                "layoutCount": 0
+              },
+              "totalBytes": 16777216,
+              "totalResources": 1
+            },
+            "userAgentSpecificMemory": null
+          },
+          "delta": {
+            "performanceMemory": {
+              "jsHeapSizeLimit": 0,
+              "totalJSHeapSize": 0,
+              "usedJSHeapSize": 47600
+            },
+            "trackedGpuMemoryBytes": 0
+          }
+        },
+        "startedAtMs": 2284.600000023842
+      }
+    ],
+    "sampling": {
+      "mode": "frames",
+      "adaptive": false,
+      "stoppedEarly": false,
+      "requestedSamples": 6,
+      "coefficientOfVariation": null
+    },
+    "slowFrames": [],
+    "warmup": {
+      "durationMs": 534.8999999761581,
+      "lagSpikeMs": 16.800000000000068,
+      "settled": true
+    },
+    "summary": {
+      "frameTimeMsP99": {
+        "coefficientOfVariation": 0.002553185151243248,
+        "count": 6,
+        "min": 16.700000000000045,
+        "max": 16.799999999999727,
+        "mean": 16.760166666666724,
+        "p50": 16.787000000000063,
+        "p90": 16.793499999999945,
+        "p95": 16.796749999999836,
+        "p99": 16.799349999999748,
+        "p99_9": 16.79993499999973,
+        "stddev": 0.04279180866569552,
+        "variance": 0.001831138888881494
+      },
+      "frameTimeMsP99_9": {
+        "coefficientOfVariation": 0.0027843879825810835,
+        "count": 6,
+        "min": 16.700000000000045,
+        "max": 16.799999999999727,
+        "mean": 16.766016666666726,
+        "p50": 16.798700000000068,
+        "p90": 16.799349999999954,
+        "p95": 16.79967499999984,
+        "p99": 16.79993499999975,
+        "p99_9": 16.79999349999973,
+        "stddev": 0.04668309532242099,
+        "variance": 0.0021793113888822443
+      },
+      "maxJitter": {
+        "coefficientOfVariation": 0.28284271247394377,
+        "count": 6,
+        "min": 0.10000000000013642,
+        "max": 0.20000000000027285,
+        "mean": 0.16666666666681826,
+        "p50": 0.1999999999999318,
+        "p90": 0.20000000000027285,
+        "p95": 0.20000000000027285,
+        "p99": 0.20000000000027285,
+        "p99_9": 0.20000000000027285,
+        "stddev": 0.0471404520790335,
+        "variance": 0.0022222222222156537
+      },
+      "gpuTimeNs": {
+        "coefficientOfVariation": 0.23437190962974835,
+        "count": 6,
+        "min": 16124,
+        "max": 38084,
+        "mean": 33833,
+        "p50": 37062.5,
+        "p90": 37875,
+        "p95": 37979.5,
+        "p99": 38063.100000000006,
+        "p99_9": 38081.909999999996,
+        "stddev": 7929.504818503276,
+        "variance": 62877046.666666664
+      },
+      "renderPasses": {
+        "coefficientOfVariation": 1.9592171022796884e-16,
+        "count": 6,
+        "min": 1.1333333333333333,
+        "max": 1.1333333333333333,
+        "mean": 1.133333333333333,
+        "p50": 1.1333333333333333,
+        "p90": 1.1333333333333333,
+        "p95": 1.1333333333333333,
+        "p99": 1.1333333333333333,
+        "p99_9": 1.1333333333333333,
+        "stddev": 2.220446049250313e-16,
+        "variance": 4.930380657631324e-32
+      },
+      "cadence": {
+        "hz": 60,
+        "intervalMs": 16.67,
+        "hitRate": 1
+      },
+      "passes": null,
+      "elapsedMs": {
+        "coefficientOfVariation": 0.0018755062018731713,
+        "count": 6,
+        "min": 265.4000000357628,
+        "max": 266.7000000476837,
+        "mean": 266.15000000596046,
+        "p50": 266.25,
+        "p90": 266.7000000178814,
+        "p95": 266.70000003278255,
+        "p99": 266.7000000447035,
+        "p99_9": 266.7000000473857,
+        "stddev": 0.4991659756397234,
+        "variance": 0.24916667123635694
+      },
+      "fps": {
+        "coefficientOfVariation": 0,
+        "count": 6,
+        "min": 60,
+        "max": 60,
+        "mean": 60,
+        "p50": 60,
+        "p90": 60,
+        "p95": 60,
+        "p99": 60,
+        "p99_9": 60,
+        "stddev": 0,
+        "variance": 0
+      },
+      "frameTimeMsMax": {
+        "coefficientOfVariation": 0.002811557778073559,
+        "count": 6,
+        "min": 16.700000000000045,
+        "max": 16.800000000000182,
+        "mean": 16.766666666666726,
+        "p50": 16.79999999999984,
+        "p90": 16.800000000000182,
+        "p95": 16.800000000000182,
+        "p99": 16.800000000000182,
+        "p99_9": 16.800000000000182,
+        "stddev": 0.0471404520790335,
+        "variance": 0.0022222222222156537
+      },
+      "frameTimeMsMean": {
+        "coefficientOfVariation": 0,
+        "count": 6,
+        "min": 16.666666666666668,
+        "max": 16.666666666666668,
+        "mean": 16.666666666666668,
+        "p50": 16.666666666666668,
+        "p90": 16.666666666666668,
+        "p95": 16.666666666666668,
+        "p99": 16.666666666666668,
+        "p99_9": 16.666666666666668,
+        "stddev": 0,
+        "variance": 0
+      },
+      "frameTimeMsP95": {
+        "coefficientOfVariation": 0.0019925550543953502,
+        "count": 6,
+        "min": 16.700000000000045,
+        "max": 16.799999999999727,
+        "mean": 16.73416666666671,
+        "p50": 16.735000000000053,
+        "p90": 16.76749999999991,
+        "p95": 16.78374999999982,
+        "p99": 16.796749999999744,
+        "p99_9": 16.79967499999973,
+        "stddev": 0.03334374837276094,
+        "variance": 0.0011118055555459977
+      },
+      "instrumentationCounters": {
+        "webgpu.devices": 0,
+        "webgpu.resourcesCreated": 0,
+        "webgpu.commandEncoders": 102,
+        "webgpu.renderPasses": 102,
+        "webgpu.queueSubmits": 102,
+        "webgpu.commandBuffersSubmitted": 102,
+        "webgl2.contexts": 0,
+        "webgpu.resolveQuerySet": 6,
+        "webgpu.copyBufferToBuffer": 6
+      },
+      "jsHeapDeltaBytes": {
+        "coefficientOfVariation": 5.8711313036985135,
+        "count": 6,
+        "min": -605220,
+        "max": 826917,
+        "mean": 70586.16666666667,
+        "p50": 47760,
+        "p90": 442914.5,
+        "p95": 634915.75,
+        "p99": 788516.7500000001,
+        "p99_9": 823076.975,
+        "stddev": 414420.65272474725,
+        "variance": 171744477404.80554
+      },
+      "observedFrameCount": 90,
+      "sampleCount": 6,
+      "slowFrameCount": 0,
+      "trackedGpuDeltaBytes": {
+        "coefficientOfVariation": null,
+        "count": 6,
+        "min": 0,
+        "max": 0,
+        "mean": 0,
+        "p50": 0,
+        "p90": 0,
+        "p95": 0,
+        "p99": 0,
+        "p99_9": 0,
+        "stddev": 0,
+        "variance": 0
+      },
+      "trackedGpuTotalBytes": {
+        "coefficientOfVariation": 0,
+        "count": 6,
+        "min": 16777216,
+        "max": 16777216,
+        "mean": 16777216,
+        "p50": 16777216,
+        "p90": 16777216,
+        "p95": 16777216,
+        "p99": 16777216,
+        "p99_9": 16777216,
+        "stddev": 0,
+        "variance": 0
+      },
+      "userAgentMemoryDeltaBytes": null
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+    "warnings": []
+  },
+  "options": {
+    "angle": null,
+    "api": "auto",
+    "autoInstrument": true,
+    "browserChannel": null,
+    "chromiumArgs": [
+      "--headless=new",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--enable-precise-memory-info",
+      "--enable-unsafe-webgpu",
+      "--enable-dawn-features=allow_unsafe_apis",
+      "--js-flags=--expose-gc",
+      "--no-first-run",
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=0",
+      "--window-size=1280,720",
+      "about:blank"
+    ],
+    "contextMode": "isolated",
+    "samplingMode": "frames",
+    "frameObservation": "wall-clock",
+    "adaptive": false,
+    "minimalTrace": false,
+    "cdpAttached": false,
+    "waitCondition": null,
+    "durationMs": 250,
+    "deviceScaleFactor": 1,
+    "deepMemory": false,
+    "waitUntil": "networkidle",
+    "waitForHook": false,
+    "gc": false,
+    "headful": false,
+    "hookName": "__gpuReportBench",
+    "runner": "fast-cdp",
+    "samples": 6,
+    "slowFrameThresholdMs": 20,
+    "trace": false,
+    "viewport": "1280x720",
+    "warmup": 2
+  },
+  "pageEvents": [],
+  "pageEventSummary": {
+    "total": 0,
+    "retained": 0,
+    "dropped": 0,
+    "truncated": 0,
+    "counts": {
+      "console": 0,
+      "consoleError": 0,
+      "pageerror": 0,
+      "requestfailed": 0,
+      "log": 0,
+      "logError": 0
+    },
+    "retainedCounts": {
+      "console": 0,
+      "consoleError": 0,
+      "pageerror": 0,
+      "requestfailed": 0,
+      "log": 0,
+      "logError": 0
+    },
+    "limits": {
+      "routine": 200,
+      "pageerror": 50,
+      "requestfailed": 50,
+      "consoleError": 50,
+      "logError": 50,
+      "textChars": 8192,
+      "stringChars": 2048,
+      "arrayItems": 16,
+      "objectFields": 16,
+      "depth": 6,
+      "nodes": 128
+    }
+  },
+  "schemaVersion": 2,
+  "target": {
+    "file": "/work/project/examples/webgpu-clear.html",
+    "root": "/work/project",
+    "source": "file-server",
+    "url": "http://127.0.0.1:57216/examples/webgpu-clear.html"
+  },
+  "trace": {
+    "captured": false,
+    "error": null,
+    "rawTracePath": null,
+    "summary": null
+  },
+  "diagnostics": {
+    "warnings": [],
+    "highlights": [
+      "Excellent frame rate: average 60.0 FPS.",
+      "GPU Memory tracked: 16.00 MiB allocated.",
+      "Reported GPU execution duration: average 0.03 ms."
+    ],
+    "recommendations": [],
+    "resources": {
+      "bufferBytes": 16777216,
+      "bufferCount": 1,
+      "textureBytes": 0,
+      "textureCount": 0,
+      "totalBytes": 16777216
+    },
+    "validity": {
+      "valid": true,
+      "issues": []
+    },
+    "instrumentation": {
+      "enabled": true,
+      "errors": []
+    },
+    "pageErrors": [],
+    "pageErrorCount": 0,
+    "sampleErrors": [],
+    "signal": {
+      "gpuTimingSamples": 6,
+      "gpuTiming": {
+        "schemaVersion": 1,
+        "status": "single-scope",
+        "scope": "",
+        "sampleCount": 6,
+        "validSampleCount": 6,
+        "timingCount": 6,
+        "ambiguousSampleCount": 0,
+        "negativeTimingCount": 0,
+        "reasons": []
+      },
+      "hookFound": true,
+      "observedFrameCount": 90,
+      "samplingMode": "frames",
+      "sampleCount": 6
+    },
+    "warningCount": 0
+  },
+  "summary": {
+    "verdict": "excellent",
+    "fps": 60,
+    "frameTimeMsMean": 16.666666666666668,
+    "frameTimeMsP95": 16.78374999999982,
+    "frameTimeMsMax": 16.800000000000182,
+    "maxJitterMs": 0.16666666666681826,
+    "gpuFrameMsMean": 0.033833,
+    "jsHeapGrowthMBPerSec": -0.09921879720074496,
+    "cadence": {
+      "hz": 60,
+      "intervalMs": 16.67,
+      "hitRate": 1
+    },
+    "warmup": {
+      "durationMs": 534.8999999761581,
+      "lagSpikeMs": 16.800000000000068,
+      "settled": true
+    },
+    "trackedVram": {
+      "available": true,
+      "bufferCount": 1,
+      "bufferMiB": 16,
+      "leakedResources": 0,
+      "textureCount": 0,
+      "textureMiB": 0,
+      "totalMiB": 16
+    },
+    "pipelines": {
+      "syncCount": 0,
+      "asyncCount": 0,
+      "shaderModules": 0,
+      "syncPipelines": []
+    },
+    "bindGroups": {
+      "createdCount": 0,
+      "layoutCount": 0
+    },
+    "webgpuOps": {
+      "drawCalls": null,
+      "dispatchCalls": null,
+      "renderPasses": 1.133333333333333,
+      "computePasses": null,
+      "setPipelineCalls": null,
+      "setBindGroupCalls": null
+    },
+    "slowFrameCount": 0,
+    "sampleCount": 6,
+    "warningCount": 0,
+    "warnings": [],
+    "highlights": [
+      "Excellent frame rate: average 60.0 FPS.",
+      "GPU Memory tracked: 16.00 MiB allocated.",
+      "Reported GPU execution duration: average 0.03 ms."
+    ],
+    "recommendations": [],
+    "drawCallsPerFrame": 0,
+    "gpuFrameMsP95": 0.0379795,
+    "observedFrameCount": 90
+  }
+}

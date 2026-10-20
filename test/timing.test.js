@@ -230,3 +230,36 @@ function observedDevice(values = [0n, 1n]) {
   };
   return device;
 }
+
+test('measureWarm runs untimed warm-up passes, drains the queue, then times one pass', () => withGPUConstants(async () => {
+  const device = observedDevice([100n, 350n]);
+  const encoders = [];
+  device.createCommandEncoder = () => { const encoder = commandEncoder(); encoder.passes = []; encoder.beginRenderPass = (d) => { encoder.passes.push(d); return {end(){}}; }; encoders.push(encoder); return encoder; };
+  const timer = createWebGPUTimer(device);
+  const result = await timer.measureWarm((encoder, helper) => helper.beginRenderPass(encoder, {label: 'main'}), {warmupMs: 1e6, maxWarmupPasses: 5});
+  assert.deepEqual(result, {gpuTimeNs: 250, gpuTiming: {method: 'warm', passes: 5, warmupMs: result.gpuTiming.warmupMs}});
+  assert.ok(result.gpuTiming.warmupMs >= 0);
+  assert.equal(device.submissions, 6);
+  assert.equal(device.queueWaits, 5);
+  assert.ok(encoders.slice(0, 5).every((encoder) => encoder.passes.every((d) => !d.timestampWrites) && encoder.resolved === 0));
+  assert.ok(encoders[5].passes[0].timestampWrites);
+  assert.equal(timer.state, 'idle');
+  const none = await timer.measureWarm((encoder, helper) => helper.beginComputePass(encoder), {maxWarmupPasses: 0});
+  assert.equal(none.gpuTiming.passes, 0);
+  await assert.rejects(timer.measureWarm(() => {}, {maxWarmupPasses: 1.5}), /maxWarmupPasses/);
+  timer.destroy();
+}));
+
+test('batched measureWarm sums every timed pass of the measured run', () => withGPUConstants(async () => {
+  const device = observedDevice([100n, 160n, 200n, 350n]);
+  const timer = createBatchedWebGPUTimer(device, {capacity: 2});
+  const result = await timer.measureWarm((encoder, helper) => {
+    helper.beginRenderPass(encoder, {}, 'shadow');
+    helper.beginRenderPass(encoder, {}, 'main');
+  }, {warmupMs: 1e6, maxWarmupPasses: 2});
+  assert.equal(result.gpuTimeNs, 210);
+  assert.deepEqual(result.measurements.map((item) => item.label), ['shadow', 'main']);
+  assert.deepEqual({...result.gpuTiming, warmupMs: 0}, {method: 'warm', passes: 2, warmupMs: 0});
+  assert.equal(timer.state, 'idle');
+  timer.destroy();
+}));

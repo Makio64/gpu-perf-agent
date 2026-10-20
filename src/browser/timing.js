@@ -26,6 +26,43 @@ export function createWebGPUTimer(device, options = {}) {
     querySet: batch.querySet,
     timestampWrites: (extra) => batch.timestampWrites(null, extra)
   };
+  async function measure(recordCommands) {
+    assertManual();
+    if (typeof recordCommands !== 'function') throw new TypeError('recordCommands must be a function.');
+    if (batch.state !== 'idle') throw new Error(`WebGPU timer is ${batch.state}; finish or reset the previous measurement.`);
+    measuring = true;
+    try {
+      const encoder = device.createCommandEncoder();
+      await recordCommands(encoder, helpers);
+      if (batch.resolve(encoder) !== 1) throw new Error('Record one timed pass using the supplied timer helpers.');
+      device.queue.submit([encoder.finish()]);
+      // mapAsync waits for this result buffer. A queue-wide fence adds unnecessary synchronization.
+      return await readNanoseconds();
+    } catch (error) {
+      if (batch.state === 'recording' || batch.state === 'idle') batch.reset();
+      // Submission failures leave uncertain GPU state; destroy instead of reusing those queries.
+      else if (batch.state === 'resolved') batch.destroy();
+      throw error;
+    } finally { measuring = false; }
+  }
+
+  /**
+   * Clock-warmed timing. Applies only to idempotent passes: `recordCommands` is encoded into untimed
+   * encoders until `warmupMs` of GPU work has completed or `maxWarmupPasses` submissions were made, the
+   * queue drains, and then one timed run is measured. The value is clock-normalized cost, not in-frame cost.
+   * Hooks forward `gpuTiming` beside the value: `{ gpuTimeNs, gpuTiming: { method: "warm", passes, warmupMs } }`.
+   */
+  async function measureWarm(recordCommands, options = {}) {
+    assertManual();
+    if (typeof recordCommands !== 'function') throw new TypeError('recordCommands must be a function.');
+    if (batch.state !== 'idle') throw new Error(`WebGPU timer is ${batch.state}; finish or reset the previous measurement.`);
+    measuring = true;
+    let warm;
+    try { warm = await warmWebGPU(device, recordCommands, options); } finally { measuring = false; }
+    const gpuTimeNs = await measure(recordCommands);
+    return { gpuTimeNs, gpuTiming: { method: 'warm', passes: warm.passes, warmupMs: warm.warmupMs } };
+  }
+
   return {
     querySet: batch.querySet,
     get state() { return batch.state; },
@@ -40,25 +77,8 @@ export function createWebGPUTimer(device, options = {}) {
       if (batch.state === 'destroyed') throw new Error('WebGPU timer is destroyed.');
       return createBatchedWebGPUTimer(device, batchOptions);
     },
-    async measure(recordCommands) {
-      assertManual();
-      if (typeof recordCommands !== 'function') throw new TypeError('recordCommands must be a function.');
-      if (batch.state !== 'idle') throw new Error(`WebGPU timer is ${batch.state}; finish or reset the previous measurement.`);
-      measuring = true;
-      try {
-        const encoder = device.createCommandEncoder();
-        await recordCommands(encoder, helpers);
-        if (batch.resolve(encoder) !== 1) throw new Error('Record one timed pass using the supplied timer helpers.');
-        device.queue.submit([encoder.finish()]);
-        // mapAsync waits for this result buffer. A queue-wide fence adds unnecessary synchronization.
-        return await readNanoseconds();
-      } catch (error) {
-        if (batch.state === 'recording' || batch.state === 'idle') batch.reset();
-        // Submission failures leave uncertain GPU state; destroy instead of reusing those queries.
-        else if (batch.state === 'resolved') batch.destroy();
-        throw error;
-      } finally { measuring = false; }
-    }
+    measure,
+    measureWarm
   };
 }
 
@@ -161,6 +181,30 @@ export function createBatchedWebGPUTimer(device, options = {}) {
     }
   }
 
+  /**
+   * Clock-warmed batch timing; applies only to idempotent passes. Warms like createWebGPUTimer().measureWarm,
+   * then records once with this batch's helpers, resolves, submits and reads every timed pass.
+   * Returns `{ gpuTimeNs, measurements, gpuTiming: { method: "warm", passes, warmupMs } }` (gpuTimeNs sums passes).
+   */
+  async function measureWarm(recordCommands, warmOptions = {}) {
+    if (typeof recordCommands !== 'function') throw new TypeError('recordCommands must be a function.');
+    if (state !== 'idle') throw new Error(`WebGPU timer is ${state}; read or reset the previous batch first.`);
+    const warm = await warmWebGPU(device, recordCommands, warmOptions);
+    const encoder = device.createCommandEncoder();
+    try {
+      await recordCommands(encoder, helpers);
+      if (!resolve(encoder)) throw new Error('Record at least one timed pass using the supplied timer helpers.');
+      device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      if (state === 'recording' || state === 'idle') reset();
+      else if (state === 'resolved') destroy();
+      throw error;
+    }
+    const measurements = await read();
+    const gpuTimeNs = measurements.reduce((total, item) => total + item.durationNs, 0);
+    return { gpuTimeNs, measurements, gpuTiming: { method: 'warm', passes: warm.passes, warmupMs: warm.warmupMs } };
+  }
+
   function destroy() {
     if (state === 'destroyed') return;
     state = 'destroyed';
@@ -168,14 +212,52 @@ export function createBatchedWebGPUTimer(device, options = {}) {
     querySet.destroy(); resolveBuffer.destroy(); resultBuffer.destroy();
   }
 
-  return {
+  const helpers = {
     beginComputePass: (encoder, descriptor = {}, label = descriptor.label ?? null) => beginPass(encoder, 'beginComputePass', descriptor, label),
     beginRenderPass: (encoder, descriptor = {}, label = descriptor.label ?? null) => beginPass(encoder, 'beginRenderPass', descriptor, label),
+    querySet,
+    timestampWrites
+  };
+
+  return {
+    ...helpers,
     capacity, destroy,
     get count() { return count; },
     get state() { return state; },
-    querySet, read, reset, resolve, timestampWrites
+    measureWarm, read, reset, resolve
   };
+}
+
+// Untimed warm-up runs: the same helpers without timestampWrites, so no query is written.
+async function warmWebGPU(device, recordCommands, { warmupMs = 20, maxWarmupPasses = 24 } = {}) {
+  if (typeof warmupMs !== 'number' || !Number.isFinite(warmupMs) || warmupMs < 0) throw new TypeError('warmupMs must be a finite number of at least zero.');
+  if (!Number.isInteger(maxWarmupPasses) || maxWarmupPasses < 0) throw new TypeError('maxWarmupPasses must be an integer of at least zero.');
+  const untimed = (descriptor = {}) => {
+    if (!descriptor?.timestampWrites) return descriptor;
+    const { timestampWrites, ...rest } = descriptor;
+    return rest;
+  };
+  const helpers = {
+    beginComputePass: (encoder, descriptor = {}) => encoder.beginComputePass(untimed(descriptor)),
+    beginRenderPass: (encoder, descriptor = {}) => encoder.beginRenderPass(untimed(descriptor)),
+    querySet: null,
+    timestampWrites: () => undefined
+  };
+  const started = nowMs();
+  let passes = 0;
+  // One pass at a time until warmupMs of completed GPU work, so the measured run starts on warm clocks.
+  while (passes < maxWarmupPasses && nowMs() - started < warmupMs) {
+    const encoder = device.createCommandEncoder();
+    await recordCommands(encoder, helpers);
+    device.queue.submit([encoder.finish()]);
+    passes += 1;
+    await device.queue.onSubmittedWorkDone();
+  }
+  return { passes, warmupMs: Math.round((nowMs() - started) * 1000) / 1000 };
+}
+
+function nowMs() {
+  return globalThis.performance?.now?.() ?? Date.now();
 }
 
 export function createWebGL2Timer(gl, options = {}) {
@@ -247,8 +329,30 @@ export function createWebGL2Timer(gl, options = {}) {
     });
   }
 
+  /**
+   * Clock-warmed timing; applies only to idempotent draws. Runs `draw` `passes` times untimed, waits with
+   * gl.finish(), then times one more run. Returns `{ gpuTimeNs, gpuTiming: { method: "warm", passes, warmupMs } }`.
+   */
+  async function measureWarm(draw, { passes = 8 } = {}) {
+    if (typeof draw !== 'function') throw new TypeError('draw must be a synchronous function.');
+    if (!Number.isInteger(passes) || passes < 0) throw new TypeError('passes must be an integer of at least zero.');
+    if (destroyed) throw new Error('WebGL2 timer is destroyed.');
+    const started = nowMs();
+    for (let index = 0; index < passes; index += 1) {
+      const result = draw();
+      if (result?.then) {
+        Promise.resolve(result).catch(() => {});
+        throw new TypeError('draw must be synchronous; asynchronous work cannot be enclosed by a WebGL timer query.');
+      }
+    }
+    gl.finish();
+    const warmupMs = Math.round((nowMs() - started) * 1000) / 1000;
+    const gpuTimeNs = await measure(draw);
+    return { gpuTimeNs, gpuTiming: { method: 'warm', passes, warmupMs } };
+  }
+
   return {
-    extension: ext, measure,
+    extension: ext, measure, measureWarm,
     get pendingCount() { return pending.size; },
     destroy() {
       if (destroyed) return;

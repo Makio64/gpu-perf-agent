@@ -1,24 +1,38 @@
-import { compareReports, compareReportOptions, compareReportEnvironments, reportEnvironment, reportMetricsWithGpuEvidence, validateBudget } from "./compare.js";
-import { FastCDPHarness } from "./fast-cdp-runner.js";
-import { normalizeOptions, numberOption } from "./options.js";
-import { numericStats } from "./stats.js";
+import { compareReports, compareReportOptions, compareReportEnvironments, DECISION_METRICS, PER_ROUND_MEDIAN, reportEnvironment,
+  reportMetricSamples, reportMetricsWithGpuEvidence, validateBudget } from "./compare.js";
+import { normalizeOptions, numberOption, PROFILING_PRESETS } from "./options.js";
+import { median, numericStats } from "./stats.js";
 import { reportValidity } from "./validity.js";
-import { aggregateGpuTimingEvidence, collectGpuTimingEvidence, gpuTimingValidityIssues } from "./gpu-timing.js";
+import { aggregateGpuTimingEvidence, collectAutoGpuEvidence, collectGpuTimingEvidence, gpuTimingMetadata } from "./gpu-timing.js";
 
-export async function runABComparison(options = {}) {
+/** ab defaults (§4.6): auto timing on, so `ab` measures what `agent` measures. */
+const AB_DEFAULTS = Object.freeze({ durationMs: 250, samples: 1, warmup: 1, autoInstrument: true, gpuTiming: true });
+
+/**
+ * Interleaved A/B rounds (ABBA). With `harness`, runs on it without launching or
+ * closing it (the MCP/serve warm harness); `onProgress` and `signal` go to every run.
+ */
+export async function runABComparison(options = {}, { harness: sharedHarness = null, onProgress, signal } = {}) {
   const baseTarget = normalizeTarget(options.base, "base");
   const candidateTarget = normalizeTarget(options.candidate, "candidate");
   const rounds = numberOption(options.rounds ?? 4, "rounds", { min: 2, max: 1000, integer: true });
-  options = normalizeOptions({ durationMs: 250, samples: 1, warmup: 1, ...options }, { requireTarget: false });
+  // §2 precedence: explicit > preset > ab default. A named preset's values beat AB_DEFAULTS.
+  const presetValues = typeof options.preset === "string" && Object.hasOwn(PROFILING_PRESETS, options.preset) ? PROFILING_PRESETS[options.preset] : {};
+  options = normalizeOptions({ ...AB_DEFAULTS, ...presetValues, ...withoutUndefined(options) }, { requireTarget: false });
   normalizeOptions({ ...options, ...baseTarget });
   normalizeOptions({ ...options, ...candidateTarget });
   numberOption(options.thresholdPercent ?? 5, "thresholdPercent");
   validateBudget(options.budget);
-  const harness = await FastCDPHarness.launch(options);
+  let harness = sharedHarness;
+  if (!harness) {
+    const { FastCDPHarness } = await import("./fast-cdp-runner.js");
+    harness = await FastCDPHarness.launch(options);
+  }
   const runs = [];
 
   try {
     for (const entry of alternatingOrder(rounds)) {
+      if (signal?.aborted) throw Object.assign(new Error("A/B comparison aborted."), { code: "aborted" });
       const target = entry.variant === "base" ? baseTarget : candidateTarget;
       const startedAt = performance.now();
       const report = await harness.run({
@@ -26,6 +40,9 @@ export async function runABComparison(options = {}) {
         ...target,
         samples: Number(options.samples ?? 1),
         warmup: Number(options.warmup ?? 1)
+      }, {
+        signal,
+        onProgress: onProgress ? (event) => onProgress({ ...event, round: entry.round, variant: entry.variant, rounds }) : undefined
       });
       runs.push({
         durationMs: performance.now() - startedAt,
@@ -36,7 +53,7 @@ export async function runABComparison(options = {}) {
       });
     }
   } finally {
-    await harness.close();
+    if (!sharedHarness) await harness.close();
   }
 
   const baseReport = aggregateReports(runs.filter((run) => run.variant === "base").map((run) => run.report));
@@ -44,7 +61,9 @@ export async function runABComparison(options = {}) {
   const comparison = compareReports(baseReport, candidateReport, {
     budget: options.budget,
     paired: true,
-    thresholdPercent: Number(options.thresholdPercent ?? 5)
+    thresholdPercent: Number(options.thresholdPercent ?? 5),
+    primaryMetric: options.primaryMetric ?? options.metric,
+    allowMismatch: options.allowMismatch === true
   });
 
   return {
@@ -76,28 +95,39 @@ export function alternatingOrder(rounds) {
   return order;
 }
 
+/**
+ * One side of an ab comparison: per-round values (`metricSamples`), their means
+ * (`aggregateMetrics`) and each round's validity. Frame, GPU, CPU and slow-frame
+ * rows use the round's median per-sample value (§4.6); with samples=1 that is the
+ * round's own value.
+ */
 export function aggregateReports(reports) {
   if (!Array.isArray(reports) || reports.length === 0) {
     throw new Error("Cannot aggregate an empty report list.");
   }
   const metricSamples = {};
   const gpuEvidence = reports.map(collectGpuTimingEvidence);
-  const metrics = reports.map((report, index) => reportMetricsWithGpuEvidence(report, gpuEvidence[index]));
-  const roundValidity = reports.map(reportValidity);
-  roundValidity.forEach((validity, round) => {
-    validity.issues.push(...gpuTimingValidityIssues(gpuEvidence[round]));
-    validity.valid = validity.issues.length === 0;
+  const metrics = reports.map((report, index) => {
+    const values = reportMetricsWithGpuEvidence(report, gpuEvidence[index]);
+    const perSample = reportMetricSamples(report);
+    for (const key of PER_ROUND_MEDIAN) {
+      const middle = Array.isArray(perSample[key]) ? median(perSample[key]) : null;
+      if (Number.isFinite(middle) && Number.isFinite(values[key])) values[key] = middle;
+    }
+    return values;
   });
+  // reportValidity already folds in each round's GPU timing issues (review:bug-1).
+  const roundValidity = reports.map(reportValidity);
   const firstGpuScope = gpuEvidence.find(item => item.status === 'single-scope')?.scope;
   reports.forEach((report, round) => {
     const differences = compareReportOptions(reports[0], report);
     if (differences.length) {
       roundValidity[round].valid = false;
-      roundValidity[round].issues.push({ code: 'capture-options-drift', message: `Capture settings changed in round ${round + 1}.`, differences });
+      roundValidity[round].issues.push({ code: 'capture-options-drift', severity: 'invalid', message: `Capture settings changed in round ${round + 1}.`, differences });
     }
     if (gpuEvidence[round].status === 'single-scope' && gpuEvidence[round].scope !== firstGpuScope) {
       roundValidity[round].valid = false;
-      roundValidity[round].issues.push({ code: 'gpu-timing-scope-drift', message: `GPU timing scope changed in round ${round + 1}.`,
+      roundValidity[round].issues.push({ code: 'gpu-timing-scope-drift', severity: 'invalid', message: `GPU timing scope changed in round ${round + 1}.`,
         baseScope: firstGpuScope, candidateScope: gpuEvidence[round].scope });
     }
   });
@@ -107,7 +137,7 @@ export function aggregateReports(reports) {
     const { differences } = compareReportEnvironments({ environment }, { environment: current });
     if (differences.length) {
       roundValidity[round].valid = false;
-      roundValidity[round].issues.push({ code: 'environment-drift', message: `Profiling environment changed in round ${round + 1}.`, differences });
+      roundValidity[round].issues.push({ code: 'environment-drift', severity: 'invalid', message: `Profiling environment changed in round ${round + 1}.`, differences });
     }
     // Retain the first known value of every field, including fields absent in round 1.
     for (const [key, value] of Object.entries(current.values)) {
@@ -118,22 +148,19 @@ export function aggregateReports(reports) {
     .filter(key => roundEnvironments.some(current => !Object.hasOwn(current.values, key)));
   for (const key of new Set(metrics.flatMap(Object.keys))) {
     metricSamples[key] = metrics.map(values => Number.isFinite(values[key]) ? values[key] : null);
+    // A decision or hook metric lost in one round invalidates that round; informational rows do not.
+    if (!Object.hasOwn(DECISION_METRICS, key) && !/^custom\..+\.mean$/.test(key)) continue;
     metricSamples[key].forEach((value, round) => {
       if (value === null) {
         roundValidity[round].valid = false;
-        roundValidity[round].issues.push({ code: "missing-metric", key, message: `${key} was not measured in round ${round + 1}.` });
+        roundValidity[round].issues.push({ code: "missing-metric", severity: "invalid", key, message: `${key} was not measured in round ${round + 1}.` });
       }
     });
   }
-  const aggregateMetrics = Object.fromEntries(Object.entries(metricSamples).map(([key, values]) => [
-    key,
-    numericStats(values).mean
-  ]));
-  const warningMap = new Map();
-  for (const report of reports) {
-    for (const warning of report.summary?.warnings || []) {
-      warningMap.set(warning.code, warning);
-    }
+  const aggregateMetrics = {};
+  for (const [key, values] of Object.entries(metricSamples)) {
+    const stats = numericStats(values);
+    if (stats) aggregateMetrics[key] = stats.mean;
   }
   const first = reports[0];
   const gpuTiming = aggregateGpuTimingEvidence(gpuEvidence);
@@ -142,18 +169,66 @@ export function aggregateReports(reports) {
     delete metricSamples['health.gpuFrameMs.mean'];
   }
   return {
+    schemaVersion: first.schemaVersion,
     aggregateMetrics,
     gpuTiming,
+    autoGpu: aggregateAutoGpu(reports),
     environment,
     inPage: { samples: [] },
     metricSamples,
     roundEnvironments,
     options: { ...first.options, samplingMode: first.options?.samplingMode ?? first.inPage?.config?.samplingMode ?? "frames" },
     roundValidity,
-    summary: {
-      verdict: worstVerdict(reports.map((report) => report.summary?.verdict)),
-      warnings: Array.from(warningMap.values())
-    }
+    summary: aggregateSummaryFields(reports)
+  };
+}
+
+// Pooled per-round state the comparison needs from an aggregate: refresh, bottleneck, work.
+function aggregateSummaryFields(reports) {
+  const first = reports[0];
+  const warningMap = new Map();
+  for (const report of reports) for (const warning of report.summary?.warnings || []) warningMap.set(warning.code, warning);
+  const mean = values => {
+    const finite = values.filter(Number.isFinite);
+    return finite.length ? finite.reduce((total, value) => total + value, 0) / finite.length : null;
+  };
+  const perFrames = reports.map(report => report.summary?.perFrame ?? report.inPage?.summary?.perFrame).filter(Boolean);
+  const perFrame = perFrames.length ? Object.fromEntries(Object.keys(perFrames[0])
+    .filter(key => Number.isFinite(perFrames[0][key]))
+    .map(key => [key, mean(perFrames.map(item => item[key]))])) : null;
+  const errors = reports.map(report => report.summary?.gpuErrors?.total ?? report.inPage?.summary?.gpuErrors?.total).filter(Number.isFinite);
+  const activity = reports.map(report => report.inPage?.summary?.activity);
+  return {
+    verdict: worstVerdict(reports.map((report) => report.summary?.verdict)),
+    warnings: Array.from(warningMap.values()),
+    bottleneck: first.summary?.bottleneck ?? null,
+    cadence: first.inPage?.summary?.cadence ?? first.summary?.cadence ?? null,
+    fps: mean(reports.map(report => report.inPage?.summary?.fps?.mean ?? report.summary?.fps)),
+    pageFps: mean(activity.map((item, index) => item?.pageFps?.mean ?? item?.pageFps ?? reports[index].summary?.pageFps)),
+    activeFrameRatio: mean(activity.map((item, index) => item?.activeFrameRatio ?? reports[index].summary?.activeFrameRatio)),
+    perFrame,
+    gpuErrors: errors.length ? { total: errors.reduce((total, value) => total + value, 0) } : null
+  };
+}
+
+// Auto GPU gating state across rounds: saturated or unstable in any round counts for the side.
+function aggregateAutoGpu(reports) {
+  const rounds = reports.map(report => report.autoGpu ?? collectAutoGpuEvidence(report)).filter(item => item.status !== "unavailable");
+  if (!rounds.length) return null;
+  const metadata = rounds.map(item => item.provenance ? gpuTimingMetadata(item) : item);
+  const unstable = metadata.find(item => item.stability?.status === "unstable");
+  return {
+    status: metadata.every(item => item.status === "ok") ? "ok" : metadata.find(item => item.status !== "ok").status,
+    source: metadata[0].source ?? null,
+    frames: metadata.reduce((total, item) => total + (item.frames || 0), 0),
+    timedFrames: metadata.reduce((total, item) => total + (item.timedFrames || 0), 0),
+    partialFrames: metadata.reduce((total, item) => total + (item.partialFrames || 0), 0),
+    provenance: "auto.frame-busy",
+    stability: unstable?.stability ?? metadata[0].stability ?? null,
+    plausibility: { status: metadata.some(item => item.saturated) ? "saturated" : "ok",
+      implausibleSamples: metadata.reduce((total, item) => total + (item.plausibility?.implausibleSamples || 0), 0) },
+    saturated: metadata.some(item => item.saturated === true),
+    clockSensitive: metadata.some(item => item.clockSensitive === true) ? true : metadata.every(item => item.clockSensitive === false) ? false : null
   };
 }
 
@@ -161,6 +236,7 @@ function aggregateSummary(report) {
   return {
     metrics: report.aggregateMetrics,
     gpuTiming: report.gpuTiming,
+    autoGpu: report.autoGpu,
     sampleCounts: Object.fromEntries(Object.entries(report.metricSamples).map(([key, values]) => [key, values.filter(Number.isFinite).length])),
     validity: reportValidity(report),
     verdict: report.summary.verdict,
@@ -178,7 +254,11 @@ function normalizeTarget(target, label) {
   throw new Error(`A ${label} URL or file target is required.`);
 }
 
+function withoutUndefined(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
+}
+
 function worstVerdict(verdicts) {
-  const ranks = { excellent: 0, good: 1, "needs-work": 2, poor: 3 };
+  const ranks = { excellent: 0, good: 1, unknown: 2, "needs-work": 3, poor: 4, invalid: 5 };
   return verdicts.filter((value) => value in ranks).sort((a, b) => ranks[b] - ranks[a])[0] || null;
 }

@@ -1,0 +1,144 @@
+{
+  "index": 2,
+  "startedAtMs": 1366.1,
+  "elapsedMs": 266.4,
+  "error": null,
+  "idle": false,
+  "measurement": {
+    "observedFrames": {
+      "type": "raf",
+      "frameCount": 16,
+      "fps": 60,
+      "frameTimeMs": {
+        "coefficientOfVariation": 0.0027,
+        "count": 15,
+        "min": 16.6,
+        "max": 16.7,
+        "mean": 16.67,
+        "p50": 16.7,
+        "p90": 16.7,
+        "p95": 16.7,
+        "p99": 16.7,
+        "p99_9": 16.7,
+        "stddev": 0.045,
+        "variance": 0.002
+      },
+      "cadence": {
+        "hz": 60,
+        "intervalMs": 16.67,
+        "hitRate": 1
+      },
+      "maxJitter": 0.2,
+      "slowFrameCount": 0,
+      "durationMs": 233.3,
+      "observationWindowMs": 250.6
+    }
+  },
+  "instrumentation": {
+    "delta": {
+      "webgpu.queueSubmits": 16,
+      "webgpu.commandBuffersSubmitted": 16,
+      "webgpu.renderPasses": 32,
+      "webgpu.computePasses": 16,
+      "webgpu.drawCalls": 3200,
+      "webgpu.drawIndexed": 0,
+      "webgpu.bundleDrawCalls": 0,
+      "webgpu.bundleDrawsExecuted": 0,
+      "webgpu.dispatchCalls": 16,
+      "webgpu.createBindGroup": 0,
+      "webgpu.createBuffer": 0,
+      "webgpu.createTexture": 0,
+      "webgpu.createView": 16,
+      "webgpu.writeBufferBytes": 4096,
+      "webgpu.uncapturedErrors": 0,
+      "webgpu.deviceLost": 0,
+      "webgl2.clearCalls": 0,
+      "webgl.contextLost": 0,
+      "webgl.shaderCompileFailures": 0,
+      "webgl.programLinkFailures": 0
+    }
+  },
+  "memory": {
+    "delta": {
+      "performanceMemory": {
+        "usedJSHeapSize": 18400,
+        "totalJSHeapSize": 0,
+        "jsHeapSizeLimit": 0
+      },
+      "trackedGpuMemoryBytes": 0
+    },
+    "trackedGpuTotalBytes": 16777216
+  },
+  "activity": {
+    "ticks": 16,
+    "activeTicks": 16,
+    "submits": 16,
+    "glDraws": 0,
+    "glClears": 0,
+    "pageFps": 60,
+    "activeFrameRatio": 1
+  },
+  "autoGpu": {
+    "status": "ok",
+    "source": "webgpu-timestamp",
+    "frames": 16,
+    "workFrames": 16,
+    "noWorkFrames": 0,
+    "timedFrames": 15,
+    "partialFrames": 1,
+    "pending": 0,
+    "partialReasons": {
+      "page-timed-pass": 0,
+      "no-slot": 0,
+      "slot-reclaimed": 0,
+      "invalid-timestamps": 1,
+      "disjoint": 0,
+      "unresolved": 0,
+      "timer-error": 0
+    },
+    "frameNs": {
+      "count": 15,
+      "p50": 8412000,
+      "p95": 8901000,
+      "mean": 8450000,
+      "min": 8390000,
+      "max": 9020000
+    },
+    "sumNs": {
+      "p50": 8530000,
+      "p95": 9100000
+    },
+    "spanNs": {
+      "p50": 8700000,
+      "p95": 9300000
+    },
+    "overlapRatio": 1.01,
+    "idleGapRatio": 1.03,
+    "passes": [
+      {
+        "key": "render#0",
+        "type": "render",
+        "label": null,
+        "count": 15,
+        "exclusiveP50Ns": 8302000,
+        "durationP50Ns": 8310000,
+        "overlapped": false,
+        "site": "frame app.js:88",
+        "appSite": "frame app.js:88",
+        "pipeline": "pipeline@createScene app.js:40"
+      },
+      {
+        "key": "sim",
+        "type": "compute",
+        "label": "sim",
+        "count": 15,
+        "exclusiveP50Ns": 44000,
+        "durationP50Ns": 46000,
+        "overlapped": false,
+        "site": "frame app.js:81",
+        "appSite": "frame app.js:81",
+        "pipeline": "sim-pipeline"
+      }
+    ]
+  }
+}

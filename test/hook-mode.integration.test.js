@@ -84,9 +84,9 @@ test('hook mode rejects absent hooks and preserves failed-sample evidence', {ski
 
 test('HTTP captures preserve hook-only sampling and awaited results', {skip:!enabled,timeout:20000},async()=>{
   await withFixture(fixture,async({file})=>{
-    const server=await startReportServer({api:'webgpu',samples:2,warmup:0,durationMs:1,waitUntil:'domcontentloaded',timeoutMs:4000});
+    const server=await startReportServer({port:0,api:'webgpu',samples:2,warmup:0,durationMs:1,waitUntil:'domcontentloaded',timeoutMs:4000});
     try{
-      const response=await fetch(`${server.url}/run`,{method:'POST',body:JSON.stringify({file,samplingMode:'hook'})});
+      const response=await fetch(`${server.url}/run`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({file,samplingMode:'hook'})});
       assert.equal(response.status,200);
       assertHookReport(await response.json());
     }finally{await server.close();}

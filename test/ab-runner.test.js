@@ -155,3 +155,91 @@ function environmentReport(product) {
   report.browser = { version: { product } };
   return report;
 }
+
+test('per-round values are the median of each round\'s per-sample values (§4.6)', () => {
+  const round = frameTimes => {
+    const report = syntheticReport(60, 'good', []);
+    report.inPage.samples = frameTimes.map((mean, index) => ({ index, elapsedMs: 100, measurement: { fps: 1000 / mean, observedFrames: { frameTimeMs: { mean, count: 6 } } } }));
+    report.inPage.summary.frameTimeMsMean = { mean: frameTimes.reduce((total, value) => total + value, 0) / frameTimes.length };
+    return report;
+  };
+  const aggregate = aggregateReports([round([16, 17, 40]), round([20, 21, 22])]);
+  assert.deepEqual(aggregate.metricSamples['frame.frameTimeMs.mean'], [17, 21]);
+  assert.equal(aggregate.aggregateMetrics['frame.frameTimeMs.mean'], 19);
+  // One sample per round is that round's own value.
+  assert.deepEqual(aggregateReports([round([16]), round([18])]).metricSamples['frame.frameTimeMs.mean'], [16, 18]);
+});
+
+test('aggregates carry what paired gating needs: refresh state, bottleneck, work and auto GPU state', async () => {
+  const { readFileSync } = await import('node:fs');
+  const capture = JSON.parse(readFileSync(new URL('./fixtures/v3/report-capture.json', import.meta.url), 'utf8'));
+  const aggregate = aggregateReports([capture, structuredClone(capture)]);
+  assert.equal(aggregate.schemaVersion, 3);
+  assert.equal(aggregate.summary.bottleneck.primaryMetric, 'health.autoGpuFrameMs.p50');
+  assert.equal(aggregate.summary.fps, capture.inPage.summary.fps.mean);
+  assert.equal(aggregate.summary.perFrame.drawCalls, 200);
+  assert.equal(aggregate.autoGpu.saturated, false);
+  assert.equal(aggregate.autoGpu.provenance, 'auto.frame-busy');
+  assert.equal(reportValidity(aggregate).valid, true);
+});
+
+test('runABComparison uses a passed harness without launching or closing it, with ab defaults', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { runABComparison } = await import('../src/ab-runner.js');
+  const capture = JSON.parse(readFileSync(new URL('./fixtures/v3/report-capture.json', import.meta.url), 'utf8'));
+  const calls = [];
+  const progress = [];
+  const harness = {
+    async run(options, context) {
+      calls.push({ options, context });
+      context.onProgress?.({ stage: 'sample', index: 0, total: 1 });
+      return structuredClone(capture);
+    },
+    async close() { throw new Error('a shared harness must not be closed'); }
+  };
+  const controller = new AbortController();
+  const result = await runABComparison({ base: { url: 'http://127.0.0.1:1/a.html' }, candidate: { url: 'http://127.0.0.1:1/b.html' }, rounds: 4 },
+    { harness, onProgress: event => progress.push(event), signal: controller.signal });
+  assert.equal(calls.length, 8);
+  assert.deepEqual(calls.map(call => call.options.url.endsWith('a.html') ? 'base' : 'candidate'), alternatingOrder(4).map(entry => entry.variant));
+  for (const { options, context } of calls) {
+    assert.equal(options.autoInstrument, true);
+    assert.equal(options.gpuTiming, true);
+    assert.equal(options.samples, 1);
+    assert.equal(context.signal, controller.signal);
+  }
+  assert.equal(progress.length, 8);
+  assert.deepEqual(Object.keys(progress[0]).sort(), ['index', 'round', 'rounds', 'stage', 'total', 'variant']);
+  assert.equal(result.comparison.mode, 'paired');
+  assert.equal(result.comparison.kind, 'comparison');
+  assert.equal(result.comparison.status, 'unchanged');
+  assert.equal(result.comparison.exitCode, 0);
+
+  const explicit = await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: 2,
+    autoInstrument: false, gpuTiming: false }, { harness });
+  assert.equal(calls.at(-1).options.autoInstrument, false);
+  assert.equal(calls.at(-1).options.gpuTiming, false);
+  assert.ok(explicit.comparison.rows.filter(row => row.gated && row.evidence !== 'deterministic').every(row => row.status === 'unverified'), 'two rounds never gate');
+
+  // §2 precedence: a named preset beats the ab defaults; an explicit value beats the preset.
+  await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: 2, preset: 'confirm' }, { harness });
+  assert.deepEqual([calls.at(-1).options.samples, calls.at(-1).options.durationMs, calls.at(-1).options.warmup], [15, 500, 4]);
+  await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: 2, preset: 'confirm', samples: 3 }, { harness });
+  assert.deepEqual([calls.at(-1).options.samples, calls.at(-1).options.durationMs], [3, 500]);
+
+  controller.abort();
+  await assert.rejects(runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html' }, { harness, signal: controller.signal }),
+    error => error.code === 'aborted');
+});
+
+test('aggregated rounds never append GPU timing issues twice', () => {
+  const round = () => {
+    const report = syntheticReport(60, 'good', []);
+    report.inPage.samples[0].measurement.gpuMs = -1;
+    return report;
+  };
+  const aggregate = aggregateReports([round(), round()]);
+  for (const validity of aggregate.roundValidity) {
+    assert.equal(validity.issues.filter(issue => issue.code === 'invalid-gpu-timing').length, 1);
+  }
+});

@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>long-poll</title></head><body><canvas width="256" height="256"></canvas>
+<script>
+// A request that never completes: network idle can only end by its budget.
+fetch("/poll").catch(() => {});
+const gl = document.querySelector("canvas").getContext("webgl2");
+function frame() { gl.clearColor(Math.random(), 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(frame); }
+frame();
+</script></body></html>

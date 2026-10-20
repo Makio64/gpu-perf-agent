@@ -13,6 +13,18 @@ const texture = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, texture);
 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 64, 64, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
+const vs = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vs, "#version 300 es\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }");
+gl.compileShader(vs);
+const fs = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fs, "#version 300 es\nprecision mediump float;\nout vec4 outColor;\nvoid main() { outColor = vec4(0.2, 0.4, 0.8, 1.0); }");
+gl.compileShader(fs);
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+gl.useProgram(program);
+
 globalThis.__gpuReportBench = async ({ durationMs }) => {
   const started = performance.now();
   let frames = 0;

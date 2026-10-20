@@ -151,3 +151,61 @@ test('rectangular texture mips preserve bytes per pixel down to 1x1',()=>{
   assert.equal(estimateWebGLTextureBytes(3,5,0x8058,0x1401,3),72);
   assert.equal(estimateWebGLTextureBytes(0,5,0x8058,0x1401,1),0);
 });
+
+test("trackWebGL2Context: texture units, cube faces, compressed blocks and accumulating mips", async () => {
+  const { webGLCompressedBlock } = await import("../src/browser/allocation-tracker.js");
+  const gl = {
+    ...mockWebGL2(),
+    activeTexture() {}, texImage3D() {}, texStorage3D() {}, copyTexImage2D() {},
+    compressedTexImage2D() {}, compressedTexImage3D() {}, compressedTexSubImage2D() {}, compressedTexSubImage3D() {}
+  };
+  const tracker = trackWebGL2Context(gl);
+  const bytes = () => tracker.snapshot().byKind.texture?.bytes ?? 0;
+  // texunits.html: bind on units 0 and 1, then upload to each after switching units without re-binding.
+  const a = gl.createTexture();
+  const b = gl.createTexture();
+  gl.activeTexture(0x84c0); gl.bindTexture(0x0de1, a);
+  gl.activeTexture(0x84c1); gl.bindTexture(0x0de1, b);
+  gl.activeTexture(0x84c0);
+  gl.texImage2D(0x0de1, 0, 0x8058, 1024, 1024, 0, 0x1908, 0x1401, null);
+  gl.activeTexture(0x84c1);
+  gl.texImage2D(0x0de1, 0, 0x8058, 4, 4, 0, 0x1908, 0x1401, null);
+  assert.equal(bytes(), 4194368);
+  gl.deleteTexture(a);
+  gl.deleteTexture(b);
+  gl.activeTexture(0x84c0);
+  const cube = gl.createTexture();
+  gl.bindTexture(0x8513, cube);
+  for (let face = 0; face < 6; face += 1) gl.texImage2D(0x8515 + face, 0, 0x8058, 512, 512, 0, 0x1908, 0x1401, null);
+  assert.equal(bytes(), 6291456);
+  gl.deleteTexture(cube);
+  const astc = gl.createTexture();
+  gl.bindTexture(0x0de1, astc);
+  gl.texStorage2D(0x0de1, 1, 0x93b0, 1024, 1024);
+  assert.equal(bytes(), 1048576);
+  gl.compressedTexSubImage2D(0x0de1, 0, 0, 0, 512, 512, 0x93b0, new Uint8Array(16));
+  assert.equal(bytes(), 1048576);
+  gl.deleteTexture(astc);
+  const mips = gl.createTexture();
+  gl.bindTexture(0x0de1, mips);
+  gl.texImage2D(0x0de1, 0, 0x8058, 256, 256, 0, 0x1908, 0x1401, null);
+  gl.texImage2D(0x0de1, 1, 0x8058, 128, 128, 0, 0x1908, 0x1401, null);
+  assert.equal(bytes(), 262144 + 65536);
+  gl.compressedTexImage2D(0x0de1, 2, 0x83f0, 64, 64, 0, new Uint8Array(2048));
+  assert.equal(bytes(), 262144 + 65536 + 2048);
+  gl.deleteTexture(mips);
+  const cubeStorage = gl.createTexture();
+  gl.bindTexture(0x8513, cubeStorage);
+  gl.texStorage2D(0x8513, 2, 0x8058, 64, 64);
+  assert.equal(bytes(), 6 * (64 * 64 + 32 * 32) * 4);
+  gl.deleteTexture(cubeStorage);
+  const volume = gl.createTexture();
+  gl.bindTexture(0x806f, volume);
+  gl.texStorage3D(0x806f, 2, 0x8058, 16, 16, 16);
+  assert.equal(bytes(), (16 * 16 * 16 + 8 * 8 * 8) * 4, "3D textures halve depth per level");
+  assert.deepEqual(webGLCompressedBlock(0x93bd), { blockHeight: 12, blockWidth: 12, bytesPerBlock: 16 });
+  assert.deepEqual(webGLCompressedBlock(0x9274), { blockHeight: 4, blockWidth: 4, bytesPerBlock: 8 });
+  assert.equal(webGLCompressedBlock(0x8058), null);
+  assert.equal(estimateWebGLTextureBytes(1024, 1024, 0x93b0, null, 1), 1048576);
+  assert.equal(estimateWebGLTextureBytes(5, 5, 0x83f3, null, 1), 64, "partial blocks round up");
+});

@@ -68,6 +68,18 @@ function medianAbsoluteDeviation(numbers, median) {
   return numbers.length % 2 ? current : previous * 0.5 + current * 0.5;
 }
 
+/** Median of the finite values, or null. */
+export function median(values) {
+  const numbers = values.filter(finiteNumber).sort((a, b) => a - b);
+  return percentile(numbers, 0.5);
+}
+
+/** Robust standard error of the mean: 1.4826·MAD/√n (§4.2). */
+export function robustStandardError(stats) {
+  if (!stats || !(stats.count > 0) || !finiteNumber(stats.mad)) return null;
+  return 1.4826 * stats.mad / Math.sqrt(stats.count);
+}
+
 export function confidenceInterval95(values) {
   return confidenceInterval95FromStats(numericStats(values));
 }
@@ -205,6 +217,35 @@ export function flattenNumbers(value, prefix = "", out = {}) {
     flattenNumbers(item, nextPrefix, out);
   }
 
+  return out;
+}
+
+/**
+ * Hook-returned measurement paths that are not workload metrics: observed-frame
+ * histories, counts, and anything that mirrors profiler telemetry.
+ */
+export function isNoisyMeasurementPath(path) {
+  return /(^|\.)(length|byteLength|count|fps|frameCount|frameTimeMs|observationWindowMs|observedFrames|samples|slowFrameCount|totalResources)(\.|$)/i.test(path)
+    || /^\d+/.test(path);
+}
+
+/** Flatten a hook measurement to `{path: number}`, skipping noisy subtrees before visiting them. */
+export function flattenMeasurementNumbers(value, prefix = "", out = {}, depth = 0) {
+  // Once a path contains an excluded segment every descendant is excluded too.
+  // Skip observed-frame histories before allocating their thousands of paths.
+  // The depth bound also stops on cyclic objects passed in directly (never JSON).
+  if ((prefix && isNoisyMeasurementPath(prefix)) || depth > 32) return out;
+  if (finiteNumber(value)) {
+    out[prefix || "value"] = value;
+  } else if (value && typeof value === "object") {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => flattenMeasurementNumbers(item, prefix ? `${prefix}.${index}` : String(index), out, depth + 1));
+    } else {
+      for (const [key, item] of Object.entries(value)) {
+        flattenMeasurementNumbers(item, prefix ? `${prefix}.${key}` : key, out, depth + 1);
+      }
+    }
+  }
   return out;
 }
 

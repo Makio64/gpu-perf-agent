@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><title>idle-flag</title></head><body><canvas width="256" height="256"></canvas>
+<script>
+// A post-load fetch keeps the network busy for ~600 ms; the hook reports whether the
+// profiler has set its network-idle flag by each sample.
+addEventListener("load", () => fetch("/delayed?ms=600").then(response => response.json()).catch(() => {}));
+globalThis.__gpuReportBench = async ({ durationMs }) => {
+  await new Promise(resolve => setTimeout(resolve, Math.min(durationMs, 100)));
+  return { idleFlag: globalThis.__gpuPerfNetworkIdle ?? null };
+};
+const gl = document.querySelector("canvas").getContext("webgl2");
+function frame() { gl.clearColor(Math.random(), 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(frame); }
+frame();
+</script></body></html>

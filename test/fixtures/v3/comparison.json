@@ -1,0 +1,134 @@
+{
+  "kind": "comparison",
+  "schemaVersion": 2,
+  "status": "improved",
+  "exitCode": 0,
+  "statusReasons": [
+    "primary improved; paired CI excludes boundary"
+  ],
+  "mode": "paired",
+  "primary": {
+    "key": "health.autoGpuFrameMs.p50",
+    "selection": "bottleneck",
+    "row": {
+      "key": "health.autoGpuFrameMs.p50",
+      "unit": "ms",
+      "direction": "lower",
+      "base": 1.68,
+      "candidate": 1.49,
+      "delta": -0.19,
+      "deltaPercent": -11.3,
+      "status": "improved",
+      "gated": true,
+      "evidence": "paired-samples",
+      "confidence95": {
+        "low": -0.23,
+        "high": -0.15,
+        "method": "paired-t"
+      },
+      "boundary": 0.084,
+      "screen": null,
+      "reasons": [],
+      "notes": [],
+      "baseStats": {
+        "count": 4,
+        "mean": 1.68,
+        "p50": 1.68,
+        "min": 1.64,
+        "max": 1.72,
+        "mad": 0.02
+      },
+      "candidateStats": {
+        "count": 4,
+        "mean": 1.49,
+        "p50": 1.49,
+        "min": 1.46,
+        "max": 1.52,
+        "mad": 0.015
+      }
+    }
+  },
+  "workEquivalence": {
+    "status": "same",
+    "differences": []
+  },
+  "rows": [
+    {
+      "key": "health.autoGpuFrameMs.p50",
+      "unit": "ms",
+      "direction": "lower",
+      "base": 1.68,
+      "candidate": 1.49,
+      "delta": -0.19,
+      "deltaPercent": -11.3,
+      "status": "improved",
+      "gated": true,
+      "evidence": "paired-samples",
+      "confidence95": {
+        "low": -0.23,
+        "high": -0.15,
+        "method": "paired-t"
+      },
+      "boundary": 0.084,
+      "screen": null,
+      "reasons": [],
+      "notes": [],
+      "baseStats": {
+        "count": 4,
+        "mean": 1.68,
+        "p50": 1.68,
+        "min": 1.64,
+        "max": 1.72,
+        "mad": 0.02
+      },
+      "candidateStats": {
+        "count": 4,
+        "mean": 1.49,
+        "p50": 1.49,
+        "min": 1.46,
+        "max": 1.52,
+        "mad": 0.015
+      }
+    }
+  ],
+  "failures": [],
+  "summary": {
+    "improved": 1,
+    "regression": 0,
+    "inconclusive": 0,
+    "unchanged": 6,
+    "unverified": 0,
+    "changed": 3,
+    "gated": 7,
+    "total": 10,
+    "regressions": 0,
+    "passed": 6,
+    "missing": 0
+  },
+  "compatibility": {
+    "compatible": true,
+    "differences": [],
+    "warnings": []
+  },
+  "validity": {
+    "valid": true,
+    "issues": [],
+    "warnings": []
+  },
+  "gpuTiming": {
+    "base": null,
+    "candidate": null
+  },
+  "diagnostics": {},
+  "recommendationDiff": {
+    "introduced": [],
+    "resolved": [],
+    "persisted": []
+  },
+  "verdicts": {
+    "base": "good",
+    "candidate": "excellent"
+  },
+  "baseReportPath": "reports/base-1.json",
+  "candidateReportPath": "reports/cand-1.json"
+}

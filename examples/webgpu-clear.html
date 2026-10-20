@@ -26,8 +26,8 @@
   <body>
     <canvas id="stage"></canvas>
     <script type="module">
+      // GPU time comes from auto-instrumentation (per-frame, per-pass); this hook only paces samples.
       import { trackWebGPUDevice } from "../src/browser/allocation-tracker.js";
-      import { requestTimedWebGPUDevice } from "../src/browser/timing.js";
 
       if (!navigator.gpu) {
         throw new Error("WebGPU is not available.");
@@ -35,7 +35,7 @@
 
       const canvas = document.querySelector("#stage");
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-      const { device, timer, timestampQueryAvailable } = await requestTimedWebGPUDevice(adapter);
+      const device = await adapter.requestDevice();
       const tracker = trackWebGPUDevice(device);
       globalThis.__gpuMemoryTracker = tracker;
 
@@ -76,8 +76,8 @@
         };
       }
 
-      function encodeFrame(encoder, time, passStarter = (item, descriptor) => item.beginRenderPass(descriptor)) {
-        const pass = passStarter(encoder, renderPassDescriptor(time));
+      function encodeFrame(encoder, time) {
+        const pass = encoder.beginRenderPass(renderPassDescriptor(time));
         pass.end();
       }
 
@@ -100,13 +100,6 @@
           draw(time);
           frames.push(time);
         }
-        // The timer maps its result buffer; no queue-wide wait is needed here.
-        const gpuTimeNs = timer
-          ? await timer.measure((encoder, gpuTimer) => {
-              resize();
-              encodeFrame(encoder, performance.now(), gpuTimer.beginRenderPass);
-            })
-          : null;
 
         const deltas = [];
         for (let index = 1; index < frames.length; index += 1) {
@@ -119,11 +112,7 @@
           fps: (frames.length - 1) / (elapsedMs / 1000),
           frameCount: frames.length,
           frameTimeMs: sampleStats(deltas),
-          gpuTimeNs,
-          phase,
-          scratchBufferSize: scratch.size,
-          timestampQueryAvailable,
-          trackedGpuMemory: tracker.snapshot()
+          phase
         };
       };
 

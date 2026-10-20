@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>stderr-spam</title></head><body><canvas width="256" height="256"></canvas>
+<script type="module">
+// 2000 invalid WebGPU calls per frame: floods Chrome's error output (stderr included).
+// The capture must still finish: Node drains Chrome's stderr continuously.
+const adapter = await navigator.gpu?.requestAdapter();
+const device = await adapter?.requestDevice();
+if (device) {
+  const context = document.querySelector("canvas").getContext("webgpu");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({ device, format });
+  function frame() {
+    for (let index = 0; index < 2000; index += 1) {
+      // MAP_READ and MAP_WRITE together are invalid.
+      device.createBuffer({ size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE });
+    }
+    const encoder = device.createCommandEncoder();
+    encoder.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store", clearValue: [0, 0, 1, 1] }] }).end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+  }
+  frame();
+}
+</script></body></html>

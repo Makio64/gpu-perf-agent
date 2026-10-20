@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>delayed-fetch</title></head><body><canvas width="256" height="256"></canvas>
+<script>
+// delayed-fetch.html?ms=N fetches /delayed?ms=N after load.
+const ms = Number(new URLSearchParams(location.search).get("ms") || 3000);
+addEventListener("load", () => fetch(`/delayed?ms=${ms}`).then(r => r.json()).then(v => { globalThis.delayedDone = v; }));
+const gl = document.querySelector("canvas").getContext("webgl2");
+function frame() { gl.clearColor(Math.random(), 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(frame); }
+frame();
+</script></body></html>

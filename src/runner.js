@@ -1,13 +1,16 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { normalizeOptions, parseViewport } from "./options.js";
 import { finalizeReport } from "./analysis.js";
 import { installAutoInstrumentation } from "./browser/auto-instrument.js";
 import { collectInPage } from "./injected.js";
-import { createFileTarget } from "./static-server.js";
+import { assertFileTarget, createFileTarget } from "./static-server.js";
 import { capturePlaywrightPageEvents, withCaptureDiagnostics } from "./page-events.js";
 import { DEFAULT_TRACE_CATEGORIES, MINIMAL_TRACE_CATEGORIES, startChromeTrace, stopChromeTrace, summarizeTrace } from "./trace.js";
+
+const TOOL = Object.freeze({ name: "gpu-perf-agent", version: createRequire(import.meta.url)("../package.json").version });
 
 export async function runReport(options = {}) {
   options = normalizeOptions(options);
@@ -19,6 +22,7 @@ export async function runReport(options = {}) {
     }
     throw new Error('The Playwright runner is optional. Install it with `npm install --save-dev playwright` in the profiler installation, or use the default `--runner fast` with Chrome/Chromium.', { cause: error });
   });
+  if (options.file) await assertFileTarget(options.file);
   const target = await createTarget(options);
   const launchArgs = chromiumArgs(options);
   let browser;
@@ -45,7 +49,7 @@ export async function runReport(options = {}) {
       deviceScaleFactor: options.deviceScaleFactor
     });
     if (options.autoInstrument) {
-      await context.addInitScript(installAutoInstrumentation, options.autoInstrumentOptions || {});
+      await context.addInitScript(installAutoInstrumentation, { gpuTiming: options.gpuTiming !== false, callSites: true });
     }
     const page = await context.newPage();
     pageEvents = capturePlaywrightPageEvents(page);
@@ -66,7 +70,7 @@ export async function runReport(options = {}) {
       await startChromeTrace(session, options.traceCategories || (options.minimalTrace ? MINIMAL_TRACE_CATEGORIES : DEFAULT_TRACE_CATEGORIES));
     }
 
-    await page.goto(target.url, {
+    const response = await page.goto(target.url, {
       timeout: Number(options.timeoutMs ?? 60000),
       waitUntil: options.waitUntil || "networkidle"
     });
@@ -89,7 +93,11 @@ export async function runReport(options = {}) {
       samples: Number(options.samples ?? 5),
       samplingMode: options.samplingMode,
       slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
-      warmup: Number(options.warmup ?? 1)
+      warmup: Number(options.warmup ?? 1),
+      readyTimeoutMs: options.readyTimeoutMs,
+      waitNetworkIdle: false,
+      networkIdleBudgetMs: options.networkIdleBudgetMs,
+      progress: false
     });
     let inPage;
     try {
@@ -126,6 +134,7 @@ export async function runReport(options = {}) {
     await context.close();
 
     return finalizeReport({
+      tool: TOOL,
       screenshotSize,
       artifacts: {
         screenshotPath
@@ -140,12 +149,14 @@ export async function runReport(options = {}) {
       inPage,
       options: reportOptions(options, launchArgs),
       ...pageEvents.snapshot(),
-      schemaVersion: 2,
+      schemaVersion: 3,
       target: {
         file: target.file || null,
         root: target.root || null,
         source: options.file ? "file-server" : "url",
-        url: target.url
+        url: target.url,
+        httpStatus: response?.status() ?? null,
+        documentUrl: response?.url() ?? null
       },
       trace: {
         captured: Boolean(trace),
@@ -271,6 +282,14 @@ function reportOptions(options, launchArgs) {
     slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
     trace: Boolean(options.trace),
     viewport: options.viewport || "1280x720",
-    warmup: Number(options.warmup ?? 1)
+    warmup: Number(options.warmup ?? 1),
+    cdpAttached: false,
+    gpuTiming: options.gpuTiming !== false,
+    readyTimeoutMs: Number(options.readyTimeoutMs ?? 3000),
+    allowIdle: Boolean(options.allowIdle),
+    networkIdleBudgetMs: Number(options.networkIdleBudgetMs ?? 10000),
+    cpuProfile: options.cpuProfile ?? "auto",
+    measureLock: false,
+    label: options.label ?? null
   };
 }

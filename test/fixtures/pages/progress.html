@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><title>progress</title></head><body><canvas width="256" height="256"></canvas>
+<script>
+// Emits the profiler progress protocol itself (as collectInPage does) around each
+// sample and stamps wall-clock times, so Node-side progress, per-sample CDP metrics and
+// lock serialization can be tested without depending on the in-page sampler.
+// progress.html?fetch=N also fetches /delayed?ms=N after load (network-idle phases).
+const fetchMs = Number(new URLSearchParams(location.search).get("fetch"));
+if (fetchMs > 0) addEventListener("load", () => fetch(`/delayed?ms=${fetchMs}`).then(response => response.json()).catch(() => {}));
+if (fetchMs >= 2000) globalThis.__gpuPerfNetworkIdle = "budget-exceeded";
+globalThis.__gpuReportBench = async ({ durationMs }) => {
+  const startedAt = Date.now();
+  const busyUntil = performance.now() + 20;
+  while (performance.now() < busyUntil) { /* Measurable main-thread time. */ }
+  await new Promise(resolve => setTimeout(resolve, durationMs));
+  const endedAt = Date.now();
+  return { startedAt, endedAt };
+};
+const gl = document.querySelector("canvas").getContext("webgl2");
+function frame() { gl.clearColor(Math.random(), 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(frame); }
+frame();
+</script></body></html>

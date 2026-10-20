@@ -4,21 +4,31 @@ import { compareReports, formatCompareTable, reportMetricSamples } from "../src/
 import { finalizeReport } from "../src/analysis.js";
 import { numericStats } from "../src/stats.js";
 
-test("compareReports flags a statistically clear FPS regression", () => {
-  const base = reportWithFps([60, 60, 60, 60]);
-  const candidate = reportWithFps([50, 50, 50, 50]);
-  const result = compareReports(base, candidate, { thresholdPercent: 5 });
+test("compareReports flags a statistically clear regression of the primary metric", () => {
+  const base = reportWithScore([60, 60, 60, 60]);
+  const candidate = reportWithScore([50, 50, 50, 50]);
+  const result = compareReports(base, candidate, { thresholdPercent: 5, primaryMetric: "custom.score.mean" });
   assert.equal(result.failures.length, 1);
-  assert.equal(result.failures[0].key, "frame.fps.mean");
+  assert.equal(result.failures[0].key, "custom.score.mean");
   assert.equal(result.failures[0].confidence95.high, -10);
+  assert.equal(result.status, "regression");
+  assert.equal(result.exitCode, 1);
+  // The same row only gates; it never fails a separate comparison unless it is the primary.
+  assert.equal(compareReports(base, candidate).failures.length, 0);
+  assert.equal(compareReports(base, candidate).rows.find(row => row.key === "custom.score.mean").status, "regression");
 });
 
-test("compareReports reports noisy changes as inconclusive", () => {
-  const base = reportWithFps([60, 40, 60, 40]);
-  const candidate = reportWithFps([50, 50, 50, 35]);
-  const result = compareReports(base, candidate, { thresholdPercent: 1 });
+test("compareReports reports noisy changes as inconclusive and FPS rows as informational", () => {
+  const result = compareReports(reportWithScore([60, 60, 60, 60]), reportWithScore([50, 50, 50, 10]), { thresholdPercent: 1 });
+  assert.equal(result.rows.find((row) => row.key === "custom.score.mean").status, "inconclusive");
+  // The separate-capture boundary includes 2·√(se_b² + se_c²): steady noise absorbs a change.
+  const noisy = compareReports(reportWithScore([60, 40, 60, 40]), reportWithScore([50, 50, 50, 35]), { thresholdPercent: 1 });
+  const score = noisy.rows.find((row) => row.key === "custom.score.mean");
+  assert.equal(score.status, "unchanged");
+  assert.ok(score.boundary > Math.abs(score.delta));
   const fps = result.rows.find((row) => row.key === "frame.fps.mean");
-  assert.equal(fps.status, "inconclusive");
+  assert.equal(fps.gated, false);
+  assert.equal(fps.status, "changed");
   assert.equal(result.failures.length, 0);
 });
 
@@ -77,6 +87,12 @@ test("formatCompareTable includes confidence outcome and mismatch warning", () =
   assert.match(output, /profiling option\(s\) differ/);
 });
 
+function reportWithScore(values) {
+  const report = reportWithFps(values);
+  report.inPage.samples.forEach((sample, index) => { sample.measurement.score = values[index]; });
+  return report;
+}
+
 function reportWithFps(values) {
   return {
     inPage: {
@@ -120,6 +136,7 @@ test('empty reports cannot produce a compatible passing comparison', () => {
 test('trace, GC and pixel density differences invalidate comparisons', () => {
   const base = reportWithFps([60]);
   const candidate = reportWithFps([60]);
+  Object.assign(base.options, { trace: false, gc: false, deviceScaleFactor: 1 });
   candidate.options.trace = true;
   candidate.options.gc = true;
   candidate.options.deviceScaleFactor = 2;
@@ -132,21 +149,24 @@ test('negative or invalid thresholds fail instead of silently disabling regressi
 });
 
 test('independent comparisons are invariant to ordering; pairing must be explicit', () => {
-  const base = reportWithFps([100, 150, 200, 250]);
-  const candidate = reportWithFps([80, 130, 180, 230]);
-  const metric = result => result.rows.find(row => row.key === 'frame.fps.mean');
+  const base = reportWithScore([100, 150, 200, 250]);
+  const candidate = reportWithScore([80, 130, 180, 230]);
+  const metric = result => result.rows.find(row => row.key === 'custom.score.mean');
   const independent = metric(compareReports(base, candidate));
-  assert.equal(independent.status, 'inconclusive');
+  assert.equal(independent.status, 'unchanged', 'between-sample spread widens the separate boundary');
   assert.equal(independent.evidence, 'independent-samples');
-  assert.deepEqual(independent.confidence95, metric(compareReports(base, reportWithFps([230, 80, 180, 130]))).confidence95);
+  assert.deepEqual(independent.confidence95, metric(compareReports(base, reportWithScore([230, 80, 180, 130]))).confidence95);
   const paired = metric(compareReports(base, candidate, {paired: true}));
   assert.equal(paired.status, 'regression');
   assert.equal(paired.evidence, 'paired-samples');
+  assert.equal(paired.confidence95.method, 'paired-t');
+  const threeRounds = metric(compareReports(reportWithScore([100, 150, 200]), reportWithScore([80, 130, 180]), {paired: true}));
+  assert.deepEqual([threeRounds.status, threeRounds.reasons], ['unverified', ['too-few-rounds']]);
 });
 
 test('confidence must exceed the allowed regression, not merely zero', () => {
-  const result = compareReports(reportWithFps([60, 60, 60, 60]), reportWithFps([55, 56, 57, 56]));
-  const row = result.rows.find(row => row.key === 'frame.fps.mean');
+  const result = compareReports(reportWithScore([60, 60, 60, 60]), reportWithScore([55, 56, 57, 56]));
+  const row = result.rows.find(row => row.key === 'custom.score.mean');
   assert.ok(row.confidence95.high < 0);
   assert.ok(row.confidence95.high > -3);
   assert.equal(row.status, 'inconclusive');
@@ -159,7 +179,9 @@ test('missing budget metrics and lost measurements invalidate comparisons', () =
   assert.equal(missingBudget.validity.valid, false);
   assert.equal(missingBudget.rows.find(row => row.key === 'custom.typo.mean').status, 'missing');
   candidate.inPage.samples.forEach(sample => delete sample.measurement.gpuMs);
-  assert.equal(compareReports(base, candidate).validity.valid, false);
+  const lost = compareReports(base, candidate);
+  assert.equal(lost.validity.valid, true, 'an unbudgeted metric present on one side only is unverified, not invalid');
+  assert.deepEqual(lost.rows.find(row => row.key === 'custom.gpuMs.mean').reasons, ['missing-candidate']);
 });
 
 test('absolute budgets evaluate new candidate metrics without requiring a baseline value', () => {
@@ -196,6 +218,7 @@ test('explicit pairing rejects unmatched observations instead of comparing diffe
 test('context isolation, headful rendering, and browser channel differences require acknowledgement', () => {
   const base = reportWithFps([60]);
   const candidate = reportWithFps([60]);
+  Object.assign(base.options, { headful: false, browserChannel: null });
   base.options.contextMode = 'isolated';
   candidate.options.contextMode = 'shared';
   candidate.options.headful = true;
@@ -206,55 +229,57 @@ test('context isolation, headful rendering, and browser channel differences requ
 test('changed frame observation methods are not silently compared', () => {
   const base = reportWithFps([60]);
   const candidate = reportWithFps([60]);
+  base.options.frameObservation = 'raf';
   candidate.options.frameObservation = 'wall-clock';
   assert.equal(compareReports(base, candidate).compatibility.differences[0].key, 'frameObservation');
 });
 
-test('noisy GPU aggregate changes use repeated evidence instead of claiming a threshold-only win', () => {
+test('separate vsync-paced hook GPU timing never gates; the GPU pass rows stay informational', () => {
   const base = reportWithGpuTimes([8, 16, 8, 16]);
   const candidate = reportWithGpuTimes([7, 15, 7, 15]);
   const result = compareReports(base, candidate);
-  for (const key of gpuMeanKeys) {
+  const health = result.rows.find(row => row.key === 'health.gpuFrameMs.mean');
+  assert.deepEqual([health.status, health.reasons, health.gated], ['unverified', ['unverified-between-run'], false]);
+  assert.equal(health.screen, 'same', 'the -1 ms change is inside the noise boundary');
+  assert.equal(result.rows.find(row => row.key === 'gpu.durationNs.mean'), undefined, 'deduplicated into the health row');
+  for (const key of ['gpu.computeDurationNs.mean', 'gpu.renderDurationNs.mean']) {
     const row = result.rows.find(row => row.key === key);
-    assert.equal(row.status, 'inconclusive', key);
+    assert.equal(row.gated, false, key);
     assert.equal(row.evidence, 'independent-samples', key);
     assert.ok(row.confidence95.low < 0 && row.confidence95.high > 0, key);
     assert.equal(row.baseStats.count, 4, key);
   }
 });
 
-test('consistent GPU improvements receive confidence intervals in their reported units', () => {
-  const result = compareReports(reportWithGpuTimes([10, 10, 10, 10]), reportWithGpuTimes([8, 8, 8, 8]));
-  for (const key of gpuMeanKeys) {
-    const row = result.rows.find(row => row.key === key);
-    assert.equal(row.status, 'improved', key);
-    assert.equal(row.evidence, 'independent-samples', key);
-    const expectedDelta = key === 'health.gpuFrameMs.mean' ? -2 : -2e6;
-    assert.equal(row.confidence95.low, expectedDelta, key);
-    assert.equal(row.confidence95.high, expectedDelta, key);
-  }
+test('warm hook GPU improvements gate between separate captures with intervals in ms', () => {
+  const result = compareReports(reportWithGpuTimes([10, 10, 10, 10], 'warm'), reportWithGpuTimes([8, 8, 8, 8], 'warm'));
+  const row = result.rows.find(row => row.key === 'health.gpuFrameMs.mean');
+  assert.equal(row.status, 'improved');
+  assert.equal(row.evidence, 'independent-samples');
+  assert.deepEqual([row.confidence95.low, row.confidence95.high], [-2, -2]);
+  assert.equal(result.primary.key, 'health.gpuFrameMs.mean');
+  assert.equal(result.status, 'improved');
+  const mismatch = compareReports(reportWithGpuTimes([10, 10, 10, 10], 'warm'), reportWithGpuTimes([8, 8, 8, 8]));
+  assert.deepEqual(mismatch.rows.find(row => row.key === 'health.gpuFrameMs.mean').reasons, ['provenance-mismatch']);
+  assert.equal(mismatch.compatibility.compatible, true, 'a provenance difference is not a mismatch');
 });
 
 test('GPU timing evidence preserves zero measurements and missing sample positions', () => {
   const samples = reportMetricSamples(reportWithGpuTimes([0, null, 4]));
-  for (const key of gpuMeanKeys) {
-    assert.deepEqual(samples[key], key === 'health.gpuFrameMs.mean' ? [0, null, 4] : [0, null, 4e6], key);
-  }
-  const result = compareReports(reportWithGpuTimes([0, 0, 0]), reportWithGpuTimes([0, 0, 0]), { paired: true });
-  for (const key of gpuMeanKeys) {
-    const row = result.rows.find(row => row.key === key);
-    assert.equal(row.status, 'pass', key);
-    assert.equal(row.evidence, 'paired-samples', key);
-    assert.equal(row.baseStats.count, 3, key);
-  }
+  assert.deepEqual(samples['health.gpuFrameMs.mean'], [0, null, 4]);
+  for (const key of ['gpu.computeDurationNs.mean', 'gpu.renderDurationNs.mean']) assert.deepEqual(samples[key], [0, null, 4e6], key);
+  const result = compareReports(reportWithGpuTimes([0, 0, 0, 0]), reportWithGpuTimes([0, 0, 0, 0]), { paired: true });
+  const row = result.rows.find(row => row.key === 'health.gpuFrameMs.mean');
+  assert.equal(row.status, 'unchanged');
+  assert.equal(row.evidence, 'paired-samples');
+  assert.equal(row.baseStats.count, 4);
 });
 
-test('explicit GPU pairing rejects a missing observation in every aggregate metric', () => {
+test('explicit GPU pairing rejects a missing observation', () => {
   const result = compareReports(reportWithGpuTimes([4, 4, 4, 4]), reportWithGpuTimes([4, null, 4, 4]), { paired: true });
   assert.equal(result.validity.valid, false);
-  for (const key of gpuMeanKeys) {
-    assert.ok(result.validity.issues.some(issue => issue.code === 'unmatched-pairs' && issue.key === key), key);
-  }
+  assert.ok(result.validity.issues.some(issue => issue.code === 'unmatched-pairs' && issue.key === 'health.gpuFrameMs.mean'));
+  assert.equal(result.status, 'invalid');
 });
 
 test('health GPU evidence recognizes nested timing aliases and normalizes nanoseconds', () => {
@@ -293,18 +318,18 @@ test('different single GPU scopes across captures invalidate and suppress health
   assert.equal(result.compatibility.compatible, false);
 });
 
-const gpuMeanKeys = ['gpu.durationNs.mean', 'gpu.computeDurationNs.mean', 'gpu.renderDurationNs.mean', 'health.gpuFrameMs.mean'];
-
-function reportWithGpuTimes(values) {
+function reportWithGpuTimes(values, method = null) {
   return reportWithGpuMeasurements(values.map(value => value === null ? {} : {
     gpuTimeNs: value * 1e6,
     computeTimeNs: value * 1e6,
-    renderTimeNs: value * 1e6
+    renderTimeNs: value * 1e6,
+    ...(method ? { gpuTiming: { method } } : {})
   }));
 }
 
 function reportWithGpuMeasurements(measurements) {
   const report = reportWithFps(measurements.map(() => 60));
+  report.options.autoInstrument = false;
   report.inPage.samples.forEach((sample, index) => {
     sample.measurement = { fps: 60, ...measurements[index] };
   });

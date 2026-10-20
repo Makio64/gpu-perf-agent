@@ -4,12 +4,12 @@
  */
 
 import { analyzeReport, summarizeReport } from "./diagnostics.js";
-import { compareReports } from "./compare.js";
+import { compareReports, comparisonStatus } from "./compare.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { normalizeOptions, numberOption } from "./options.js";
-import { comparisonExitCode, formatAgentComparison, formatAgentReport, formatGpuTimingSignal } from "./output.js";
+import { formatAgentComparison, formatAgentReport, formatGpuTimingSignal } from "./output.js";
 import { reportValidity } from "./validity.js";
 
 /**
@@ -104,7 +104,7 @@ export function generateAgentCompareDigest(baseReport, candidateReport, options 
   const baseVram = baseSummary.trackedVram?.totalMiB?.toFixed(1) ?? "--";
   const candVram = candSummary.trackedVram?.totalMiB?.toFixed(1) ?? "--";
 
-  const status = result.validity?.valid === false || result.compatibility?.compatible === false ? "INVALID" : result.failures.length > 0 ? "REGRESSION" : result.summary.improved > 0 ? "IMPROVED" : "PASSED";
+  const status = comparisonStatus(result, { allowMismatch: options.allowMismatch === true }).status.toUpperCase();
 
   const lines = [
     `# WebGPU Optimization Delta`,
@@ -355,14 +355,14 @@ export async function runMcpServer(options = {}) {
         }
         const { loadReport } = await import("./compare.js");
         const [base, candidate] = await Promise.all([loadReport(args.baseReportPath), loadReport(args.candidateReportPath)]);
-        const result = compareReports(base, candidate, { thresholdPercent: args.thresholdPercent, paired: args.paired });
-        const exitCode = comparisonExitCode(result);
-        const status = exitCode === 2 ? "INVALID" : exitCode === 1 ? "REGRESSION" : result.summary.inconclusive ? "INCONCLUSIVE" : result.summary.improved ? "IMPROVED" : "PASSED";
+        const result = compareReports(base, candidate, { thresholdPercent: args.thresholdPercent, paired: args.paired, primaryMetric: args.primaryMetric });
+        const { status: headline, exitCode } = comparisonStatus(result);
+        const status = headline.toUpperCase();
         const comparisonPath = path.join(reportDirectory, `comparison-${randomUUID()}.json`);
         await mkdir(reportDirectory, { recursive: true });
         await writeFile(comparisonPath, JSON.stringify({ ...result, baseReportPath: path.resolve(args.baseReportPath), candidateReportPath: path.resolve(args.candidateReportPath) }), { flag: "wx" });
         const priority = { regression: 0, missing: 1, inconclusive: 2, improved: 3 };
-        const changedRows = result.rows.filter(row => row.status !== "pass").sort((a, b) => (priority[a.status] ?? 4) - (priority[b.status] ?? 4));
+        const changedRows = result.rows.filter(row => row.status !== "unchanged").sort((a, b) => (priority[a.status] ?? 4) - (priority[b.status] ?? 4));
         const compactRow = row => ({ key: brief(row.key), status: row.status, base: row.base, candidate: row.candidate, deltaPercent: row.deltaPercent, evidence: row.evidence, confidence95: row.confidence95 });
         const primary = args.primaryMetric ? result.rows.find(row => row.key === args.primaryMetric) : null;
         sendResponse(id, {

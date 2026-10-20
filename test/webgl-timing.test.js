@@ -71,3 +71,14 @@ test('destroy during draw cannot leave a new pending query behind',async()=>{
   await assert.rejects(timer.measure(()=>timer.destroy()),/destroyed/);
   assert.equal(timer.pendingCount,0);assert.equal(gl.active,null);assert.equal(gl.queries[0].deleted,1);
 });
+
+test('WebGL measureWarm draws untimed, finishes, then times one draw', async()=>{
+  const gl=context(); let draws=0, finishes=0;
+  gl.finish=()=>{finishes++;};
+  const timer=createWebGL2Timer(gl);
+  const result=await timer.measureWarm(()=>{draws++;},{passes:3});
+  assert.deepEqual({...result,gpuTiming:{...result.gpuTiming,warmupMs:0}},{gpuTimeNs:42,gpuTiming:{method:'warm',passes:3,warmupMs:0}});
+  assert.equal(draws,4);assert.equal(finishes,1);assert.equal(gl.ended,1);
+  await assert.rejects(timer.measureWarm(async()=>{}),/synchronous/);
+  await assert.rejects(timer.measureWarm(()=>{},{passes:-1}),/passes/);
+});

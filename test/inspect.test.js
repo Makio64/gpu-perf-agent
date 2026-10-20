@@ -197,6 +197,7 @@ test('fresh capture failures override stale saved validity without hiding the di
   assert.ok(result.data.validity.issues.some(issue => issue.code === 'sample-errors'));
   assert.ok(result.data.validity.issues.some(issue => issue.code === 'runtime-errors'));
   const savedInvalid = capture();
+  for (const sample of savedInvalid.inPage.samples) sample.measurement.gpuMs = 0.5; // all-zero GPU timings are invalid (§3.1)
   savedInvalid.diagnostics.validity = { valid: false, issues: [{ code: 'saved-oracle-failure' }] };
   assert.equal(inspectReport(savedInvalid).validity.valid, false);
   assert.equal(inspectReport(savedInvalid).validity.currentValid, true);
@@ -309,6 +310,7 @@ test('byte limit includes large selectors, multi-byte strings and escaped keys',
 
 test('overview retains invalidity even when issue evidence needs clipping', () => {
   const report = capture();
+  for (const sample of report.inPage.samples) sample.measurement.gpuMs = 0.5; // all-zero GPU timings are invalid (§3.1)
   report.diagnostics.validity = { valid: false, issues: Array.from({ length: 1000 }, () => ({ message: 'x'.repeat(10000), reasons: Array(100).fill({ why: 'x'.repeat(10000) }) })) };
   const result = inspectReport(report);
   assert.deepEqual(result.validity, { valid: false, issueCount: 1000, savedValid: false, currentValid: true });

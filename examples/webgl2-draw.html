@@ -26,8 +26,8 @@
   <body>
     <canvas id="stage"></canvas>
     <script type="module">
+      // GPU time comes from auto-instrumentation (per-frame TIME_ELAPSED); this hook only paces samples.
       import { trackWebGL2Context } from "../src/browser/allocation-tracker.js";
-      import { createWebGL2Timer } from "../src/browser/timing.js";
 
       const canvas = document.querySelector("#stage");
       const gl = canvas.getContext("webgl2", { antialias: false });
@@ -36,7 +36,6 @@
       }
 
       const tracker = trackWebGL2Context(gl);
-      const timer = createWebGL2Timer(gl);
       globalThis.__gpuMemoryTracker = tracker;
 
       const vertexShader = shader(gl.VERTEX_SHADER, `#version 300 es
@@ -112,7 +111,6 @@
           frames.push(time);
         }
 
-        const gpuTimeNs = timer ? await timer.measure(() => draw(performance.now())) : null;
         const deltas = [];
         for (let index = 1; index < frames.length; index += 1) {
           deltas.push(frames[index] - frames[index - 1]);
@@ -124,10 +122,7 @@
           fps: (frames.length - 1) / (elapsedMs / 1000),
           frameCount: frames.length,
           frameTimeMs: sampleStats(deltas),
-          gpuTimeNs,
-          phase,
-          timerQueryAvailable: Boolean(timer),
-          trackedGpuMemory: tracker.snapshot()
+          phase
         };
       };
 

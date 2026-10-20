@@ -1,10 +1,14 @@
 import { reportValidity, pageErrorCounts } from "./validity.js";
+import { comparisonStatus } from "./compare.js";
 
 const summaryFields = [
-  'verdict', 'fps', 'frameTimeMsMean', 'frameTimeMsP95', 'frameTimeMsMax', 'maxJitterMs',
-  'gpuFrameMsMean', 'gpuFrameMsP95', 'jsHeapGrowthMBPerSec', 'drawCallsPerFrame',
-  'observedFrameCount', 'slowFrameCount', 'sampleCount', 'trackedVram', 'cadence',
-  'warmup', 'pipelines', 'bindGroups', 'webgpuOps', 'warningCount'
+  'verdict', 'verdictReasons', 'bottleneck', 'fps', 'pageFps', 'activeFrameRatio',
+  'frameTimeMsMean', 'frameTimeMsP95', 'frameTimeMsMax', 'maxJitterMs',
+  'slowFrameCount', 'slowFrameRate', 'observedFrameCount', 'sampleCount', 'idleSampleCount',
+  'gpu', 'gpuFrameMsMean', 'gpuFrameMsP95', 'cpuMsPerFrame', 'mainThreadBusy',
+  'heap', 'jsHeapGrowthMBPerSec', 'trackedVram', 'drawCallsPerFrame',
+  'webgpuOps', 'glOps', 'perFrame', 'churnSites', 'pipelines', 'gpuErrors', 'hitches',
+  'cadence', 'warmup', 'bindGroups', 'findings', 'warningCount'
 ];
 
 /** Bounded stdout for agents. Measurements and retained diagnostics stay on disk. */
@@ -26,7 +30,13 @@ export function compactReport(report, out) {
     const { warnings, recommendations, highlights, ...measurements } = source;
     const known = summaryFields.filter(key => Object.hasOwn(measurements, key));
     const extra = Object.keys(measurements).filter(key => !summaryFields.includes(key));
-    summary = compactValue(Object.fromEntries([...known, ...extra].map(key => [key, measurements[key]])), state);
+    summary = {};
+    const orderedKeys = [...known, ...extra];
+    const maxKeys = Math.max(32, known.length);
+    state.omittedFields += Math.max(0, orderedKeys.length - maxKeys);
+    for (const key of orderedKeys.slice(0, maxKeys)) {
+      summary[key] = compactValue(measurements[key], state, 1, 5, { nodes: 128 });
+    }
     for (const [key, items, limit] of [["warnings", warnings, 5], ["recommendations", recommendations, 3], ["highlights", highlights, 3]]) {
       if (!Array.isArray(items)) continue;
       const selected = items.slice(0, limit).map(item => {
@@ -125,7 +135,7 @@ export function formatAgentReport(report, { out, maxWarnings = 3 } = {}) {
   const validity = report.diagnostics?.validity || reportValidity(report);
   maxWarnings = boundedLimit(maxWarnings, 3, 0, 5);
   const rows = [
-    `GPU ${validity.valid ? line(s.verdict || 'unknown').toUpperCase() : 'INVALID'} | ${number(s.fps, 1)} FPS | p95 ${number(s.frameTimeMsP95)} ms | GPU ${number(s.gpuFrameMsMean)} ms`,
+    `GPU ${validity.valid && s.verdict !== 'invalid' ? line(s.verdict || 'unknown').toUpperCase() : 'INVALID'} | ${number(s.fps, 1)} FPS | p95 ${number(s.frameTimeMsP95)} ms | GPU ${number(s.gpuFrameMsMean)} ms`,
     `VRAM ${number(s.trackedVram?.totalMiB, 1)} MiB | heap ${number(s.jsHeapGrowthMBPerSec)} MiB/s | draws/frame ${number(s.drawCallsPerFrame, 0)} | slow ${number(s.slowFrameCount, 0)}`,
     `Signal: ${number(signal.sampleCount ?? s.sampleCount, 0)} samples, ${number(signal.observedFrameCount ?? s.observedFrameCount, 0)} frames, ${number(signal.gpuTimingSamples, 0)} GPU timings.`
   ];
@@ -142,9 +152,7 @@ export function formatAgentReport(report, { out, maxWarnings = 3 } = {}) {
 }
 
 export function comparisonExitCode(result, { allowMismatch = false } = {}) {
-  if (result.validity?.valid === false) return 2;
-  if (!result.compatibility.compatible && !allowMismatch) return 2;
-  return result.failures.length ? 1 : 0;
+  return comparisonStatus(result, { allowMismatch }).exitCode;
 }
 
 export function formatAgentComparison(result, { primaryMetric, maxRows = 5 } = {}) {

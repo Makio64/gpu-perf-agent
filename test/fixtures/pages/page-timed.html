@@ -1,0 +1,57 @@
+<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><canvas id="c" style="width:320px;height:240px;display:block"></canvas>
+<script type="module">
+// The page times its "own" pass with its own timestampWrites (every other frame) and wraps device.createBuffer
+// and queue.submit after requestDevice, like an allocation tracker or a submit hook. The tool must keep the
+// page's query data, mark those frames partial and never route its own buffers or resolves through the wrappers.
+const adapter = await navigator.gpu.requestAdapter();
+const timed = adapter.features.has("timestamp-query");
+const device = await adapter.requestDevice({ requiredFeatures: timed ? ["timestamp-query"] : [] });
+const page = { bufferBytes: 0, buffers: 0, submits: 0, ownNs: null, timed };
+globalThis.__pageTimed = page;
+const createBuffer = device.createBuffer.bind(device);
+device.createBuffer = (descriptor) => { page.buffers += 1; page.bufferBytes += descriptor.size; return createBuffer(descriptor); };
+const submit = device.queue.submit.bind(device.queue);
+device.queue.submit = (list) => { page.submits += 1; return submit(list); };
+const canvas = document.getElementById("c");
+canvas.width = 320; canvas.height = 240;
+const ctx = canvas.getContext("webgpu"); const format = navigator.gpu.getPreferredCanvasFormat();
+ctx.configure({ device, format, alphaMode: "opaque" });
+const querySet = timed ? device.createQuerySet({ type: "timestamp", count: 2 }) : null;
+const resolve = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+const read = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+let reading = false;
+let frameIndex = 0;
+function frame() {
+  const enc = device.createCommandEncoder();
+  const own = timed && frameIndex % 2 === 0 && !reading;
+  const view = ctx.getCurrentTexture().createView();
+  const first = enc.beginRenderPass({ label: "own", colorAttachments: [{ view, loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 1] }],
+    ...(own ? { timestampWrites: { querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } } : {}) });
+  first.end();
+  const second = enc.beginRenderPass({ colorAttachments: [{ view, loadOp: "load", storeOp: "store" }] });
+  second.end();
+  if (own) {
+    enc.resolveQuerySet(querySet, 0, 2, resolve, 0);
+    enc.copyBufferToBuffer(resolve, 0, read, 0, 16);
+  }
+  device.queue.submit([enc.finish()]);
+  if (own) {
+    reading = true;
+    read.mapAsync(GPUMapMode.READ).then(() => {
+      const values = new BigUint64Array(read.getMappedRange());
+      page.ownNs = Number(values[1] - values[0]);
+      read.unmap();
+      reading = false;
+    }, () => { reading = false; });
+  }
+  frameIndex += 1;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+// The hook only paces samples and reports what the page's own wrappers saw.
+globalThis.__gpuReportBench = async ({ durationMs }) => {
+  await new Promise((resolve) => setTimeout(resolve, durationMs));
+  return { pageTimed: { ...page } };
+};
+</script>
+</body></html>

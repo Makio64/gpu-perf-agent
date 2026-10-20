@@ -49,22 +49,52 @@ export function trackWebGPUDevice(device, options = {}) {
 export function trackWebGL2Context(gl, options = {}) {
   const tracker = createTracker("webgl2", options);
   const bindings = new Map();
+  // Texture bindings are per texture unit and target; cube faces resolve to TEXTURE_CUBE_MAP.
   const textureBindings = new Map();
+  const textureLevels = new WeakMap();
+  let activeUnit = 0;
   const original = {};
 
   for (const name of [
+    "activeTexture",
     "bindBuffer",
     "bufferData",
+    "compressedTexImage2D",
+    "compressedTexImage3D",
+    "compressedTexSubImage2D",
+    "compressedTexSubImage3D",
+    "copyTexImage2D",
     "createBuffer",
     "createTexture",
     "deleteBuffer",
     "deleteTexture",
     "bindTexture",
     "texImage2D",
-    "texStorage2D"
+    "texImage3D",
+    "texStorage2D",
+    "texStorage3D"
   ]) {
     original[name] = gl[name]?.bind(gl);
   }
+
+  const boundTexture = target => textureBindings.get(activeUnit * 0x10000 + textureBindingTarget(target));
+  // `replace` (texStorage*) redefines every level; uploads define one face and level each.
+  const setLevels = (target, entries, replace, descriptor) => {
+    const texture = boundTexture(target);
+    if (!texture) return;
+    let levels = textureLevels.get(texture);
+    if (!levels || replace) {
+      levels = new Map();
+      textureLevels.set(texture, levels);
+    }
+    for (const [face, level, bytes] of entries) levels.set(face * 64 + level, Number(bytes) || 0);
+    let bytes = 0;
+    for (const value of levels.values()) bytes += value;
+    tracker.updateAttached(texture, { bytes, descriptor, kind: "texture" });
+  };
+  const wrap = (name, replacement) => {
+    if (typeof original[name] === "function") gl[name] = replacement;
+  };
 
   gl.createBuffer = () => {
     const buffer = original.createBuffer();
@@ -114,40 +144,102 @@ export function trackWebGL2Context(gl, options = {}) {
     return texture;
   };
 
+  wrap("activeTexture", (unit) => {
+    activeUnit = Math.max(0, Number(unit) - 0x84c0) || 0;
+    return original.activeTexture(unit);
+  });
+
   gl.bindTexture = (target, texture) => {
-    textureBindings.set(target, texture);
+    textureBindings.set(activeUnit * 0x10000 + textureBindingTarget(target), texture);
     return original.bindTexture(target, texture);
   };
 
   gl.texImage2D = (...args) => {
     const result = original.texImage2D(...args);
-    const target = args[0];
-    const texture = textureBindings.get(target);
-    if (texture) {
-      const descriptor = webGLTexImageDescriptor(args);
-      tracker.updateAttached(texture, {
-        bytes: descriptor.bytes,
-        descriptor,
-        kind: "texture"
-      });
-    }
+    const descriptor = webGLTexImageDescriptor(args);
+    setLevels(args[0], [[textureFace(args[0]), Number(args[1]) || 0, descriptor.bytes]], false, descriptor);
     return result;
   };
+
+  wrap("texImage3D", (...args) => {
+    const result = original.texImage3D(...args);
+    const [target, level, internalFormat, width, height, depth, , format, type] = args;
+    const bytes = estimateWebGLTextureBytes(width, height, internalFormat, type, 1, format) * Math.max(1, Number(depth ?? 1));
+    setLevels(target, [[0, Number(level) || 0, bytes]], false, { depth, height, internalFormat, level, target, type, width });
+    return result;
+  });
+
+  wrap("copyTexImage2D", (...args) => {
+    const result = original.copyTexImage2D(...args);
+    const [target, level, internalFormat, , , width, height] = args;
+    setLevels(target, [[textureFace(target), Number(level) || 0, estimateWebGLTextureBytes(width, height, internalFormat, null, 1)]], false,
+      { height, internalFormat, level, target, width });
+    return result;
+  });
+
+  wrap("compressedTexImage2D", (...args) => {
+    const result = original.compressedTexImage2D(...args);
+    const [target, level, internalFormat, width, height] = args;
+    setLevels(target, [[textureFace(target), Number(level) || 0, compressedBytes(internalFormat, width, height, 1, args[6])]], false,
+      { height, internalFormat, level, target, width });
+    return result;
+  });
+
+  wrap("compressedTexImage3D", (...args) => {
+    const result = original.compressedTexImage3D(...args);
+    const [target, level, internalFormat, width, height, depth] = args;
+    setLevels(target, [[0, Number(level) || 0, compressedBytes(internalFormat, width, height, depth, args[7])]], false,
+      { depth, height, internalFormat, level, target, width });
+    return result;
+  });
+
+  // Sub-image uploads never change an allocation; they only define a level that was not seen yet.
+  for (const [name, dims] of [["compressedTexSubImage2D", 2], ["compressedTexSubImage3D", 3]]) {
+    wrap(name, (...args) => {
+      const result = original[name](...args);
+      const [target, level] = args;
+      const texture = boundTexture(target);
+      const face = textureFace(target);
+      if (texture && !textureLevels.get(texture)?.has(face * 64 + (Number(level) || 0))) {
+        const [width, height, depth, format, data] = dims === 2
+          ? [Number(args[2]) + Number(args[4]), Number(args[3]) + Number(args[5]), 1, args[6], args[7]]
+          : [Number(args[2]) + Number(args[5]), Number(args[3]) + Number(args[6]), Number(args[4]) + Number(args[7]), args[8], args[9]];
+        setLevels(target, [[face, Number(level) || 0, compressedBytes(format, width, height, depth, data)]], false,
+          { height, internalFormat: format, level, target, width });
+      }
+      return result;
+    });
+  }
 
   gl.texStorage2D = (...args) => {
     const result = original.texStorage2D(...args);
     const [target, levels, internalFormat, width, height] = args;
-    const texture = textureBindings.get(target);
-    if (texture) {
-      const bytes = estimateWebGLTextureBytes(width, height, internalFormat, null, levels);
-      tracker.updateAttached(texture, {
-        bytes,
-        descriptor: { height, internalFormat, levels, target, width },
-        kind: "texture"
-      });
+    const faces = textureBindingTarget(target) === 0x8513 ? 6 : 1;
+    const entries = [];
+    for (let face = 0; face < faces; face += 1) {
+      for (let level = 0; level < Number(levels ?? 1); level += 1) {
+        entries.push([face, level, estimateWebGLTextureBytes(Math.max(1, Math.floor(Number(width ?? 1) / 2 ** level)),
+          Math.max(1, Math.floor(Number(height ?? 1) / 2 ** level)), internalFormat, null, 1)]);
+      }
     }
+    setLevels(target, entries, true, { height, internalFormat, levels, target, width });
     return result;
   };
+
+  wrap("texStorage3D", (...args) => {
+    const result = original.texStorage3D(...args);
+    const [target, levels, internalFormat, width, height, depth] = args;
+    // Only a 3D texture halves its depth per level; array layers stay.
+    const halveDepth = Number(target) === 0x806f;
+    const entries = [];
+    for (let level = 0; level < Number(levels ?? 1); level += 1) {
+      const layers = halveDepth ? Math.max(1, Math.floor(Number(depth ?? 1) / 2 ** level)) : Math.max(1, Number(depth ?? 1));
+      entries.push([0, level, layers * estimateWebGLTextureBytes(Math.max(1, Math.floor(Number(width ?? 1) / 2 ** level)),
+        Math.max(1, Math.floor(Number(height ?? 1) / 2 ** level)), internalFormat, null, 1)]);
+    }
+    setLevels(target, entries, true, { depth, height, internalFormat, levels, target, width });
+    return result;
+  });
 
   gl.deleteTexture = (texture) => {
     tracker.releaseAttached(texture);
@@ -155,6 +247,23 @@ export function trackWebGL2Context(gl, options = {}) {
   };
 
   return tracker;
+}
+
+function textureBindingTarget(target) {
+  const value = Number(target);
+  return value >= 0x8515 && value <= 0x851a ? 0x8513 : value;
+}
+
+function textureFace(target) {
+  const value = Number(target);
+  return value >= 0x8515 && value <= 0x851a ? value - 0x8515 : 0;
+}
+
+function compressedBytes(internalFormat, width, height, depth, data) {
+  if (webGLCompressedBlock(internalFormat)) {
+    return estimateWebGLTextureBytes(width, height, internalFormat, null, 1) * Math.max(1, Number(depth ?? 1));
+  }
+  return typeof data === "number" ? data : Number(data?.byteLength || 0);
 }
 
 export function createTracker(api, options = {}) {
@@ -446,12 +555,41 @@ function webGLTexImageDescriptor(args) {
 export function estimateWebGLTextureBytes(width, height, internalFormat, type, levels = 1, format = null) {
   const w = Number(width ?? 1), h = Number(height ?? 1);
   if (w === 0 || h === 0) return 0;
-  const bytesPerPixel = webGLBytesPerPixel(internalFormat, type);
+  const block = webGLCompressedBlock(internalFormat);
+  const bytesPerPixel = block ? 0 : webGLBytesPerPixel(internalFormat, type);
   let total = 0;
   for (let level = 0; level < Number(levels ?? 1); level++) {
-    total += Math.max(1, Math.floor(w / 2 ** level)) * Math.max(1, Math.floor(h / 2 ** level)) * bytesPerPixel;
+    const levelWidth = Math.max(1, Math.floor(w / 2 ** level));
+    const levelHeight = Math.max(1, Math.floor(h / 2 ** level));
+    total += block
+      ? Math.ceil(levelWidth / block.blockWidth) * Math.ceil(levelHeight / block.blockHeight) * block.bytesPerBlock
+      : levelWidth * levelHeight * bytesPerPixel;
   }
   return total;
+}
+
+const ASTC_BLOCKS = [[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]];
+const COMPRESSED_BLOCKS = new Map([
+  // S3TC (DXT1/3/5) and sRGB variants
+  [0x83f0, [4, 4, 8]], [0x83f1, [4, 4, 8]], [0x83f2, [4, 4, 16]], [0x83f3, [4, 4, 16]],
+  [0x8c4c, [4, 4, 8]], [0x8c4d, [4, 4, 8]], [0x8c4e, [4, 4, 16]], [0x8c4f, [4, 4, 16]],
+  // RGTC (BC4/BC5) and BPTC (BC6H/BC7)
+  [0x8dbb, [4, 4, 8]], [0x8dbc, [4, 4, 8]], [0x8dbd, [4, 4, 16]], [0x8dbe, [4, 4, 16]],
+  [0x8e8c, [4, 4, 16]], [0x8e8d, [4, 4, 16]], [0x8e8e, [4, 4, 16]], [0x8e8f, [4, 4, 16]],
+  // ETC1, ETC2 and EAC
+  [0x8d64, [4, 4, 8]], [0x9270, [4, 4, 8]], [0x9271, [4, 4, 8]], [0x9272, [4, 4, 16]], [0x9273, [4, 4, 16]],
+  [0x9274, [4, 4, 8]], [0x9275, [4, 4, 8]], [0x9276, [4, 4, 8]], [0x9277, [4, 4, 8]], [0x9278, [4, 4, 16]], [0x9279, [4, 4, 16]],
+  // PVRTC 4 bpp and 2 bpp
+  [0x8c00, [4, 4, 8]], [0x8c02, [4, 4, 8]], [0x8c01, [8, 4, 8]], [0x8c03, [8, 4, 8]]
+]);
+
+/** Block layout of a WebGL compressed internal format (S3TC, RGTC, BPTC, ETC, ASTC, PVRTC), or null. */
+export function webGLCompressedBlock(internalFormat) {
+  const value = Number(internalFormat);
+  const astc = value >= 0x93b0 && value <= 0x93bd ? ASTC_BLOCKS[value - 0x93b0]
+    : value >= 0x93d0 && value <= 0x93dd ? ASTC_BLOCKS[value - 0x93d0] : null;
+  const block = astc ? [astc[0], astc[1], 16] : COMPRESSED_BLOCKS.get(value);
+  return block ? { blockHeight: block[1], blockWidth: block[0], bytesPerBlock: block[2] } : null;
 }
 
 function webGLBytesPerPixel(internalFormat, type) {

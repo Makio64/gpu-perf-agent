@@ -1,10 +1,38 @@
-import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
-export async function createFileTarget(filePath, options = {}) {
+// createRequire, not ESM `import "node:http"`: the ESM namespace evaluates http's lazy
+// WebSocket getters, which load undici and tls (see http-client.js).
+const { createServer } = createRequire(import.meta.url)("node:http");
+
+/** Nearest ancestor of `file` that holds package.json or .git, else dirname(file). */
+export function resolveFileRoot(file) {
+  const start = path.dirname(path.resolve(file));
+  for (let directory = start; ; directory = path.dirname(directory)) {
+    if (existsSync(path.join(directory, "package.json")) || existsSync(path.join(directory, ".git"))) return directory;
+    if (path.dirname(directory) === directory) return start;
+  }
+}
+
+/** Throws `file-not-found` (with a hint naming the argument and cwd) unless `file` is a readable file. */
+export async function assertFileTarget(filePath, { fileArg = filePath } = {}) {
   const file = path.resolve(filePath);
-  let root = path.resolve(options.fileRoot || process.cwd());
+  let info = null;
+  try { info = await stat(file); } catch { /* Reported below. */ }
+  if (!info?.isFile()) {
+    throw Object.assign(new Error(`File not found: ${file}`), {
+      code: "file-not-found",
+      hint: `resolved from --file ${fileArg}, cwd ${process.cwd()}`
+    });
+  }
+  return file;
+}
+
+export async function createFileTarget(filePath, options = {}) {
+  const file = await assertFileTarget(filePath, options);
+  let root = path.resolve(options.fileRoot || resolveFileRoot(file));
   let relative = path.relative(root, file);
 
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -100,6 +128,21 @@ function contentType(filePath) {
   }
   if (extension === ".jpg" || extension === ".jpeg") {
     return "image/jpeg";
+  }
+  if (extension === ".svg") {
+    return "image/svg+xml";
+  }
+  if (extension === ".webp" || extension === ".gif") {
+    return `image/${extension.slice(1)}`;
+  }
+  if (extension === ".gltf") {
+    return "model/gltf+json";
+  }
+  if (extension === ".glb") {
+    return "model/gltf-binary";
+  }
+  if (extension === ".wgsl" || extension === ".glsl" || extension === ".txt") {
+    return "text/plain; charset=utf-8";
   }
   return "application/octet-stream";
 }

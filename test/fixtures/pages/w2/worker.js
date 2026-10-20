@@ -1,0 +1,20 @@
+
+self.onmessage = async (e) => {
+  const canvas = e.data.canvas;
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+  const ctx = canvas.getContext("webgpu");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: "opaque" });
+  const m = device.createShaderModule({ code: "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { let p = array(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3)); return vec4f(p[i], 0, 1); } @fragment fn fs() -> @location(0) vec4f { return vec4f(1,0,0,1); }" });
+  const pipe = device.createRenderPipeline({ layout: "auto", vertex: { module: m }, fragment: { module: m, targets: [{ format }] } });
+  const buf = device.createBuffer({ size: 64 * 1024 * 1024, usage: GPUBufferUsage.STORAGE });
+  function frame() {
+    const enc = device.createCommandEncoder();
+    const rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store", clearValue: [0,0,0,1] }] });
+    rp.setPipeline(pipe); for (let i = 0; i < 50; i++) rp.draw(3); rp.end();
+    device.queue.submit([enc.finish()]);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+};

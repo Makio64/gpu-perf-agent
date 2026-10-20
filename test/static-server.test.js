@@ -49,3 +49,30 @@ test('closing a file target releases speculative sockets without waiting for HTT
     await Promise.race([target.close(), new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('File target close hung on unused socket')),1000);})]);
   } finally { clearTimeout(timer); socket.destroy(); await target.close(); }
 });
+
+test('resolveFileRoot picks the nearest package.json/.git ancestor, else the file directory', async () => {
+  const { mkdir } = await import('node:fs/promises');
+  const { resolveFileRoot } = await import('../src/static-server.js');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'gpu-perf-root-detect-'));
+  try {
+    await mkdir(path.join(directory, 'app', 'examples', 'deep'), { recursive: true });
+    await writeFile(path.join(directory, 'app', 'package.json'), '{}');
+    assert.equal(resolveFileRoot(path.join(directory, 'app', 'examples', 'deep', 'page.html')), path.join(directory, 'app'));
+    await mkdir(path.join(directory, 'app', 'examples', '.git'));
+    assert.equal(resolveFileRoot(path.join(directory, 'app', 'examples', 'deep', 'page.html')), path.join(directory, 'app', 'examples'));
+    assert.equal(resolveFileRoot(path.resolve('examples/webgpu-clear.html')), process.cwd());
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test('a missing --file fails with file-not-found before Chrome launches', async () => {
+  const { runFastReport } = await import('../src/fast-cdp-runner.js');
+  const started = performance.now();
+  await assert.rejects(runFastReport({ file: path.resolve('does-not-exist/page.html'), executablePath: '/definitely/missing' }), (error) => {
+    assert.equal(error.code, 'file-not-found');
+    assert.match(error.hint, /resolved from --file .*cwd /);
+    return true;
+  });
+  assert.ok(performance.now() - started < 100, `took ${performance.now() - started} ms`);
+});

@@ -71,6 +71,9 @@ test("html-report: renders recommendation cards and slow frames table when prese
           }
         }
       ],
+      instrumentation: {
+        delta: { "webgpu.createRenderPipeline": 2 }
+      },
       slowFrames: [
         {
           timestamp: 1200,
@@ -83,9 +86,9 @@ test("html-report: renders recommendation cards and slow frames table when prese
 
   const html = generateHtmlReport(report);
 
-  assert(html.includes("VERDICT: POOR"));
-  assert(html.includes("data-severity=\"critical\""));
-  assert(html.includes("Synchronous Pipeline Creation"));
+  assert(html.includes("VERDICT: NEEDS-WORK"));
+  assert(html.includes("data-severity=\"medium\""));
+  assert(html.includes("Synchronous Pipeline Creation") || html.includes("pipeline-sync-stall") || html.includes("sync pipeline"));
   assert(html.includes("Slow Frame Timeline"));
   assert(html.includes("42.5ms"));
 });

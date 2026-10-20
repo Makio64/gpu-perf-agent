@@ -100,13 +100,13 @@ test('missing animation callbacks finish with absent frame metrics instead of a 
 
 test('adaptive sampling requires three finite stable samples; fixed and unstable sampling retain the budget', async () => {
   const { reportValidity } = await import('../src/validity.js');
-  async function capture(adaptive, rates) {
+  async function capture(adaptive, rates, gpu = [1000, 1000, 1000, 1000, 1000]) {
     const context = vm.createContext({queueMicrotask, setTimeout, clearTimeout});
     vm.runInContext(`
       clock = 0; performance = {now: () => clock}; navigator = {}; document = {};
       cancelAnimationFrame = () => {};
       requestAnimationFrame = callback => queueMicrotask(() => callback(clock += 1000/120));
-      __gpuReportBench = ({sampleIndex}) => ({fps: ${JSON.stringify(rates)}[sampleIndex], gpuTimeNs: 1000});
+      __gpuReportBench = ({sampleIndex}) => ({fps: ${JSON.stringify(rates)}[sampleIndex], gpuTimeNs: ${JSON.stringify(gpu)}[sampleIndex]});
     `, context);
     const options = {api:'webgpu', adaptive, samples:5, warmup:0, durationMs:100};
     const inPage = JSON.parse(JSON.stringify(await vm.runInContext(`(${collectInPage.toString()})(${JSON.stringify(options)})`, context)));
@@ -115,13 +115,21 @@ test('adaptive sampling requires three finite stable samples; fixed and unstable
   const adaptive = await capture(true, [60, 60, 60, 60, 60]);
   assert.equal(adaptive.inPage.samples.length, 3);
   assert.equal(adaptive.inPage.sampling.stoppedEarly, true);
+  // GPU data exists (the hook's gpuTimeNs), so the stop rule is GPU convergence, not FPS.
+  assert.equal(adaptive.inPage.sampling.reason, 'gpu-converged');
   assert.equal(reportValidity(adaptive).valid, true);
   assert.equal(adaptive.inPage.summary.cadence.hz, 120);
   assert.equal(adaptive.inPage.summary.gpuTimeNs.mean, 1000);
   assert.ok(adaptive.inPage.summary.frameTimeMsP99_9.mean > 0);
   assert.equal(reportValidity({...adaptive, options:{...adaptive.options, adaptive:false}}).valid, false);
   assert.equal((await capture(false, [60, 60, 60, 60, 60])).inPage.samples.length, 5);
-  assert.equal((await capture(true, [30, 60, 30, 60, 30])).inPage.samples.length, 5);
+  // Unstable GPU time keeps sampling, whatever the FPS does.
+  assert.equal((await capture(true, [60, 60, 60, 60, 60], [1e6, 2e6, 1e6, 2e6, 1e6])).inPage.samples.length, 5);
+  // Without GPU data a vsync-capped page stops on stable frames, never on its (trivially stable) FPS.
+  const frames = await capture(true, [60, 60, 60, 60, 60], [null, null, null, null, null]);
+  assert.equal(frames.inPage.samples.length, 3);
+  assert.equal(frames.inPage.sampling.reason, 'frames-converged');
+  assert.equal(reportValidity(frames).valid, true);
 });
 
 function hookFixture({ hookCode, options = {}, setup = '' } = {}) {
@@ -165,7 +173,8 @@ test('hook sampling awaits every warmup and sample without scheduling animation 
   const counters = JSON.parse(JSON.stringify(context.counters));
   assert.equal(counters.raf, 0);
   assert.equal(counters.timers, 0);
-  assert.equal(counters.gc, 4);
+  // Four per-sample collections (--gc) plus gc() twice on each end of the retained-heap bracket.
+  assert.equal(counters.gc, 8);
   assert.equal(counters.maxActive, 1);
   assert.deepEqual(counters.hooks.map(call => [call.phase, call.sampleIndex]), [['warmup',0],['warmup',1],['sample',0],['sample',1],['sample',2],['sample',3]]);
   assert.ok(counters.hooks.every(call => call.durationMs === 1234 && call.samples === 4 && call.warmup === 2));
@@ -184,7 +193,8 @@ test('hook sampling awaits every warmup and sample without scheduling animation 
   assert.equal(report.warmup.settled, null);
   assert.equal(report.warmup.lagSpikeMs, null);
   assert.equal(report.warmup.durationMs, 6);
-  assert.equal(counters.snapshots.length, 10);
+  // Global before/after, warmupStartCounters and two counter reads per sample (this mock has no counters()).
+  assert.equal(counters.snapshots.length, 11);
   assert.equal(counters.memorySnapshots.length, 10);
   assert.equal(counters.deepMemory, 10);
   assert.deepEqual(counters.snapshots.at(-1), {includeHistory:true,includeResources:true});
@@ -221,7 +231,7 @@ test('hook sampling wraps primitive and array results without losing zero or add
 });
 
 test('hook sampling requires the named hook and rejects incompatible direct options without fallback', async () => {
-  const missing = hookFixture({options:{hookName:'runCompute'}});
+  const missing = hookFixture({options:{hookName:'runCompute', readyTimeoutMs:0}});
   await assert.rejects(missing.run(), /samplingMode hook requires benchmark hook runCompute/);
   assert.equal(missing.context.counters.hooks.length, 0);
   assert.equal(missing.context.counters.raf, 0);

@@ -2,152 +2,92 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeReport, summarizeReport } from "../src/diagnostics.js";
 
-test("diagnostics: pipeline counts request investigation without asserting measured stalls", () => {
+const cadence = { hz: 60, intervalMs: 16.67, hitRate: 1 };
+
+test("diagnostics: pipelines created before sampling are info, never a stall", () => {
   const report = {
     inPage: {
-      summary: {
-        fps: { mean: 60 },
-        elapsedMs: { mean: 1000, p95: 1001 }
-      },
-      samples: [
-        {
-          measurement: {
-            trackedGpuMemory: {
-              pipelines: {
-                syncCount: 3,
-                asyncCount: 0
-              }
-            }
-          }
-        }
-      ]
+      summary: { fps: { mean: 60 }, cadence, elapsedMs: { mean: 1000, p95: 1001 } },
+      samples: [{ measurement: { trackedGpuMemory: { pipelines: { syncCount: 3, asyncCount: 0 } } } }]
     }
   };
-
   const analysis = analyzeReport(report);
-  const issue = analysis.recommendations.find(r => r.id === "pipeline-sync-stall");
-  assert.equal(issue.severity, "warning");
-  assert.equal(issue.value, 3);
-  assert.match(issue.evidence, /duration and frame impact were not measured/);
-  assert.match(issue.action, /measure their timing/);
-  assert.doesNotMatch(issue.evidence, /compilation.*detected|stall.*detected/);
-  assert(analysis.warnings.some(w => w.includes("Synchronous pipeline creation detected")));
+  assert.ok(!analysis.findings.some(item => item.code === "pipeline-sync-stall"));
+  const startup = analysis.findings.find(item => item.code === "startup-sync-pipelines");
+  assert.equal(startup.role, "info");
+  assert.equal(startup.value, 3);
+  assert.match(startup.message, /created at startup/);
+  assert.equal(summarizeReport(report).verdict, "excellent");
+});
 
-  const summary = summarizeReport(report, analysis);
-  assert.equal(summary.verdict, "needs-work");
+test("diagnostics: sync pipelines created during sampling are a stall", () => {
+  const report = {
+    inPage: {
+      summary: { fps: { mean: 60 }, cadence, observedFrameCount: 60 },
+      instrumentation: { delta: { "webgpu.createRenderPipeline": 2, "webgpu.queueSubmits": 60 },
+        after: { counters: { "webgpu.createRenderPipeline": 5 }, resources: { pipelines: { syncCount: 5, asyncCount: 0, shaderModules: 1 } } } }
+    }
+  };
+  const analysis = analyzeReport(report);
+  const stall = analysis.findings.find(item => item.code === "pipeline-sync-stall");
+  assert.deepEqual([stall.role, stall.severity, stall.value], ["cause", "medium", 2]);
+  assert.match(stall.next, /Async/);
+  assert.equal(analysis.findings.find(item => item.code === "startup-sync-pipelines").value, 3);
+  assert.equal(summarizeReport(report).verdict, "needs-work");
 });
 
 test("diagnostics: cumulative bind-group counts do not assert render-loop churn", () => {
   const report = {
     inPage: {
-      summary: {
-        fps: { mean: 60 },
-        elapsedMs: { mean: 1000, p95: 1001 }
-      },
-      samples: [
-        {
-          measurement: {
-            trackedGpuMemory: {
-              bindGroups: {
-                createdCount: 85
-              }
-            }
-          }
-        }
-      ]
+      summary: { fps: { mean: 60 }, cadence, elapsedMs: { mean: 1000, p95: 1001 } },
+      samples: [{ measurement: { trackedGpuMemory: { bindGroups: { createdCount: 85 } } } }]
     }
   };
-
-  const analysis = analyzeReport(report);
-  assert(analysis.recommendations.some(r => r.id === "bind-group-churn" && r.severity === "warning"));
-  const issue = analysis.recommendations.find(r => r.id === 'bind-group-churn');
-  assert.match(issue.evidence, /total can include setup and warmup/);
-  assert.match(issue.action, /per-sample creation deltas/);
-  assert(analysis.warnings.some(w => w.includes("High recorded bind group count")));
+  assert.ok(!analyzeReport(report).findings.some(item => item.code === "bind-group-churn"));
 });
 
-test("diagnostics: flags unstable display cadence", () => {
+test("diagnostics: per-sample creations in two or more samples are churn", () => {
+  const sample = delta => ({ instrumentation: { delta }, measurement: {} });
   const report = {
     inPage: {
-      summary: {
-        fps: { mean: 55 },
-        cadence: {
-          hz: 60,
-          intervalMs: 16.67,
-          hitRate: 0.65 // Only 65% hit rate
-        }
-      }
+      summary: { fps: { mean: 60 }, cadence, observedFrameCount: 30 },
+      instrumentation: { delta: { "webgpu.createBindGroup": 30, "webgpu.createBuffer": 3, "webgpu.queueSubmits": 30 } },
+      samples: [sample({ "webgpu.createBindGroup": 15, "webgpu.createBuffer": 3 }), sample({ "webgpu.createBindGroup": 15 })]
     }
   };
-
-  const analysis = analyzeReport(report);
-  assert(analysis.recommendations.some(r => r.id === "unstable-cadence"));
+  const codes = analyzeReport(report).findings.map(item => item.code);
+  assert.ok(codes.includes("bind-group-churn"));
+  assert.ok(!codes.includes("resource-churn"), "buffers were created in one sample only");
 });
 
-test("diagnostics: flags compute-bound workloads", () => {
+test("diagnostics: draw-call pressure is a symptom when CPU-bound and info otherwise", () => {
+  const report = busy => ({
+    inPage: { summary: { fps: { mean: busy ? 45 : 60 }, cadence, observedFrameCount: 10 },
+      instrumentation: { delta: { "webgpu.drawCalls": 12000, "webgpu.queueSubmits": 10 } } },
+    cdp: { before: { performanceMetrics: { Timestamp: 0, TaskDuration: 0, ThreadTime: 0 } },
+      after: { performanceMetrics: { Timestamp: 1, TaskDuration: busy ? 0.95 : 0.1, ThreadTime: busy ? 0.9 : 0.1 } } }
+  });
+  const cpu = analyzeReport(report(true)).findings.find(item => item.code === "draw-call-pressure");
+  assert.deepEqual([cpu.role, cpu.value], ["symptom", 1200]);
+  const idle = analyzeReport(report(false)).findings.find(item => item.code === "draw-call-pressure");
+  assert.equal(idle.role, "info");
+});
+
+test("diagnostics: non-critical failed requests are info with the URL to fix", () => {
   const report = {
-    inPage: {
-      summary: {
-        fps: { mean: 40 },
-        elapsedMs: { mean: 1000, p95: 1001 }
-      },
-      samples: [
-        {
-          measurement: {
-            computeTimeNs: 18_000_000, // 18ms compute
-            renderTimeNs: 3_000_000    // 3ms render
-          }
-        }
-      ]
-    }
+    target: { url: "http://127.0.0.1:1/index.html", documentUrl: "http://127.0.0.1:1/index.html" },
+    inPage: { summary: { fps: { mean: 60 }, cadence } },
+    pageEvents: [{ type: "httperror", url: "https://cdn.example/logo.png", resourceType: "Image", status: 404 }]
   };
-
-  const analysis = analyzeReport(report);
-  assert(analysis.recommendations.some(r => r.id === "compute-bound"));
+  const finding = analyzeReport(report).findings.find(item => item.code === "page-errors");
+  assert.equal(finding.role, "info");
+  assert.match(finding.next, /cdn\.example\/logo\.png/);
 });
 
-test('diagnostics: compute/render comparisons retain zero measurements and preserve workload coverage', () => {
-  const report = { inPage: { samples: [
-    { measurement: { computeTimeNs: 0, renderTimeNs: 0 } },
-    { measurement: { computeTimeNs: 18_000_000, renderTimeNs: 3_000_000 } }
-  ] } };
-  assert.equal(analyzeReport(report).recommendations.some(item => item.id === 'compute-bound'), false);
-  report.inPage.samples[0].measurement = { computeTimeNs: 20_000_000, renderTimeNs: 4_000_000 };
-  const issue = analyzeReport(report).recommendations.find(item => item.id === 'compute-bound');
-  assert.equal(issue.value, 19);
-  assert.match(issue.action, /preserving the dispatch workload and results/);
-  assert.doesNotMatch(issue.action + issue.agentPrompt, /reduce dispatch|align workgroups to 32 or 64/);
-});
-
-test('diagnostics: high GPU duration retains scope and recommends optimizations with unchanged output', () => {
-  const result = analyzeReport({ inPage: { samples: [{ measurement: { gpuTimeNs: 20_000_000 } }] } });
-  const issue = result.recommendations.find(item => item.id === 'high-gpu-time');
-  assert.equal(issue.value, 20);
-  assert.match(issue.evidence, /scope is defined by the workload/);
-  assert.doesNotMatch(issue.evidence, /per frame/);
-  assert.match(issue.action, /preserving the workload and rendered output/);
-  assert.doesNotMatch(issue.action + issue.agentPrompt, /reduce lights|simplify geometry|lower shadow/);
-});
-
-test('diagnostics: long Chrome GPU-thread events remain evidence, not proven GPU execution stalls', () => {
-  const result = analyzeReport({ trace: { summary: { gpu: { completeDurationMs: { mean: 20 } } } } });
-  const issue = result.recommendations.find(item => item.id === 'chrome-trace-gpu-task');
-  assert.equal(issue.value, 20);
-  assert.match(issue.action, /CPU work or waiting/);
-  assert.doesNotMatch(issue.agentPrompt, /is stalled/);
-});
-
-test("diagnostics: flags high draw call pressure", () => {
-  const report = {
-    inPage: {
-      summary: {
-        fps: { mean: 45 },
-        drawCalls: { mean: 650 }
-      }
-    }
-  };
-
-  const analysis = analyzeReport(report);
-  assert(analysis.recommendations.some(r => r.id === "draw-call-pressure"));
-  assert(analysis.warnings.some(w => w.includes("High draw call count")));
+test("diagnostics: GPU timing state is reported as info", () => {
+  const unavailable = analyzeReport({ options: { autoInstrument: true }, inPage: { summary: { fps: { mean: 60 }, cadence, appGpuContexts: { webgpuDevices: 1 } } } });
+  assert.ok(unavailable.findings.some(item => item.code === "gpu-timing-unavailable" && item.role === "info"));
+  const unstable = analyzeReport({ inPage: { summary: { fps: { mean: 60 }, cadence },
+    samples: [0.86, 1.49, 1.83].map(gpuMs => ({ measurement: { gpuMs } })) } });
+  assert.ok(unstable.findings.some(item => item.code === "gpu-timing-unstable"));
 });

@@ -1,0 +1,5 @@
+<!doctype html><script type="module">
+// The workload installs its benchmark hook after async initialization (e.g. requestDevice + asset loading).
+await new Promise(resolve => setTimeout(resolve, 2500));
+window.__gpuReportBench = async () => ({ sceneHook: 1, gpuMs: 2 });
+</script>

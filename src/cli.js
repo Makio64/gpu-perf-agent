@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -8,6 +9,7 @@ import { reportValidity } from "./validity.js";
 
 const command = process.argv[2] || "help";
 const wantsJson = process.argv.includes("--json") || command === "inspect";
+if (["agent", "run", "ab", "doctor"].includes(command)) installSignalHandlers();
 
 try {
   if (process.argv.slice(3).some(arg => arg === "--help" || arg === "-h")) {
@@ -620,18 +622,34 @@ function artifactPath(out, extension) {
 
 async function runRemote(serverUrl, options) {
   const { normalizeOptions } = await import("./options.js");
+  // node:http via createRequire: global fetch would load undici and tls (exit stalls).
+  const { requestJson } = await import("./http-client.js");
   const normalized = normalizeOptions(options);
   for (const key of ["angle", "channel", "chromiumArgs", "executablePath", "headful"]) delete normalized[key];
   const url = new URL(serverUrl);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("--server must be an HTTP(S) URL.");
   url.pathname = "/run";
   url.search = "";
-  const response = await fetch(url, {
+  const { status, json: result } = await requestJson(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(normalized)
+    body: JSON.stringify(normalized),
+    timeoutMs: normalized.timeoutMs + normalized.lockTimeoutMs + 30000
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error?.message || `Profiler server returned HTTP ${response.status}.`);
+  if (status < 200 || status >= 300) throw Object.assign(new Error(result?.error?.message || `Profiler server returned HTTP ${status}.`), { code: result?.error?.code });
   return result;
+}
+
+// Once-handlers: close every harness (Chrome included) without draining, then exit
+// 128+signo. A second signal gets Node's default behaviour.
+function installSignalHandlers() {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.once(signal, async () => {
+      try {
+        const { closeAllHarnesses } = await import("./fast-cdp-runner.js");
+        await closeAllHarnesses({ timeoutMs: 2000 });
+      } finally {
+        process.exit(128 + (osConstants.signals[signal] ?? 0));
+      }
+    });
+  }
 }

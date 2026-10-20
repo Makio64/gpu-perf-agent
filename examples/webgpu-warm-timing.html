@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WebGPU Warm Timing Example</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #111416;
+        overflow: hidden;
+      }
+
+      canvas {
+        display: block;
+        height: 100%;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <script type="module">
+      // A fixed fragment workload timed with a clock-warmed pass: the hook returns
+      // `timer.measureWarm(...)`, so its GPU timing has provenance "warm" and gates
+      // between separate captures. `?work=N` sets the loop length (default 200).
+      import { trackWebGPUDevice } from "../src/browser/allocation-tracker.js";
+      import { requestTimedWebGPUDevice } from "../src/browser/timing.js";
+
+      // Register the hook before the first await so the profiler finds it at load;
+      // it waits for the device and pipeline below.
+      let markReady;
+      const ready = new Promise((resolve) => { markReady = resolve; });
+      globalThis.__gpuReportBench = async (options) => {
+        await ready;
+        return bench(options);
+      };
+
+      if (!navigator.gpu) {
+        throw new Error("WebGPU is not available.");
+      }
+
+      const work = Math.max(0, Math.min(100000, Math.floor(Number(new URLSearchParams(location.search).get("work") ?? 200)) || 0));
+      const canvas = document.querySelector("#stage");
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+      const { device, timer, timestampQueryAvailable } = await requestTimedWebGPUDevice(adapter);
+      const tracker = trackWebGPUDevice(device);
+      globalThis.__gpuMemoryTracker = tracker;
+
+      const context = canvas.getContext("webgpu");
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      context.configure({ alphaMode: "opaque", device, format });
+      const module = device.createShaderModule({ label: "warm-timing", code: `
+        struct U { t: f32 };
+        @group(0) @binding(0) var<uniform> u: U;
+        @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+          var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+          return vec4f(p[i], 0.0, 1.0);
+        }
+        @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+          let p = pos.xy / vec2f(1280.0, 720.0);
+          var acc = vec3f(0.0);
+          for (var i = 0; i < ${work}; i++) {
+            acc += sin(vec3f(p, u.t) * f32(i) * 0.013 + acc * 0.5);
+          }
+          return vec4f(vec3f(0.35) + 0.35 * sin(u.t + p.xyx * 8.0) + acc * 0.0001, 1.0);
+        }` });
+      const pipeline = await device.createRenderPipelineAsync({
+        label: "warm-timing",
+        layout: "auto",
+        vertex: { module, entryPoint: "vs" },
+        fragment: { module, entryPoint: "fs", targets: [{ format }] }
+      });
+      const uniforms = device.createBuffer({ label: "warm-timing-uniforms", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const bindGroup = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uniforms } }] });
+      const uniformData = new Float32Array(4);
+
+      function resize() {
+        const width = Math.max(1, Math.floor(innerWidth * devicePixelRatio));
+        const height = Math.max(1, Math.floor(innerHeight * devicePixelRatio));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+      }
+
+      // Idempotent: the same pass for the same time, so warm-up repetitions are representative.
+      function encodeFrame(encoder, time, passStarter = (item, descriptor) => item.beginRenderPass(descriptor)) {
+        uniformData[0] = time * 0.001;
+        device.queue.writeBuffer(uniforms, 0, uniformData);
+        const pass = passStarter(encoder, {
+          colorAttachments: [{
+            clearValue: { a: 1, b: 0.25, g: 0.25, r: 0.08 },
+            loadOp: "clear",
+            storeOp: "store",
+            view: context.getCurrentTexture().createView()
+          }]
+        });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.draw(3);
+        pass.end();
+      }
+
+      function draw(time) {
+        resize();
+        const encoder = device.createCommandEncoder();
+        encodeFrame(encoder, time);
+        device.queue.submit([encoder.finish()]);
+      }
+
+      function frame(time) {
+        draw(time);
+        requestAnimationFrame(frame);
+      }
+
+      function nextFrame() {
+        return new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+
+      async function bench({ durationMs, phase }) {
+        const started = performance.now();
+        const frames = [];
+        while (performance.now() - started < durationMs) {
+          frames.push(await nextFrame());
+        }
+        // Warm the GPU clock with repeated passes, then time one pass right after them.
+        const warm = timer
+          ? await timer.measureWarm((encoder, gpuTimer) => {
+              resize();
+              encodeFrame(encoder, 1000, gpuTimer.beginRenderPass);
+            })
+          : { gpuTimeNs: null, gpuTiming: null };
+
+        const deltas = [];
+        for (let index = 1; index < frames.length; index += 1) {
+          deltas.push(frames[index] - frames[index - 1]);
+        }
+        const elapsedMs = Math.max(0.001, frames[frames.length - 1] - frames[0]);
+        return {
+          api: "webgpu",
+          fps: (frames.length - 1) / (elapsedMs / 1000),
+          frameCount: frames.length,
+          gpuTimeNs: warm.gpuTimeNs,
+          gpuTiming: warm.gpuTiming,
+          phase,
+          timestampQueryAvailable
+        };
+      }
+
+      requestAnimationFrame(frame);
+      markReady();
+    </script>
+  </body>
+</html>
