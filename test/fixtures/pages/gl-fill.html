@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%}canvas{width:100%;height:100%;display:block}</style></head><body><canvas id="c"></canvas><script>
+// GPU fragment-bound WebGL2: one fullscreen draw with an expensive loop; trivial JS.
+const L = Number(new URLSearchParams(location.search).get("load") || 4000);
+const c = document.getElementById("c"); c.width = 1280; c.height = 720; const gl = c.getContext("webgl2");
+const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); return x; };
+const p = gl.createProgram();
+gl.attachShader(p, sh(gl.VERTEX_SHADER, `#version 300 es
+void main(){ vec2 q = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(q*2.-1.,0,1); }`));
+gl.attachShader(p, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; uniform float t; out vec4 o; void main(){ vec2 uv = gl_FragCoord.xy*0.002; vec3 c = vec3(0);
+for (int i = 0; i < ${L}; i++) { uv = vec2(sin(uv.y*1.7+t), cos(uv.x*1.3-t)) + uv*0.5; c += abs(vec3(uv, uv.x*uv.y))*0.02; } o = vec4(c,1); }`));
+gl.linkProgram(p); const tl = gl.getUniformLocation(p, "t");
+function frame(now) { gl.viewport(0,0,1280,720); gl.useProgram(p); gl.uniform1f(tl, now*0.001); gl.drawArrays(gl.TRIANGLES, 0, 3); requestAnimationFrame(frame); }
+requestAnimationFrame(frame);
+</script></body></html>

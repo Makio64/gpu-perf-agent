@@ -98,3 +98,37 @@ test('html-report: invalid evidence overrides a healthy performance verdict', ()
   assert.ok(html.includes('VERDICT: INVALID'));
   assert.ok(!html.includes('VERDICT: EXCELLENT'));
 });
+
+test('html-report: renders summary-first bottleneck, verdictReasons, and GPU pass breakdown', () => {
+  const html = generateHtmlReport({
+    summary: {
+      verdict: 'needs-work',
+      verdictReasons: [
+        { code: 'gpu-bound', severity: 'high', message: 'GPU limits frame rate at 120 Hz' }
+      ],
+      bottleneck: {
+        class: 'gpu-bound',
+        reason: 'GPU 9.2 ms is 111% of budget at 120 Hz',
+        primaryMetric: 'health.autoGpuFrameMs.p50'
+      },
+      gpu: {
+        source: 'auto',
+        frameMsP50: 9.2,
+        passes: [
+          { key: 'render#0', type: 'render', exclusiveMs: 7.5, durationMs: 7.6, share: 0.815, overlapped: false, site: 'frame app.js:88' },
+          { key: 'sim', type: 'compute', exclusiveMs: 1.7, durationMs: 1.7, share: 0.185, overlapped: true, site: 'step sim.js:40' }
+        ]
+      }
+    },
+    diagnostics: { validity: { valid: true, issues: [] } }
+  });
+  assert.ok(html.includes('Verdict Reasons:'));
+  assert.ok(html.includes('GPU limits frame rate at 120 Hz'));
+  assert.ok(html.includes('health.autoGpuFrameMs.p50'));
+  assert.ok(html.includes('GPU Pass Breakdown (Exclusive p50)'));
+  assert.ok(html.includes('render#0'));
+  assert.ok(html.includes('7.500'));
+  assert.ok(html.includes('81.5%'));
+  assert.ok(html.includes('yes (~)'));
+  assert.ok(html.includes('frame app.js:88'));
+});

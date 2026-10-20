@@ -8,8 +8,9 @@ import { CDPConnection } from "./cdp.js";
 import { requestJson } from "./http-client.js";
 import { acquireMeasurementLock, processAlive } from "./measure-lock.js";
 import { normalizeOptions, parseViewport, PROFILING_PRESETS } from "./options.js";
-import { finalizeReport } from "./analysis.js";
+import { classifyBottleneck, finalizeReport } from "./analysis.js";
 import { autoInstrumentationSource } from "./browser/auto-instrument.js";
+import { startCpuProfile, stopCpuProfile, summarizeCpuProfile } from "./cpu-profile.js";
 import * as injected from "./injected.js";
 import { assertFileTarget, createFileTarget } from "./static-server.js";
 import { captureCdpPageEvents, createPageEventCollector, withCaptureDiagnostics } from "./page-events.js";
@@ -243,7 +244,7 @@ export class FastCDPHarness {
       const samplingStartedAt = performance.now();
       job.sampling = true;
       page.network.markSamplingStart(samplingStartedAt);
-      const inPage = await evaluateInPage(page.session, {
+      const inPageOptions = {
         adaptive: Boolean(options.adaptive),
         api: options.api,
         durationMs: Number(options.durationMs ?? 1000),
@@ -258,11 +259,63 @@ export class FastCDPHarness {
         waitNetworkIdle: page.overlapNetworkIdle,
         networkIdleBudgetMs: options.networkIdleBudgetMs,
         progress: true
-      }, Number(options.timeoutMs ?? 60000));
+      };
+      const inPage = await evaluateInPage(page.session, inPageOptions, Number(options.timeoutMs ?? 60000));
       const samplingMs = performance.now() - samplingStartedAt;
       const cdpSamples = await page.progress.samples();
       const cdpAfter = await cdpSnapshot(page.session, options);
       // L5: the optional profiled extra sample runs here, while the lock is still held.
+      let cpuProfile = null;
+      let cpuProfileMs = 0;
+      if (options.cpuProfile !== false) {
+        const rawBottleneck = classifyBottleneck({
+          inPage,
+          cdp: { before: cdpBefore, after: cdpAfter, samples: cdpSamples },
+          options: reportOptions(options, this.launch.args)
+        });
+        const requested = options.cpuProfile === true;
+        const autoTrigger = options.cpuProfile === "auto"
+          && (rawBottleneck.class === "cpu-bound"
+            || (rawBottleneck.class === "mixed" && Number.isFinite(rawBottleneck.mainThreadBusy) && rawBottleneck.mainThreadBusy >= 0.6));
+        if (requested || autoTrigger) {
+          emit({ stage: "cpu-profile" });
+          const profileStartedAt = performance.now();
+          await startCpuProfile(page.session, { intervalUs: 100 });
+          const profiledInPage = await evaluateInPage(page.session, {
+            ...inPageOptions,
+            samples: 1,
+            warmup: 0,
+            readyTimeoutMs: 0,
+            waitNetworkIdle: false,
+            progress: false
+          }, Number(options.timeoutMs ?? 60000));
+          const stopStartedAt = performance.now();
+          const rawProfile = await stopCpuProfile(page.session);
+          const extraSample = profiledInPage?.samples?.[0];
+          const extraFrames = extraSample?.measurement?.observedFrames?.frameCount
+            ?? extraSample?.measurement?.frameCount
+            ?? extraSample?.activity?.activeTicks
+            ?? extraSample?.activity?.ticks
+            ?? profiledInPage?.summary?.observedFrameCount
+            ?? 1;
+          const extraWindowMs = extraSample?.elapsedMs ?? ((rawProfile.endTime - rawProfile.startTime) / 1000);
+          const extraFps = extraSample?.activity?.activeFrameRatio < 0.9 && Number.isFinite(extraSample?.activity?.pageFps)
+            ? extraSample.activity.pageFps
+            : (extraSample?.measurement?.observedFrames?.fps ?? extraSample?.measurement?.fps ?? rawBottleneck.fps);
+          cpuProfile = summarizeCpuProfile(rawProfile, {
+            trigger: requested ? "requested" : "auto",
+            frames: Math.max(1, extraFrames || 1),
+            windowMs: extraWindowMs,
+            budgetMs: rawBottleneck.budgetMs ?? 16.67,
+            hz: rawBottleneck.hz ?? 60,
+            fps: extraFps,
+            intervalUs: 100,
+            overheadMs: performance.now() - stopStartedAt
+          });
+          cpuProfile.overheadMs = round(performance.now() - stopStartedAt);
+          cpuProfileMs = performance.now() - profileStartedAt;
+        }
+      }
 
       if (lock) {
         await lock.release();
@@ -331,7 +384,7 @@ export class FastCDPHarness {
         readyWaitMs: round(Number(inPage?.ready?.waitedMs ?? 0)),
         warmupMs: inPage?.warmup?.durationMs == null ? null : round(inPage.warmup.durationMs),
         samplingMs: round(samplingMs),
-        cpuProfileMs: 0,
+        cpuProfileMs: round(cpuProfileMs),
         totalMs: round(performance.now() - startedAt)
       };
       timings.anomalies = timingAnomalies(timings, page.network.slowestTls());
@@ -345,6 +398,7 @@ export class FastCDPHarness {
         },
         timings,
         measurementLock,
+        ...(cpuProfile ? { cpuProfile } : {}),
         browser: browserInfo,
         cdp: {
           after: cdpAfter,

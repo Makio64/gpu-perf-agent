@@ -534,7 +534,7 @@ test("output.js, agent.js and comparisonStatus agree on the headline", () => {
     assert.equal(result.status, status.status);
     assert.equal(comparisonExitCode(result, options), status.exitCode);
     assert.equal(result.exitCode, status.exitCode);
-    assert.match(generateAgentCompareDigest(base, candidate, options), new RegExp(`Status\\*\\*: ${status.status.toUpperCase()}`));
+    assert.match(generateAgentCompareDigest(base, candidate, options), new RegExp(`^${status.status.toUpperCase()}\\b`));
   }
 });
 

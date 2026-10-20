@@ -1,210 +1,395 @@
 #!/usr/bin/env node
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, constants as fsConstants, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { compactReport, comparisonExitCode, formatAgentReport, formatAgentComparison } from "./output.js";
+import {
+  compactComparison,
+  compactReport,
+  comparisonExitCode,
+  formatAgentComparison,
+  formatAgentReport,
+  formatCaptureAndCompare,
+  formatCliError,
+  normalizeCliError,
+  relPath
+} from "./output.js";
+import {
+  applyOptionPrecedence,
+  BASE_INHERITED_OPTION_KEYS,
+  normalizeOptions,
+  PROFILING_PRESETS
+} from "./options.js";
 import { reportValidity } from "./validity.js";
 
-const command = process.argv[2] || "help";
-const wantsJson = process.argv.includes("--json") || command === "inspect";
+const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.2.0" });
+
+function daemonDisabled(options = {}) {
+  const flag = process.env.GPU_PERF_AGENT_NO_DAEMON;
+  return Boolean(options.noDaemon || (flag && flag !== "0" && flag !== "false"));
+}
+
+const RUN_OPTIONS = {
+  url: { type: "string", desc: "Target URL to profile." },
+  file: { type: "string", desc: "Local HTML file to serve and profile." },
+  "file-root": { type: "string", desc: "Serve module imports from a sibling project root." },
+  out: { type: "string", desc: "Output JSON report path (default: reports/<slug>-<n>.json)." },
+  label: { type: "string", desc: "Human-readable label for default report naming." },
+  preset: { type: "string", desc: "quick|confirm|profile|default sampling preset." },
+  api: { type: "string", desc: "auto|webgpu|webgl|webgl2 capability probe selection." },
+  "sampling-mode": { type: "string", desc: "frames|hook sampling mode (frames by default)." },
+  "auto-instrument": { type: "boolean", desc: "Track WebGPU/WebGL resources, draws, dispatches, and passes." },
+  "no-auto-instrument": { type: "boolean", desc: "Disable automatic WebGPU/WebGL instrumentation." },
+  "gpu-timing": { type: "boolean", desc: "Enable automatic WebGPU timestamp-query pass timing." },
+  "no-gpu-timing": { type: "boolean", desc: "Disable automatic WebGPU timestamp-query pass timing." },
+  "duration-ms": { type: "string", desc: "Per-sample duration in milliseconds." },
+  samples: { type: "string", desc: "Number of measured samples." },
+  warmup: { type: "string", desc: "Number of warmup samples before measurement." },
+  adaptive: { type: "boolean", desc: "Stop after >=3 samples when FPS CV < 1.5%." },
+  gc: { type: "boolean", desc: "Force GC around sampling for retained heap bracket." },
+  "deep-memory": { type: "boolean", desc: "Opt in to user-agent specific memory measurements." },
+  "cpu-profile": { type: "string", desc: "auto|true|false CDP CPU profiler control." },
+  "no-cpu-profile": { type: "boolean", desc: "Disable automatic CDP CPU profiling on slow captures." },
+  "allow-idle": { type: "boolean", desc: "Allow captures with zero observed GPU/frame work." },
+  "ready-timeout": { type: "string", desc: "Timeout in ms for automatic scene readiness." },
+  "network-idle-budget": { type: "string", desc: "Max ms to wait for network idle before sampling." },
+  "wait-until": { type: "string", desc: "load|domcontentloaded|networkidle|commit navigation state." },
+  "wait-condition": { type: "string", desc: "JS expression to await before sampling." },
+  "wait-condition-timeout": { type: "string", desc: "Timeout in ms for --wait-condition." },
+  "wait-for-hook": { type: "boolean", desc: "Wait for the benchmark hook after async startup." },
+  hook: { type: "string", desc: "Window benchmark hook name (default: __gpuReportBench)." },
+  "hook-name": { type: "string", desc: "Alias for --hook." },
+  "slow-frame-threshold": { type: "string", desc: "Slow-frame cutoff in ms (default: 20)." },
+  timeout: { type: "string", desc: "Overall navigation and sampling timeout in ms." },
+  viewport: { type: "string", desc: "Viewport dimensions WIDTHxHEIGHT (default: 1280x720)." },
+  "device-scale-factor": { type: "string", desc: "Device pixel ratio override." },
+  context: { type: "string", desc: "isolated|shared browser storage context." },
+  server: { type: "string", desc: "Reuse a running profiler HTTP service (--server URL)." },
+  "no-daemon": { type: "boolean", desc: "Disable automatic warm background daemon reuse." },
+  "no-lock": { type: "boolean", desc: "Disable cross-process GPU measurement lock." },
+  "lock-timeout": { type: "string", desc: "Max ms to wait for the GPU measurement lock." },
+  cdp: { type: "string", desc: "Attach to an existing Chrome debugging port or ws:// URL." },
+  "cdp-url": { type: "string", desc: "Alias for --cdp." },
+  runner: { type: "string", desc: "fast|playwright runner selection (default: fast)." },
+  channel: { type: "string", desc: "Chrome channel (stable|canary|beta|dev)." },
+  "executable-path": { type: "string", desc: "Explicit Chromium/Chrome binary path." },
+  angle: { type: "string", desc: "ANGLE backend override." },
+  headful: { type: "boolean", desc: "Launch a visible browser window." },
+  "chromium-arg": { type: "string", multiple: true, desc: "Additional Chromium launch flag (repeatable)." },
+  screenshot: { type: "boolean", desc: "Save a PNG screenshot beside the JSON report." },
+  "screenshot-out": { type: "string", desc: "Explicit path for PNG screenshot." },
+  "visual-validation": { type: "boolean", desc: "Capture screenshot for visual inspection." },
+  html: { type: "boolean", desc: "Write a self-contained HTML report beside the JSON report." },
+  "html-out": { type: "string", desc: "Explicit path for HTML report." },
+  trace: { type: "boolean", desc: "Capture summarized Chrome trace events." },
+  "minimal-trace": { type: "boolean", desc: "Capture only GPU Chrome trace categories." },
+  "raw-trace": { type: "boolean", desc: "Save raw Chrome trace JSON beside the report." },
+  "trace-out": { type: "string", desc: "Explicit path for raw Chrome trace JSON." },
+  agent: { type: "boolean", desc: "Print concise agent digest." },
+  json: { type: "boolean", desc: "Print bounded machine-readable JSON (<=1.6 KB)." },
+  "json-full": { type: "boolean", desc: "Print complete uncompacted report JSON." },
+  base: { type: "string", desc: "Baseline report JSON for combined capture + compare." },
+  candidate: { type: "string", desc: "Candidate report JSON (when comparing two saved reports)." },
+  "comparison-out": { type: "string", desc: "Output path for comparison JSON when --base is used." },
+  budget: { type: "string", desc: "Budget JSON file for comparison gating." },
+  threshold: { type: "string", desc: "Allowed relative regression percent (default: 5)." },
+  metric: { type: "string", desc: "Explicit primary metric key for comparison." },
+  paired: { type: "boolean", desc: "Treat samples as paired when comparing saved reports." },
+  "allow-mismatch": { type: "boolean", desc: "Downgrade compatibility mismatches to warnings." }
+};
+
+const COMMAND_OPTIONS = {
+  run: RUN_OPTIONS,
+  agent: RUN_OPTIONS,
+  ab: {
+    "base-url": { type: "string", desc: "Baseline target URL." },
+    "base-file": { type: "string", desc: "Baseline local HTML file." },
+    "candidate-url": { type: "string", desc: "Candidate target URL." },
+    "candidate-file": { type: "string", desc: "Candidate local HTML file." },
+    "file-root": { type: "string", desc: "Root directory for serving local files." },
+    out: { type: "string", desc: "Output JSON path for A/B artifact." },
+    label: { type: "string", desc: "Label for default A/B report naming." },
+    preset: { type: "string", desc: "quick|confirm|profile|default sampling preset." },
+    rounds: { type: "string", desc: "Interleaved A/B rounds (default: 4)." },
+    samples: { type: "string", desc: "Samples per round." },
+    warmup: { type: "string", desc: "Warmup samples per round." },
+    "duration-ms": { type: "string", desc: "Per-sample duration in ms." },
+    api: { type: "string", desc: "auto|webgpu|webgl|webgl2 capability probe." },
+    "sampling-mode": { type: "string", desc: "frames|hook sampling mode." },
+    "auto-instrument": { type: "boolean", desc: "Enable automatic GPU instrumentation (default: true)." },
+    "no-auto-instrument": { type: "boolean", desc: "Disable automatic GPU instrumentation." },
+    "gpu-timing": { type: "boolean", desc: "Enable automatic GPU pass timestamp timing (default: true)." },
+    "no-gpu-timing": { type: "boolean", desc: "Disable automatic GPU pass timestamp timing." },
+    "allow-idle": { type: "boolean", desc: "Allow rounds with zero observed GPU work." },
+    "ready-timeout": { type: "string", desc: "Readiness timeout in ms." },
+    "network-idle-budget": { type: "string", desc: "Max ms to wait for network idle." },
+    "wait-until": { type: "string", desc: "load|domcontentloaded|networkidle|commit." },
+    "wait-condition": { type: "string", desc: "JS readiness expression." },
+    "wait-condition-timeout": { type: "string", desc: "Timeout in ms for --wait-condition." },
+    "wait-for-hook": { type: "boolean", desc: "Wait for benchmark hook before sampling." },
+    hook: { type: "string", desc: "Benchmark hook name." },
+    "hook-name": { type: "string", desc: "Alias for --hook." },
+    "slow-frame-threshold": { type: "string", desc: "Slow-frame cutoff in ms." },
+    timeout: { type: "string", desc: "Per-round timeout in ms." },
+    viewport: { type: "string", desc: "Viewport dimensions WIDTHxHEIGHT." },
+    "device-scale-factor": { type: "string", desc: "Device pixel ratio." },
+    context: { type: "string", desc: "isolated|shared storage context." },
+    channel: { type: "string", desc: "Chrome channel." },
+    "executable-path": { type: "string", desc: "Explicit Chrome executable path." },
+    "chromium-arg": { type: "string", multiple: true, desc: "Additional Chrome launch flag." },
+    headful: { type: "boolean", desc: "Launch a visible browser window." },
+    "no-lock": { type: "boolean", desc: "Disable cross-process GPU measurement lock." },
+    "lock-timeout": { type: "string", desc: "Max ms to wait for GPU measurement lock." },
+    budget: { type: "string", desc: "Budget JSON file." },
+    threshold: { type: "string", desc: "Allowed relative regression percent (default: 5)." },
+    metric: { type: "string", desc: "Primary metric key override." },
+    "allow-mismatch": { type: "boolean", desc: "Allow capture/environment differences." },
+    agent: { type: "boolean", desc: "Print concise agent comparison digest." },
+    json: { type: "boolean", desc: "Print bounded machine-readable JSON (<=2 KB)." },
+    "json-full": { type: "boolean", desc: "Print complete A/B artifact JSON." }
+  },
+  compare: {
+    base: { type: "string", desc: "Baseline report JSON file." },
+    candidate: { type: "string", desc: "Candidate report JSON file." },
+    out: { type: "string", desc: "Output comparison JSON path (default: <candidate>.compare.json)." },
+    budget: { type: "string", desc: "Budget JSON file." },
+    threshold: { type: "string", desc: "Allowed relative regression percent (default: 5)." },
+    metric: { type: "string", desc: "Primary metric key override." },
+    paired: { type: "boolean", desc: "Use paired intervals for matched samples." },
+    "allow-mismatch": { type: "boolean", desc: "Downgrade compatibility mismatches to warnings." },
+    table: { type: "boolean", desc: "Print full ASCII comparison table." },
+    agent: { type: "boolean", desc: "Print concise agent comparison digest." },
+    json: { type: "boolean", desc: "Print bounded machine-readable JSON (<=2 KB)." },
+    "json-full": { type: "boolean", desc: "Print complete comparison JSON." }
+  },
+  inspect: {
+    report: { type: "string", desc: "Report, comparison, or A/B JSON file to inspect." },
+    section: { type: "string", desc: "overview|metrics|samples|errors|environment|instrumentation|trace|gpu|cpu." },
+    metric: { type: "string", desc: "Exact metric key or prefix* (in metrics section)." },
+    offset: { type: "string", desc: "Zero-based pagination offset." },
+    limit: { type: "string", desc: "Page size (1..10, default: 3)." },
+    run: { type: "string", desc: "Zero-based A/B run index." },
+    raw: { type: "boolean", desc: "Return 1 raw unprojected sample at offset." },
+    changed: { type: "boolean", desc: "Filter comparison metrics to changed rows only." },
+    json: { type: "boolean", desc: "Emit bounded JSON output." }
+  },
+  doctor: {
+    quick: { type: "boolean", desc: "Check environment and Chrome binary without launching Chrome." },
+    json: { type: "boolean", desc: "Emit machine-readable JSON status." },
+    channel: { type: "string", desc: "Chrome channel to check." },
+    "executable-path": { type: "string", desc: "Explicit Chrome executable path to check." },
+    headful: { type: "boolean", desc: "Probe in a visible browser window." }
+  },
+  serve: {
+    port: { type: "string", desc: "TCP port to listen on (default: 0)." },
+    "idle-timeout-ms": { type: "string", desc: "Idle shutdown timeout in ms (0 disables)." },
+    "state-file": { type: "string", desc: "Daemon state JSON file path." },
+    "report-dir": { type: "string", desc: "Default directory for saved reports." },
+    "max-queue": { type: "string", desc: "Max queued capture jobs (default: 8)." },
+    "slow-frame-threshold": { type: "string", desc: "Default slow-frame cutoff in ms." },
+    viewport: { type: "string", desc: "Default viewport WIDTHxHEIGHT." },
+    angle: { type: "string", desc: "ANGLE backend for persistent Chrome." },
+    "auto-instrument": { type: "boolean", desc: "Enable auto-instrumentation by default." },
+    "no-auto-instrument": { type: "boolean", desc: "Disable auto-instrumentation by default." },
+    "chromium-arg": { type: "string", multiple: true, desc: "Additional Chrome launch flag." },
+    channel: { type: "string", desc: "Chrome channel." },
+    context: { type: "string", desc: "Default context mode (isolated|shared)." },
+    "executable-path": { type: "string", desc: "Explicit Chrome binary path." },
+    headful: { type: "boolean", desc: "Launch persistent Chrome in headful mode." }
+  },
+  mcp: {
+    "report-dir": { type: "string", desc: "Directory for MCP artifacts (default: GPU_PERF_REPORT_DIR)." },
+    "executable-path": { type: "string", desc: "Explicit Chrome executable path." },
+    channel: { type: "string", desc: "Chrome channel." },
+    "chromium-arg": { type: "string", multiple: true, desc: "Additional Chrome launch flag." },
+    angle: { type: "string", desc: "ANGLE backend." },
+    headful: { type: "boolean", desc: "Launch Chrome visibly." },
+    cdp: { type: "string", desc: "Attach to existing Chrome CDP endpoint." }
+  },
+  xctrace: {
+    app: { type: "string", desc: "Application bundle or binary to profile." },
+    file: { type: "string", desc: "Local file to open." },
+    url: { type: "string", desc: "URL to open." },
+    out: { type: "string", desc: "Output .trace path." },
+    template: { type: "string", desc: "Instruments template (default: Metal System Trace)." },
+    "time-limit": { type: "string", desc: "Recording duration (default: 15s)." }
+  }
+};
+
+const rawArgv = process.argv.slice(2);
+const command = rawArgv[0] || "help";
+const wantsJson = rawArgv.includes("--json") || rawArgv.includes("--json-full") || command === "inspect";
 if (["agent", "run", "ab", "doctor"].includes(command)) installSignalHandlers();
 
 try {
-  if (process.argv.slice(3).some(arg => arg === "--help" || arg === "-h")) {
+  if (command === "--version" || command === "-v" || (rawArgv.includes("--version") && !rawArgv.some((a) => a.startsWith("--url") || a.startsWith("--file")))) {
+    console.log(`${TOOL.name} ${TOOL.version}`);
+  } else if (command === "help" || command === "--help" || command === "-h") {
     printHelp();
+  } else if (rawArgv.slice(1).some((arg) => arg === "--help" || arg === "-h")) {
+    if (!Object.hasOwn(COMMAND_OPTIONS, command)) {
+      throw Object.assign(new Error(`Unknown command "${command}". Run --help for usage.`), { code: "invalid-options" });
+    }
+    printHelp(command);
   } else if (command === "agent") {
-    const args = process.argv.slice(3);
-    if (args.some(arg => arg === "--base" || arg.startsWith("--base="))) await compareCommand([...args, "--agent"]);
-    else await runCommand(["--preset", "quick", "--auto-instrument", ...args, "--agent"]);
+    await agentCommand(rawArgv.slice(1));
   } else if (command === "run") {
-    await runCommand(process.argv.slice(3));
+    await runCommand(rawArgv.slice(1), { isAgent: false });
   } else if (command === "ab") {
-    await abCommand(process.argv.slice(3));
+    await abCommand(rawArgv.slice(1));
   } else if (command === "compare") {
-    await compareCommand(process.argv.slice(3));
+    await compareCommand(rawArgv.slice(1));
   } else if (command === "inspect") {
-    await inspectCommand(process.argv.slice(3));
+    await inspectCommand(rawArgv.slice(1));
   } else if (command === "doctor") {
-    await doctorCommand(process.argv.slice(3));
+    await doctorCommand(rawArgv.slice(1));
   } else if (command === "mcp") {
-    await (await import("./agent.js")).runMcpServer();
+    await mcpCommand(rawArgv.slice(1));
   } else if (command === "serve") {
-    await serveCommand(process.argv.slice(3));
+    await serveCommand(rawArgv.slice(1));
   } else if (command === "xctrace") {
-    await xctraceCommand(process.argv.slice(3));
+    await xctraceCommand(rawArgv.slice(1));
   } else {
-    if (!["help", "--help", "-h"].includes(command)) throw new Error(`Unknown command "${command}". Run --help for usage.`);
-    printHelp();
+    throw Object.assign(new Error(`Unknown command "${command}". Run --help for usage.`), {
+      code: "invalid-options",
+      hint: suggestCommandHint(command)
+    });
   }
 } catch (error) {
+  const reportPath = error?.failureReportPath ? relPath(error.failureReportPath) : undefined;
+  const normalized = normalizeCliError(error);
   if (wantsJson) {
     console.log(JSON.stringify({
-      error: {
-        message: error?.message || String(error),
-        name: error?.name || "Error",
-        stack: error?.stack || null
-      },
-      ok: false
+      ok: false,
+      exitCode: 3,
+      error: normalized,
+      ...(reportPath ? { reportPath } : {})
     }, null, 2));
   } else {
-    console.error(error?.stack || error?.message || String(error));
+    console.error(formatCliError(error, { reportPath }));
   }
-  process.exitCode = 1;
+  process.exitCode = 3;
 }
 
-async function abCommand(args) {
-  const { runABComparison } = await import("./ab-runner.js");
-  const { formatCompareTable } = await import("./compare.js");
-  const { values } = parseArgs({
-    allowPositionals: false,
-    args,
-    options: {
-      agent: { type: "boolean" },
-      api: { default: "auto", type: "string" },
-      "auto-instrument": { type: "boolean" },
-      "base-file": { type: "string" },
-      "base-url": { type: "string" },
-      budget: { type: "string" },
-      "candidate-file": { type: "string" },
-      "candidate-url": { type: "string" },
-      channel: { type: "string" },
-      context: { type: "string" },
-      "chromium-arg": { multiple: true, type: "string" },
-      "device-scale-factor": { type: "string" },
-      "duration-ms": { default: "250", type: "string" },
-      "executable-path": { type: "string" },
-      "file-root": { type: "string" },
-      headful: { type: "boolean" },
-      hook: { type: "string" },
-      json: { type: "boolean" },
-      metric: { type: "string" },
-      out: { type: "string" },
-      rounds: { default: "4", type: "string" },
-      samples: { default: "1", type: "string" },
-      "sampling-mode": { type: "string" },
-      "slow-frame-threshold": { default: "20", type: "string" },
-      threshold: { default: "5", type: "string" },
-      timeout: { type: "string" },
-      viewport: { default: "1280x720", type: "string" },
-      warmup: { default: "1", type: "string" },
-      "wait-condition": { type: "string" },
-      "wait-condition-timeout": { type: "string" },
-      "wait-for-hook": { type: "boolean" },
-      "wait-until": { type: "string" }
+function parseCommandArgs(cmd, args) {
+  const schema = COMMAND_OPTIONS[cmd];
+  const parseSchema = {};
+  for (const [key, spec] of Object.entries(schema)) {
+    parseSchema[key] = { type: spec.type, ...(spec.multiple ? { multiple: true } : {}) };
+  }
+  try {
+    return parseArgs({ allowPositionals: false, args, options: parseSchema });
+  } catch (error) {
+    if (error?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+      const match = /Unknown option '(--[^'=]+)'/.exec(error.message);
+      const unknown = match ? match[1].replace(/^--/, "") : null;
+      const suggestion = unknown ? closestFlag(unknown, Object.keys(schema)) : null;
+      const hint = suggestion
+        ? `Did you mean --${suggestion}? Run gpu-perf-agent ${cmd} --help for supported flags.`
+        : `Run gpu-perf-agent ${cmd} --help for supported flags.`;
+      throw Object.assign(new Error(error.message), { code: "invalid-options", hint });
     }
-  });
-  if (values.json && values.agent) throw new Error('Choose --json or --agent.');
-  const base = targetOption(values["base-url"], values["base-file"], values["file-root"]);
-  const candidate = targetOption(values["candidate-url"], values["candidate-file"], values["file-root"]);
-  const budget = values.budget ? JSON.parse(await readFile(values.budget, "utf8")) : null;
-  const result = await runABComparison({
-    api: values.api,
-    autoInstrument: Boolean(values["auto-instrument"]),
-    base,
-    budget,
-    candidate,
-    channel: values.channel,
-    contextMode: values.context,
-    chromiumArgs: values["chromium-arg"] || [],
-    deviceScaleFactor: values["device-scale-factor"],
-    durationMs: Number(values["duration-ms"]),
-    executablePath: values["executable-path"],
-    headful: Boolean(values.headful),
-    hookName: values.hook,
-    rounds: Number(values.rounds),
-    samples: Number(values.samples),
-    samplingMode: values["sampling-mode"],
-    slowFrameThresholdMs: Number(values["slow-frame-threshold"]),
-    thresholdPercent: Number(values.threshold),
-    timeoutMs: values.timeout,
-    viewport: values.viewport,
-    warmup: Number(values.warmup),
-    waitCondition: values["wait-condition"],
-    waitConditionTimeoutMs: values["wait-condition-timeout"],
-    waitForHook: values["wait-for-hook"],
-    waitUntil: values["wait-until"]
-  });
-  const out = path.resolve(values.out || path.join("reports", `ab-${timestamp()}.json`));
-  await mkdir(path.dirname(out), { recursive: true });
-  await writeFile(out, JSON.stringify(result, null, 2));
+    throw Object.assign(new Error(error.message), { code: "invalid-options" });
+  }
+}
 
-  if (values.json) {
-    console.log(JSON.stringify({
-      base: result.base,
-      candidate: result.candidate,
-      comparison: result.comparison,
-      ok: comparisonExitCode(result.comparison) === 0,
-      order: result.order,
-      out
-    }, null, 2));
-  } else if (values.agent) {
-    console.log(formatAgentComparison(result.comparison, { primaryMetric: values.metric }));
-    console.log(`Report: ${out}`);
+async function agentCommand(args) {
+  const { values } = parseCommandArgs("agent", args);
+  const hasTarget = Boolean(values.url || values.file);
+  if (values.base && !hasTarget) {
+    await compareCommand([...args, "--agent"]);
+    return;
+  }
+  await runCommand(args, { isAgent: true });
+}
+
+async function runCommand(args, { isAgent = false } = {}) {
+  const { values } = parseCommandArgs(isAgent ? "agent" : "run", args);
+  if (values.json && values.agent && !isAgent) {
+    throw Object.assign(new Error("Choose --json or --agent."), { code: "invalid-options" });
+  }
+  const runnerName = values.runner || "fast";
+  if (!["fast", "fast-cdp", "playwright"].includes(runnerName)) {
+    throw Object.assign(new Error('--runner must be "fast" or "playwright".'), { code: "invalid-options" });
+  }
+  if (values.server && (runnerName === "playwright" || values.cdp || values["cdp-url"] || values.angle || values.channel || values["executable-path"] || values.headful || values["chromium-arg"]?.length)) {
+    throw Object.assign(new Error("Configure browser launch flags on serve when using --server."), { code: "invalid-options" });
+  }
+
+  // Build explicit options map (only flags explicitly passed by caller).
+  const explicit = buildExplicitRunOptions(values);
+  let baseReport = null;
+  let overrides = [];
+  let effectiveInput;
+
+  if (values.base) {
+    const { loadReport } = await import("./compare.js");
+    baseReport = await loadReport(values.base);
+    const presetName = values.preset || (isAgent ? "quick" : "default");
+    const defaultOpts = {
+      ...PROFILING_PRESETS[presetName],
+      autoInstrument: isAgent,
+      gpuTiming: true,
+      api: "auto",
+      samplingMode: "frames",
+      viewport: "1280x720",
+      deviceScaleFactor: 1,
+      waitUntil: "networkidle",
+      hookName: "__gpuReportBench"
+    };
+    const mergedOptions = applyOptionPrecedence({
+      explicit,
+      base: baseReport,
+      preset: presetName,
+      defaults: { autoInstrument: isAgent }
+    });
+    for (const key of BASE_INHERITED_OPTION_KEYS) {
+      if (explicit[key] === undefined && baseReport?.options?.[key] != null && baseReport.options[key] !== defaultOpts[key]) {
+        const flagMap = {
+          autoInstrument: baseReport.options.autoInstrument ? "--no-auto-instrument" : "--auto-instrument",
+          gpuTiming: baseReport.options.gpuTiming ? "--no-gpu-timing" : "--gpu-timing",
+          api: `--api <api>`,
+          samplingMode: `--sampling-mode <mode>`
+        };
+        overrides.push({ key, value: baseReport.options[key], flag: flagMap[key] || null });
+      }
+    }
+    effectiveInput = {
+      ...mergedOptions,
+      url: values.url,
+      file: values.file,
+      fileArg: values.file,
+      fileRoot: values["file-root"] ? path.resolve(values["file-root"]) : undefined,
+      cdpUrl: values.cdp || values["cdp-url"],
+      channel: values.channel,
+      executablePath: values["executable-path"],
+      chromiumArgs: values["chromium-arg"] || [],
+      label: values.label
+    };
   } else {
-    console.log(`A/B report written: ${out}`);
-    console.log(formatCompareTable(result.comparison));
+    const presetName = values.preset || (isAgent ? "quick" : "default");
+    effectiveInput = {
+      ...explicit,
+      preset: presetName,
+      autoInstrument: explicit.autoInstrument !== undefined ? explicit.autoInstrument : isAgent,
+      url: values.url,
+      file: values.file,
+      fileArg: values.file,
+      fileRoot: values["file-root"] ? path.resolve(values["file-root"]) : undefined,
+      cdpUrl: values.cdp || values["cdp-url"],
+      channel: values.channel,
+      executablePath: values["executable-path"],
+      chromiumArgs: values["chromium-arg"] || [],
+      label: values.label
+    };
   }
-  process.exitCode = comparisonExitCode(result.comparison);
-}
 
-async function runCommand(args) {
-  const { values } = parseArgs({
-    allowPositionals: false,
-    args,
-    options: {
-      adaptive: { type: "boolean" },
-      cdp: { type: "string" },
-      "cdp-url": { type: "string" },
-      html: { type: "boolean" },
-      "html-out": { type: "string" },
-      "minimal-trace": { type: "boolean" },
-      "visual-validation": { type: "boolean" },
-      "wait-condition": { type: "string" },
-      "wait-condition-timeout": { type: "string" },
-      angle: { type: "string" },
-      api: { default: "auto", type: "string" },
-      agent: { type: "boolean" },
-      "deep-memory": { type: "boolean" },
-      "auto-instrument": { type: "boolean" },
-      "chromium-arg": { multiple: true, type: "string" },
-      channel: { type: "string" },
-      context: { type: "string" },
-      "device-scale-factor": { type: "string" },
-      "duration-ms": { type: "string" },
-      "executable-path": { type: "string" },
-      file: { type: "string" },
-      "file-root": { type: "string" },
-      gc: { type: "boolean" },
-      headful: { type: "boolean" },
-      hook: { default: "__gpuReportBench", type: "string" },
-      json: { type: "boolean" },
-      out: { type: "string" },
-      preset: { type: "string" },
-      "raw-trace": { type: "boolean" },
-      runner: { default: "fast", type: "string" },
-      server: { type: "string" },
-      samples: { type: "string" },
-      "sampling-mode": { type: "string" },
-      screenshot: { type: "boolean" },
-      "screenshot-out": { type: "string" },
-      "slow-frame-threshold": { type: "string" },
-      timeout: { default: "60000", type: "string" },
-      trace: { type: "boolean" },
-      "trace-out": { type: "string" },
-      url: { type: "string" },
-      viewport: { default: "1280x720", type: "string" },
-      warmup: { type: "string" },
-      "wait-until": { default: "networkidle", type: "string" },
-      "wait-for-hook": { type: "boolean" }
-    }
-  });
-
-  const preset = profilingPreset(values.preset);
-  const out = path.resolve(values.out || path.join("reports", `report-${timestamp()}.json`));
-  const useRawTrace = Boolean(values["raw-trace"] || preset.rawTrace);
-  const useTrace = Boolean(values.trace || values["minimal-trace"] || useRawTrace || values["trace-out"] || preset.trace);
+  const out = values.out
+    ? path.resolve(values.out)
+    : await resolveDefaultOutPath({ label: values.label, file: values.file, url: values.url });
+  const useRawTrace = Boolean(values["raw-trace"] || effectiveInput.rawTrace);
+  const useTrace = Boolean(values.trace || values["minimal-trace"] || useRawTrace || values["trace-out"] || effectiveInput.trace);
   const rawTracePath = values["trace-out"]
     ? path.resolve(values["trace-out"])
     : useRawTrace
@@ -215,54 +400,50 @@ async function runCommand(args) {
     : (values.screenshot || values["visual-validation"])
       ? artifactPath(out, ".png")
       : null;
-  const htmlPath = values["html-out"] ? path.resolve(values["html-out"]) : values.html ? artifactPath(out, ".html") : null;
-  if (!["fast", "fast-cdp", "playwright"].includes(values.runner)) {
-    throw new Error('--runner must be "fast" or "playwright".');
+  const htmlPath = values["html-out"]
+    ? path.resolve(values["html-out"])
+    : values.html
+      ? artifactPath(out, ".html")
+      : null;
+  const comparisonOut = values.base
+    ? (values["comparison-out"] ? path.resolve(values["comparison-out"]) : artifactPath(out, ".compare.json"))
+    : null;
+
+  const artifactPaths = [out, rawTracePath, screenshotPath, htmlPath, comparisonOut].filter(Boolean);
+  if (new Set(artifactPaths).size !== artifactPaths.length) {
+    throw Object.assign(new Error("Report, HTML, screenshot and trace paths must be different."), { code: "invalid-options" });
   }
 
-  if (values.server && (values.runner === "playwright" || values.cdp || values["cdp-url"] || values.angle || values.channel || values["executable-path"] || values.headful || values["chromium-arg"]?.length)) {
-    throw new Error("Configure browser launch flags on serve when using --server.");
-  }
-  const artifactPaths = [out, rawTracePath, screenshotPath, htmlPath].filter(Boolean);
-  if (new Set(artifactPaths).size !== artifactPaths.length) throw new Error("Report, HTML, screenshot and trace paths must be different.");
-  const runner = values.server ? (options => runRemote(values.server, options)) : values.runner === "playwright"
-    ? (await import("./runner.js")).runReport
-    : (await import("./fast-cdp-runner.js")).runFastReport;
-  if (values.json && values.agent && command !== "agent") throw new Error('Choose --json or --agent.');
-  const report = await runner({
-    adaptive: Boolean(values.adaptive),
-    cdpUrl: values.cdp || values["cdp-url"],
-    minimalTrace: Boolean(values["minimal-trace"]),
-    waitCondition: values["wait-condition"],
-    waitConditionTimeoutMs: values["wait-condition-timeout"],
-    angle: values.angle,
-    api: values.api,
-    autoInstrument: Boolean(values["auto-instrument"]),
-    channel: values.channel,
-    contextMode: values.context,
-    chromiumArgs: values["chromium-arg"] || [],
-    deviceScaleFactor: numberOption(values["device-scale-factor"], 1),
-    durationMs: numberOption(values["duration-ms"], preset.durationMs),
-    executablePath: values["executable-path"],
-    file: values.file ? path.resolve(values.file) : undefined,
-    fileRoot: values["file-root"] ? path.resolve(values["file-root"]) : (values.file ? process.cwd() : undefined),
-    gc: Boolean(values.gc || preset.gc),
-    deepMemory: Boolean(values["deep-memory"]),
-    headful: Boolean(values.headful),
-    hookName: values.hook,
-    rawTracePath,
-    samples: numberOption(values.samples, preset.samples),
-    samplingMode: values["sampling-mode"],
-    screenshotPath,
-    slowFrameThresholdMs: numberOption(values["slow-frame-threshold"], 20),
-    timeoutMs: Number(values.timeout),
+  // Validate options before launching Chrome or contacting server.
+  const validated = normalizeOptions({
+    ...effectiveInput,
     trace: useTrace,
-    url: values.url,
-    viewport: values.viewport,
-    warmup: numberOption(values.warmup, preset.warmup),
-    waitUntil: values["wait-until"],
-    waitForHook: values["wait-for-hook"]
+    rawTrace: useRawTrace,
+    rawTracePath,
+    screenshot: Boolean(screenshotPath),
+    screenshotPath
   });
+
+  let report;
+  try {
+    if (values.server) {
+      report = await runRemote(values.server, buildServerPayload(explicit, validated));
+    } else if (runnerName === "playwright") {
+      const { runReport } = await import("./runner.js");
+      report = await runReport(validated);
+    } else {
+      report = await runWithOptionalDaemon(validated, values);
+    }
+  } catch (error) {
+    await writeFailureReport(out, validated, error).catch(() => {});
+    if (error && typeof error === "object") error.failureReportPath = out;
+    throw error;
+  }
+
+  if (!report.summary || !report.diagnostics) {
+    const { finalizeReport } = await import("./analysis.js");
+    report = finalizeReport(report, validated);
+  }
 
   await mkdir(path.dirname(out), { recursive: true });
   await writeFile(out, JSON.stringify(report, null, 2));
@@ -271,102 +452,268 @@ async function runCommand(args) {
     const { generateHtmlReport } = await import("./html-report.js");
     await writeFile(htmlPath, generateHtmlReport(report));
   }
+
+  if (baseReport) {
+    const { compareReports } = await import("./compare.js");
+    const budget = values.budget ? JSON.parse(await readFile(values.budget, "utf8")) : null;
+    const allowMismatch = Boolean(values["allow-mismatch"]);
+    const comparison = compareReports(baseReport, report, {
+      budget,
+      primaryMetric: values.metric,
+      allowMismatch,
+      paired: Boolean(values.paired),
+      thresholdPercent: values.threshold !== undefined ? numberOption(values.threshold, 5) : 5
+    });
+    comparison.baseReportPath = relPath(path.resolve(values.base));
+    comparison.candidateReportPath = relPath(out);
+    comparison.baseFile = baseReport?.target?.file || null;
+    comparison.candidateFile = report?.target?.file || null;
+    comparison.baseUrl = baseReport?.target?.url || null;
+    comparison.candidateUrl = report?.target?.url || null;
+
+    await mkdir(path.dirname(comparisonOut), { recursive: true });
+    await writeFile(comparisonOut, JSON.stringify(comparison, null, 2));
+
+    const valid = reportValidity(report).valid;
+    process.exitCode = !valid ? 2 : comparisonExitCode(comparison, { allowMismatch });
+
+    if (values["json-full"]) {
+      console.log(JSON.stringify({
+        ok: process.exitCode === 0,
+        exitCode: process.exitCode,
+        reportPath: relPath(out),
+        comparisonPath: relPath(comparisonOut),
+        overrides,
+        report,
+        comparison
+      }, null, 2));
+      return;
+    }
+    if (values.json) {
+      console.log(JSON.stringify({
+        ok: process.exitCode === 0,
+        exitCode: process.exitCode,
+        reportPath: relPath(out),
+        comparisonPath: relPath(comparisonOut),
+        overrides,
+        capture: compactReport(report, out),
+        comparison: compactComparison(comparison, comparisonOut, { allowMismatch })
+      }));
+      return;
+    }
+    console.log(formatCaptureAndCompare(report, comparison, {
+      out,
+      comparisonOut,
+      baseReportPath: values.base,
+      overrides,
+      baseOptions: baseReport.options,
+      allowMismatch
+    }));
+    return;
+  }
+
   process.exitCode = reportValidity(report).valid ? 0 : 2;
 
+  if (values["json-full"]) {
+    console.log(JSON.stringify({
+      ok: process.exitCode === 0,
+      out: relPath(out),
+      ...(htmlPath ? { htmlPath: relPath(htmlPath) } : {}),
+      report
+    }, null, 2));
+    return;
+  }
   if (values.json) {
-    console.log(JSON.stringify({ ...compactReport(report, out), ...(htmlPath ? { htmlPath } : {}) }));
+    console.log(JSON.stringify({
+      ...compactReport(report, out),
+      ...(htmlPath ? { htmlPath } : {})
+    }));
     return;
   }
-  if (values.agent) {
-    console.log(formatAgentReport(report, { out }));
-    return;
-  }
+  console.log(formatAgentReport(report, { out }));
+}
 
-  console.log(`Report written: ${out}`);
-  if (htmlPath) console.log(`HTML report written: ${htmlPath}`);
-  if (screenshotPath) {
-    console.log(`Screenshot written: ${screenshotPath}`);
+async function abCommand(args) {
+  const { runABComparison } = await import("./ab-runner.js");
+  const { values } = parseCommandArgs("ab", args);
+  if (values.json && values.agent) {
+    throw Object.assign(new Error("Choose --json or --agent."), { code: "invalid-options" });
   }
-  printRunSummary(report);
+  const base = targetOption(values["base-url"], values["base-file"], values["file-root"]);
+  const candidate = targetOption(values["candidate-url"], values["candidate-file"], values["file-root"]);
+  const budget = values.budget ? JSON.parse(await readFile(values.budget, "utf8")) : null;
+  const allowMismatch = Boolean(values["allow-mismatch"]);
+  const autoInstrument = values["no-auto-instrument"] ? false : values["auto-instrument"] !== false;
+  const gpuTiming = values["no-gpu-timing"] ? false : values["gpu-timing"] !== false;
+
+  const result = await runABComparison({
+    api: values.api || "auto",
+    autoInstrument,
+    gpuTiming,
+    allowMismatch,
+    primaryMetric: values.metric,
+    preset: values.preset,
+    base,
+    budget,
+    candidate,
+    channel: values.channel,
+    contextMode: values.context,
+    chromiumArgs: values["chromium-arg"] || [],
+    deviceScaleFactor: values["device-scale-factor"],
+    ...(values["duration-ms"] !== undefined ? { durationMs: numberOption(values["duration-ms"], 250) } : {}),
+    executablePath: values["executable-path"],
+    headful: Boolean(values.headful),
+    hookName: values["hook-name"] || values.hook,
+    rounds: values.rounds !== undefined ? numberOption(values.rounds, 4) : 4,
+    ...(values.samples !== undefined ? { samples: numberOption(values.samples, 1) } : {}),
+    samplingMode: values["sampling-mode"],
+    slowFrameThresholdMs: values["slow-frame-threshold"] !== undefined ? numberOption(values["slow-frame-threshold"], 20) : 20,
+    thresholdPercent: values.threshold !== undefined ? numberOption(values.threshold, 5) : 5,
+    timeoutMs: values.timeout,
+    viewport: values.viewport || "1280x720",
+    ...(values.warmup !== undefined ? { warmup: numberOption(values.warmup, 1) } : {}),
+    waitCondition: values["wait-condition"],
+    waitConditionTimeoutMs: values["wait-condition-timeout"],
+    waitForHook: values["wait-for-hook"],
+    waitUntil: values["wait-until"],
+    readyTimeoutMs: values["ready-timeout"],
+    allowIdle: values["allow-idle"],
+    networkIdleBudgetMs: values["network-idle-budget"],
+    measureLock: values["no-lock"] ? false : undefined,
+    lockTimeoutMs: values["lock-timeout"],
+    label: values.label
+  });
+
+  const out = values.out
+    ? path.resolve(values.out)
+    : await resolveDefaultOutPath({
+      label: values.label || "ab",
+      file: values["candidate-file"] || values["base-file"],
+      url: values["candidate-url"] || values["base-url"],
+      prefix: "ab"
+    });
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, JSON.stringify(result, null, 2));
+
+  process.exitCode = comparisonExitCode(result.comparison, { allowMismatch });
+
+  if (values["json-full"]) {
+    console.log(JSON.stringify({
+      base: result.base,
+      candidate: result.candidate,
+      comparison: result.comparison,
+      ok: process.exitCode === 0,
+      order: result.order,
+      out: relPath(out)
+    }, null, 2));
+    return;
+  }
+  if (values.json) {
+    console.log(JSON.stringify({
+      ...compactComparison(result.comparison, out, { allowMismatch }),
+      out: relPath(out)
+    }));
+    return;
+  }
+  console.log(formatAgentComparison(result.comparison, {
+    out,
+    primaryMetric: values.metric,
+    allowMismatch
+  }));
 }
 
 async function compareCommand(args) {
   const { compareReports, formatCompareTable, loadReport } = await import("./compare.js");
-  const { values } = parseArgs({
-    allowPositionals: false,
-    args,
-    options: {
-      "allow-mismatch": { type: "boolean" },
-      agent: { type: "boolean" },
-      base: { type: "string" },
-      budget: { type: "string" },
-      candidate: { type: "string" },
-      json: { type: "boolean" },
-      metric: { type: "string" },
-      paired: { type: "boolean" },
-      threshold: { default: "5", type: "string" }
-    }
-  });
+  const { values } = parseCommandArgs("compare", args);
 
   if (!values.base || !values.candidate) {
-    throw new Error("compare requires --base and --candidate.");
+    throw Object.assign(new Error("compare requires --base and --candidate."), { code: "invalid-options" });
   }
 
+  const allowMismatch = Boolean(values["allow-mismatch"]);
   const budget = values.budget ? JSON.parse(await readFile(values.budget, "utf8")) : null;
   const [baseReport, candidateReport] = await Promise.all([loadReport(values.base), loadReport(values.candidate)]);
   const result = compareReports(baseReport, candidateReport, {
     budget,
     paired: Boolean(values.paired),
-    thresholdPercent: Number(values.threshold)
+    primaryMetric: values.metric,
+    allowMismatch,
+    thresholdPercent: values.threshold !== undefined ? numberOption(values.threshold, 5) : 5
   });
 
-  process.exitCode = comparisonExitCode(result, { allowMismatch: values["allow-mismatch"] });
-  if (values.json) {
-    console.log(JSON.stringify({ ok: process.exitCode === 0, ...result }));
-  } else if (values.agent) {
-    console.log(formatAgentComparison(result, { primaryMetric: values.metric }));
-  } else {
+  const out = values.out
+    ? path.resolve(values.out)
+    : artifactPath(path.resolve(values.candidate), ".compare.json");
+  result.baseReportPath = relPath(path.resolve(values.base));
+  result.candidateReportPath = relPath(path.resolve(values.candidate));
+  result.baseFile = baseReport?.target?.file || null;
+  result.candidateFile = candidateReport?.target?.file || null;
+  result.baseUrl = baseReport?.target?.url || null;
+  result.candidateUrl = candidateReport?.target?.url || null;
+
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, JSON.stringify(result, null, 2));
+
+  process.exitCode = comparisonExitCode(result, { allowMismatch });
+  if (values["json-full"]) {
+    console.log(JSON.stringify({ ok: process.exitCode === 0, comparisonPath: relPath(out), ...result }, null, 2));
+  } else if (values.json) {
+    console.log(JSON.stringify(compactComparison(result, out, { allowMismatch })));
+  } else if (values.table) {
     console.log(formatCompareTable(result));
+  } else {
+    console.log(formatAgentComparison(result, {
+      out,
+      primaryMetric: values.metric,
+      baseOptions: baseReport?.options,
+      allowMismatch
+    }));
   }
-
-
 }
 
 async function inspectCommand(args) {
   const { inspectReport, validateInspectOptions } = await import("./inspect.js");
-  const { values } = parseArgs({ allowPositionals: false, args, options: {
-    report: { type: "string" }, section: { type: "string" }, metric: { type: "string" },
-    offset: { type: "string" }, limit: { type: "string" }, run: { type: "string" }, json: { type: "boolean" }
-  } });
-  if (!values.report?.trim()) throw new Error("inspect requires --report FILE.");
-  const number = value => value === undefined ? undefined : value.trim() ? Number(value) : NaN;
+  const { values } = parseCommandArgs("inspect", args);
+  if (!values.report?.trim()) {
+    throw Object.assign(new Error("inspect requires --report FILE."), { code: "invalid-options" });
+  }
+  const num = (value) => (value === undefined ? undefined : value.trim() ? Number(value) : NaN);
   const options = validateInspectOptions({
-    section: values.section, metric: values.metric,
-    offset: number(values.offset), limit: number(values.limit), runIndex: number(values.run)
+    section: values.section,
+    metric: values.metric,
+    offset: num(values.offset),
+    limit: num(values.limit),
+    runIndex: num(values.run),
+    ...(values.raw !== undefined ? { raw: Boolean(values.raw) } : {}),
+    ...(values.changed !== undefined ? { changed: Boolean(values.changed) } : {})
   });
-  const reportPath = path.resolve(values.report);
-  const report = JSON.parse(await readFile(reportPath, "utf8"));
-  console.log(JSON.stringify({ reportPath, ...inspectReport(report, options) }));
+  const resolved = path.resolve(values.report);
+  const report = JSON.parse(await readFile(resolved, "utf8"));
+  const displayPath = relPath(resolved);
+  console.log(JSON.stringify({ reportPath: displayPath, ...inspectReport(report, options) }));
 }
 
 async function doctorCommand(args) {
   const { macOSProfilerStatus } = await import("./native/macos-xctrace.js");
   const { runFastReport: runReport } = await import("./fast-cdp-runner.js");
-  const { values } = parseArgs({
-    allowPositionals: false,
-    args,
-    options: {
-      channel: { type: "string" },
-      "executable-path": { type: "string" },
-      headful: { type: "boolean" },
-      json: { type: "boolean" },
-      quick: { type: "boolean" }
-    }
+  const { values } = parseCommandArgs("doctor", args);
+
+  const chrome = await resolveQuickChrome({
+    executablePath: values["executable-path"],
+    channel: values.channel
   });
+  const nodeUseSystemCa = Boolean(process.env.NODE_USE_SYSTEM_CA);
+  const warnings = [];
+  if (nodeUseSystemCa) {
+    warnings.push("NODE_USE_SYSTEM_CA is set; TLS/keychain access may stall Node or Chrome startup.");
+  }
 
   const status = {
     node: process.version,
     platform: `${process.platform} ${process.arch}`,
+    chrome,
+    nodeUseSystemCa,
+    ...(warnings.length ? { warnings } : {}),
     xctrace: await macOSProfilerStatus({ includeTemplates: !values.quick })
   };
 
@@ -394,6 +741,14 @@ async function doctorCommand(args) {
 
   console.log(`Node: ${status.node}`);
   console.log(`Platform: ${status.platform}`);
+  if (chrome.path) {
+    console.log(`Chrome: ${chrome.path} (${chrome.source})`);
+  } else {
+    console.log("Chrome: unavailable");
+  }
+  if (nodeUseSystemCa) {
+    console.log(`Warning: ${warnings[0]}`);
+  }
   if (status.xctrace.available) {
     console.log(`xctrace: ${status.xctrace.xctracePath}`);
     if (status.xctrace.templatesProbed) {
@@ -410,27 +765,34 @@ async function doctorCommand(args) {
   }
 }
 
+async function mcpCommand(args) {
+  const { runMcpServer } = await import("./agent.js");
+  const { values } = parseCommandArgs("mcp", args);
+  const reportDir = values["report-dir"] || process.env.GPU_PERF_REPORT_DIR || undefined;
+  const launchOptions = {
+    ...(values["executable-path"] ? { executablePath: values["executable-path"] } : {}),
+    ...(values.channel ? { channel: values.channel } : {}),
+    ...(values["chromium-arg"]?.length ? { chromiumArgs: values["chromium-arg"] } : {}),
+    ...(values.angle ? { angle: values.angle } : {}),
+    ...(values.headful ? { headful: true } : {}),
+    ...(values.cdp ? { cdpUrl: values.cdp } : {})
+  };
+  await runMcpServer({
+    ...(reportDir ? { reportDir, reportDirectory: reportDir } : {}),
+    ...(Object.keys(launchOptions).length ? { launchOptions } : {})
+  });
+}
+
 async function xctraceCommand(args) {
   const { recordMacOSXctrace } = await import("./native/macos-xctrace.js");
-  const { values } = parseArgs({
-    allowPositionals: false,
-    args,
-    options: {
-      app: { type: "string" },
-      file: { type: "string" },
-      out: { type: "string" },
-      template: { default: "Metal System Trace", type: "string" },
-      "time-limit": { default: "15s", type: "string" },
-      url: { type: "string" }
-    }
-  });
+  const { values } = parseCommandArgs("xctrace", args);
 
   const result = await recordMacOSXctrace({
     app: values.app,
     file: values.file,
     out: values.out,
-    template: values.template,
-    timeLimit: values["time-limit"],
+    template: values.template || "Metal System Trace",
+    timeLimit: values["time-limit"] || "15s",
     url: values.url
   });
   console.log(`xctrace output: ${result.output}`);
@@ -438,36 +800,24 @@ async function xctraceCommand(args) {
 
 async function serveCommand(args) {
   const { startReportServer } = await import("./report-server.js");
-  const { values } = parseArgs({
-    allowPositionals: false,
-    args,
-    options: {
-      angle: { type: "string" },
-      "auto-instrument": { type: "boolean" },
-      "chromium-arg": { multiple: true, type: "string" },
-      channel: { type: "string" },
-      context: { type: "string" },
-      "executable-path": { type: "string" },
-      headful: { type: "boolean" },
-      port: { default: "0", type: "string" },
-      "max-queue": { default: "8", type: "string" },
-      "slow-frame-threshold": { default: "20", type: "string" },
-      viewport: { default: "1280x720", type: "string" }
-    }
-  });
+  const { values } = parseCommandArgs("serve", args);
 
+  const autoInstrument = values["no-auto-instrument"] ? false : Boolean(values["auto-instrument"]);
   const server = await startReportServer({
     angle: values.angle,
-    autoInstrument: Boolean(values["auto-instrument"]),
+    autoInstrument,
     channel: values.channel,
     contextMode: values.context,
     chromiumArgs: values["chromium-arg"] || [],
     executablePath: values["executable-path"],
     headful: Boolean(values.headful),
-    port: Number(values.port),
-    maxQueue: Number(values["max-queue"]),
-    slowFrameThresholdMs: Number(values["slow-frame-threshold"]),
-    viewport: values.viewport
+    port: Number(values.port ?? 0),
+    maxQueue: Number(values["max-queue"] ?? 8),
+    slowFrameThresholdMs: Number(values["slow-frame-threshold"] ?? 20),
+    viewport: values.viewport || "1280x720",
+    ...(values["idle-timeout-ms"] !== undefined ? { idleTimeoutMs: Number(values["idle-timeout-ms"]) } : {}),
+    ...(values["state-file"] ? { stateFile: path.resolve(values["state-file"]) } : {}),
+    ...(values["report-dir"] ? { reportDir: path.resolve(values["report-dir"]) } : {})
   });
 
   console.log(`gpu-perf-agent server listening: ${server.url}`);
@@ -481,166 +831,343 @@ async function serveCommand(args) {
   process.once("SIGTERM", close);
 }
 
-function profilingPreset(name = "default") {
-  const presets = {
-    confirm: { durationMs: 500, gc: false, rawTrace: false, samples: 15, trace: false, warmup: 4 },
-    default: { durationMs: 1000, gc: false, rawTrace: false, samples: 5, trace: false, warmup: 1 },
-    profile: { durationMs: 750, gc: true, rawTrace: true, samples: 8, trace: true, warmup: 2 },
-    quick: { durationMs: 250, gc: false, rawTrace: false, samples: 6, trace: false, warmup: 2 }
+function buildExplicitRunOptions(values) {
+  const explicit = {};
+  if (values.api !== undefined) explicit.api = values.api;
+  if (values["sampling-mode"] !== undefined) explicit.samplingMode = values["sampling-mode"];
+  if (values["no-auto-instrument"]) explicit.autoInstrument = false;
+  else if (values["auto-instrument"] !== undefined) explicit.autoInstrument = Boolean(values["auto-instrument"]);
+  if (values["no-gpu-timing"]) explicit.gpuTiming = false;
+  else if (values["gpu-timing"] !== undefined) explicit.gpuTiming = Boolean(values["gpu-timing"]);
+  if (values["duration-ms"] !== undefined) explicit.durationMs = Number(values["duration-ms"]);
+  if (values.samples !== undefined) explicit.samples = Number(values.samples);
+  if (values.warmup !== undefined) explicit.warmup = Number(values.warmup);
+  if (values.adaptive !== undefined) explicit.adaptive = Boolean(values.adaptive);
+  if (values.gc !== undefined) explicit.gc = Boolean(values.gc);
+  if (values["deep-memory"] !== undefined) explicit.deepMemory = Boolean(values["deep-memory"]);
+  if (values["no-cpu-profile"]) explicit.cpuProfile = false;
+  else if (values["cpu-profile"] !== undefined) {
+    explicit.cpuProfile = values["cpu-profile"] === "true" ? true : values["cpu-profile"] === "false" ? false : values["cpu-profile"];
+  }
+  if (values["allow-idle"] !== undefined) explicit.allowIdle = Boolean(values["allow-idle"]);
+  if (values["ready-timeout"] !== undefined) explicit.readyTimeoutMs = Number(values["ready-timeout"]);
+  if (values["network-idle-budget"] !== undefined) explicit.networkIdleBudgetMs = Number(values["network-idle-budget"]);
+  if (values["wait-until"] !== undefined) explicit.waitUntil = values["wait-until"];
+  if (values["wait-condition"] !== undefined) explicit.waitCondition = values["wait-condition"];
+  if (values["wait-condition-timeout"] !== undefined) explicit.waitConditionTimeoutMs = Number(values["wait-condition-timeout"]);
+  if (values["wait-for-hook"] !== undefined) explicit.waitForHook = Boolean(values["wait-for-hook"]);
+  if (values["hook-name"] !== undefined || values.hook !== undefined) explicit.hookName = values["hook-name"] || values.hook;
+  if (values["slow-frame-threshold"] !== undefined) explicit.slowFrameThresholdMs = Number(values["slow-frame-threshold"]);
+  if (values.timeout !== undefined) explicit.timeoutMs = Number(values.timeout);
+  if (values.viewport !== undefined) explicit.viewport = values.viewport;
+  if (values["device-scale-factor"] !== undefined) explicit.deviceScaleFactor = Number(values["device-scale-factor"]);
+  if (values.context !== undefined) explicit.contextMode = values.context;
+  if (values.angle !== undefined) explicit.angle = values.angle;
+  if (values.headful !== undefined) explicit.headful = Boolean(values.headful);
+  if (values["no-lock"]) explicit.measureLock = false;
+  if (values["lock-timeout"] !== undefined) explicit.lockTimeoutMs = Number(values["lock-timeout"]);
+  if (values.trace !== undefined) explicit.trace = Boolean(values.trace);
+  if (values["minimal-trace"] !== undefined) explicit.minimalTrace = Boolean(values["minimal-trace"]);
+  if (values["raw-trace"] !== undefined) explicit.rawTrace = Boolean(values["raw-trace"]);
+  return explicit;
+}
+
+function buildServerPayload(explicit, validated) {
+  const payload = { ...explicit };
+  if (validated.url) payload.url = validated.url;
+  if (validated.file) payload.file = validated.file;
+  if (validated.fileRoot) payload.fileRoot = validated.fileRoot;
+  if (validated.rawTracePath) payload.rawTracePath = validated.rawTracePath;
+  if (validated.screenshotPath) payload.screenshotPath = validated.screenshotPath;
+  payload.samplingMode = explicit.samplingMode ?? "frames";
+  if (payload.samplingMode === "hook" && payload.waitForHook === undefined) {
+    payload.waitForHook = true;
+  }
+  return payload;
+}
+
+async function runWithOptionalDaemon(validated, values) {
+  const skipDaemon = daemonDisabled({ noDaemon: values["no-daemon"] })
+    || Boolean(values.cdp || values["cdp-url"] || values.headful || values.runner === "playwright");
+  if (!skipDaemon) {
+    try {
+      const daemonMod = await import("./daemon.js");
+      const runDaemon = daemonMod.runWithDaemon || daemonMod.runDaemonCapture;
+      if (typeof runDaemon === "function") {
+        const res = await runDaemon(validated, {
+          onReuse(info) {
+            if (info?.pid) {
+              const ageS = info.startedAt ? Math.max(0, Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)) : null;
+              const ageText = ageS != null ? (ageS >= 60 ? `${Math.round(ageS / 60)}m` : `${ageS}s`) : "warm";
+              process.stderr.write(`using warm profiler pid ${info.pid} (started ${ageText} ago)\n`);
+            }
+          }
+        });
+        if (res) return res;
+      }
+    } catch {
+      // Fall back to direct fast-cdp runner when daemon is unavailable.
+    }
+  }
+  const { runFastReport } = await import("./fast-cdp-runner.js");
+  return runFastReport(validated);
+}
+
+async function writeFailureReport(out, validated, error) {
+  const { finalizeReport } = await import("./analysis.js");
+  const normalized = normalizeCliError(error);
+  const failed = finalizeReport({
+    tool: TOOL,
+    schemaVersion: 3,
+    createdAt: new Date().toISOString(),
+    target: {
+      source: validated.file ? "file-server" : "url",
+      url: validated.url || null,
+      file: validated.file || null,
+      root: validated.fileRoot || null
+    },
+    options: validated,
+    runError: normalized,
+    ...(error?.pageEvents ? { pageEvents: error.pageEvents } : {}),
+    ...(error?.pageEventSummary ? { pageEventSummary: error.pageEventSummary } : {})
+  }, validated);
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, JSON.stringify(failed, null, 2));
+}
+
+function slugify(input, fallback = "report") {
+  if (!input || typeof input !== "string") return fallback;
+  const cleaned = input
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return cleaned || fallback;
+}
+
+async function resolveDefaultOutPath({ label, file, url, prefix = "report", dir = "reports" } = {}) {
+  let baseSlug = prefix;
+  if (label) {
+    baseSlug = slugify(label, prefix);
+  } else if (file) {
+    const ext = path.extname(file);
+    const stem = path.basename(file, ext);
+    baseSlug = slugify(stem === "index" ? path.basename(path.dirname(path.resolve(file))) || stem : stem, prefix);
+  } else if (url) {
+    try {
+      const parsed = new URL(url);
+      const pathPart = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.(html?|php)$/i, "");
+      const hostPart = /^(localhost|127\.0\.0\.1)$/.test(parsed.hostname)
+        ? (parsed.port ? `localhost-${parsed.port}` : "localhost")
+        : parsed.hostname;
+      baseSlug = slugify(pathPart ? `${hostPart}-${pathPart}` : hostPart, prefix);
+    } catch {
+      baseSlug = slugify(url, prefix);
+    }
+  }
+  const absDir = path.resolve(dir);
+  const existing = await readdir(absDir).catch(() => []);
+  const escaped = baseSlug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${escaped}-(\\d+)\\.json$`);
+  let maxN = 0;
+  for (const name of existing) {
+    const m = re.exec(name);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isInteger(n) && n > maxN) maxN = n;
+    }
+  }
+  return path.join(absDir, `${baseSlug}-${maxN + 1}.json`);
+}
+
+async function resolveQuickChrome({ executablePath, channel } = {}) {
+  const check = async (candidate) => {
+    if (!candidate) return null;
+    if (path.isAbsolute(candidate)) {
+      try {
+        await access(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch {
+        return null;
+      }
+    }
+    const paths = (process.env.PATH || "").split(path.delimiter);
+    for (const dir of paths) {
+      const full = path.join(dir, candidate);
+      try {
+        await access(full, fsConstants.X_OK);
+        return full;
+      } catch {
+        // continue
+      }
+    }
+    return null;
   };
-  if (!Object.hasOwn(presets, name)) {
-    throw new Error(`Unknown preset "${name}". Expected quick, confirm, profile, or default.`);
+
+  if (executablePath) {
+    const found = await check(executablePath);
+    return { path: found, source: found ? "flag" : null };
   }
-  return presets[name];
+  for (const envKey of ["CHROME_PATH", "CHROMIUM_PATH"]) {
+    if (process.env[envKey]) {
+      const found = await check(process.env[envKey]);
+      if (found) return { path: found, source: "env" };
+    }
+  }
+  const systemCandidates = process.platform === "darwin"
+    ? [
+      ...(channel === "canary" ? ["/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"] : []),
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium"
+    ]
+    : ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+  for (const cand of systemCandidates) {
+    const found = await check(cand);
+    if (found) return { path: found, source: "system" };
+  }
+  return { path: null, source: null };
 }
 
-function printRunSummary(report) {
-  const summary = report.summary || {};
-  const validity = reportValidity(report);
-  if (!validity.valid) console.warn(`INVALID: ${validity.issues.map(issue => issue.message).join(" ")}`);
-  const lines = [`verdict ${summary.verdict || "unknown"}`];
-  if (summary.fps != null) {
-    lines.push(`fps ${summary.fps.toFixed(2)}`);
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => i);
+  for (let j = 1; j <= n; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= m; i++) {
+      const temp = dp[i];
+      dp[i] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[i], dp[i - 1]);
+      prev = temp;
+    }
   }
-  if (summary.frameTimeMsP95 != null) {
-    lines.push(`frame p95 ${summary.frameTimeMsP95.toFixed(2)} ms`);
-  }
-  if (summary.gpuFrameMsMean != null) {
-    lines.push(`GPU ${summary.gpuFrameMsMean.toFixed(2)} ms`);
-  }
-  if (summary.trackedVram?.totalMiB != null) {
-    lines.push(`tracked GPU ${summary.trackedVram.totalMiB.toFixed(2)} MiB`);
-  }
-  console.log(lines.join(" | "));
-  for (const warning of summary.warnings || []) {
-    console.warn(`[${warning.severity}] ${warning.message} ${warning.recommendation}`);
-  }
-  for (const warning of report.inPage?.warnings || []) {
-    console.warn(`warning: ${warning}`);
-  }
+  return dp[m];
 }
 
-function printHelp() {
-  console.log(`gpu-perf-agent
+function closestFlag(input, candidates) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const cand of candidates) {
+    const d = levenshtein(input, cand);
+    if (d < bestDist && d <= 4) {
+      bestDist = d;
+      best = cand;
+    }
+  }
+  return best;
+}
+
+function suggestCommandHint(input) {
+  const best = closestFlag(input, Object.keys(COMMAND_OPTIONS));
+  return best
+    ? `Did you mean "${best}"? Run gpu-perf-agent --help for commands.`
+    : "Run gpu-perf-agent --help for supported commands.";
+}
+
+function printHelp(cmd = null) {
+  const formatFlags = (schema) => Object.entries(schema)
+    .map(([flag, spec]) => {
+      const arg = spec.type === "string" ? (flag.includes("url") || flag === "server" ? " URL" : flag.includes("file") || flag === "out" || flag === "report" || flag === "budget" ? " FILE" : " VALUE") : "";
+      const left = `  --${flag}${arg}`;
+      return `${left.padEnd(34)} ${spec.desc || ""}`;
+    })
+    .join("\n");
+
+  if (cmd && COMMAND_OPTIONS[cmd]) {
+    console.log(`${TOOL.name} ${cmd} (v${TOOL.version})
 
 Usage:
-  gpu-perf-agent agent --url http://localhost:5173 --out reports/base.json
-  gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
+  gpu-perf-agent ${cmd} [options]
+
+Options for ${cmd}:
+${formatFlags(COMMAND_OPTIONS[cmd])}
+
+Persistent service & cross-project usage:
+  --server URL                      Reuse a running profiler service (avoids Chrome startup).
+`);
+    return;
+  }
+
+  console.log(`${TOOL.name} v${TOOL.version}
+
+Usage:
+  gpu-perf-agent agent --url http://localhost:5173
+  gpu-perf-agent agent --file index.html --base reports/base-1.json
+  gpu-perf-agent run --url http://localhost:5173 --preset quick --auto-instrument --json
+  gpu-perf-agent ab --base-file base.html --candidate-file cand.html
+  gpu-perf-agent compare --base reports/base-1.json --candidate reports/cand-1.json
+  gpu-perf-agent inspect --report reports/base-1.json --section overview
   gpu-perf-agent doctor [--quick] [--json]
-  gpu-perf-agent run --url http://localhost:5173 --auto-instrument --out reports/run.json --json
-  gpu-perf-agent ab --base-url http://localhost:4173 --candidate-url http://localhost:5173 --json
-  gpu-perf-agent run --file examples/webgpu-clear.html --preset quick --screenshot
   gpu-perf-agent serve --port 9099 --auto-instrument
-  gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --json
-  gpu-perf-agent inspect --report reports/base.json --section metrics --metric health.gpuFrameMs.mean
+  gpu-perf-agent mcp [--report-dir reports]
   gpu-perf-agent xctrace --url http://localhost:5173 --time-limit 15s
 
-Agent-oriented run options:
-  --api auto|webgpu|webgl|webgl2   Select capability probes; auto checks WebGPU and WebGL2.
-  --preset quick|confirm|profile  Standardized sampling shapes for iteration and confirmation.
-  --sampling-mode frames|hook   Frames by default; hook requires a benchmark hook and skips frame observation.
-  --auto-instrument              Track WebGPU/WebGL buffers, textures, draws, dispatches, and uploads.
-  --server URL                   Reuse a running profiler service (avoids Chrome startup).
-  --context isolated|shared      Fresh job storage by default; shared opts into persistent state.
-  --agent                        Print a concise digest with measured signal and top actions.
-  --wait-for-hook                 Wait for the benchmark hook after asynchronous app startup.
-  --deep-memory                  Opt in to expensive user-agent memory measurements.
-  --json                         Print stable machine-readable output instead of human summaries.
-  --screenshot                   Save a PNG beside the JSON report for visual verification.
-  --slow-frame-threshold MS      Slow-frame cutoff. Default: 20 ms.
-  --adaptive                    Stop after at least 3 samples when FPS CV < 1.5%.
-  --cdp <port|url>               Attach to Chrome; leave it running on exit.
-  --html / --html-out <path>     Write a self-contained HTML report.
-  --wait-condition <expression>  Wait for page readiness before sampling.
-  --minimal-trace                Capture only GPU tracing categories.
-  --trace / --raw-trace          Capture summarized / raw Chrome tracing data.
-  --runner fast|playwright       Direct CDP is the default; Playwright requires an optional install.
-  --file-root DIR                Serve module imports from a sibling project root.
-  --chromium-arg=ARG             Repeat for project-specific Chrome flags.
+Agent & Run Options:
+  --preset quick|confirm|profile    Standardized sampling shapes for iteration and confirmation.
+  --sampling-mode frames|hook       Frames by default; hook requires a benchmark hook.
+  --auto-instrument                 Track WebGPU/WebGL buffers, textures, draws, dispatches, and passes.
+${formatFlags(RUN_OPTIONS)}
 
-Comparison options:
-  --paired                      Use paired intervals only for explicitly matched samples.
-  --allow-mismatch              Allow different capture options; invalid data still exits 2.
-  --budget FILE                 Validate required metrics and absolute or relative limits.
-  --threshold PERCENT           Allowed relative change (default 5).
-  --metric KEY                  Focus compare/ab agent output; every metric is still gated.
+A/B Options:
+${formatFlags(COMMAND_OPTIONS.ab)}
 
-A/B capture options:
-  --sampling-mode frames|hook   Choose frame pacing or hook-only workload samples for both variants.
-  --agent                       Bounded comparison digest; full rounds stay in --out JSON.
-  --wait-until STATE             load, domcontentloaded, networkidle (default), or commit.
-  --wait-condition EXPR          Require the same application readiness before every round.
-  --wait-condition-timeout MS    Bound readiness evaluation.
-  --wait-for-hook / --hook NAME  Wait for the workload hook; optional custom hook name.
-  --timeout MS                  Bound navigation and sampling.
-  --device-scale-factor NUMBER  Use identical pixel density across variants.
+Inspect Options:
+${formatFlags(COMMAND_OPTIONS.inspect)}
 
-Saved report inspection (bounded JSON; no browser launch):
-  --report FILE                 Read a capture, comparison, or A/B JSON artifact.
-  --section NAME                overview (default), metrics, samples, errors, environment, instrumentation, trace.
-  --metric KEY                  Select an exact comparison metric key in the metrics section.
-  --offset N / --limit N         Page selected records; default limit 3, maximum 10.
-  --run N                       Select a zero-based A/B run before inspecting it.
+Serve & MCP Options:
+${formatFlags(COMMAND_OPTIONS.serve)}
 
-Exit codes: 0 completed, 1 regression or command error, 2 invalid measurements/options mismatch.
-Inconclusive changes are reported separately and do not fail the default regression gate.
+Exit codes: 0 ok/improved/unchanged, 1 regression, 2 invalid capture or compatibility mismatch, 3 CLI/runner error.
 
 Cross-project usage:
   cd ../your-project
-  node ../WebGPUOptimizerReport/src/cli.js run --url http://localhost:5173 --preset quick --auto-instrument --json
-
-Persistent mode keeps Chrome alive and is the fastest loop for optimization agents.
+  node ../WebGPUOptimizerReport/src/cli.js agent --url http://localhost:5173 --preset quick
 `);
 }
 
 function targetOption(url, file, fileRoot) {
-  if (url && file) throw new Error("Choose a URL or file for each target, not both.");
-  if (url) {
-    return { url };
-  }
-  if (file) {
-    return { file, fileRoot };
-  }
+  if (url && file) throw Object.assign(new Error("Choose a URL or file for each target, not both."), { code: "invalid-options" });
+  if (url) return { url };
+  if (file) return { file, ...(fileRoot ? { fileRoot } : {}) };
   return null;
 }
 
 function numberOption(value, fallback) {
   const number = value == null ? Number(fallback) : Number(value);
   if (!Number.isFinite(number) || number < 0) {
-    throw new Error(`Expected a non-negative number, received "${value}".`);
+    throw Object.assign(new Error(`Expected a non-negative number, received "${value}".`), { code: "invalid-options" });
   }
   return number;
-}
-
-function timestamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function artifactPath(out, extension) {
   return /\.json$/i.test(out) ? out.replace(/\.json$/i, extension) : `${out}${extension}`;
 }
 
-async function runRemote(serverUrl, options) {
-  const { normalizeOptions } = await import("./options.js");
-  // node:http via createRequire: global fetch would load undici and tls (exit stalls).
+async function runRemote(serverUrl, payload) {
   const { requestJson } = await import("./http-client.js");
-  const normalized = normalizeOptions(options);
-  for (const key of ["angle", "channel", "chromiumArgs", "executablePath", "headful"]) delete normalized[key];
   const url = new URL(serverUrl);
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("--server must be an HTTP(S) URL.");
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw Object.assign(new Error("--server must be an HTTP(S) URL."), { code: "invalid-options" });
+  }
   url.pathname = "/run";
   url.search = "";
+  const timeoutMs = Number(payload.timeoutMs ?? 60000) + Number(payload.lockTimeoutMs ?? 60000) + 30000;
   const { status, json: result } = await requestJson(url, {
     method: "POST",
-    body: JSON.stringify(normalized),
-    timeoutMs: normalized.timeoutMs + normalized.lockTimeoutMs + 30000
+    body: JSON.stringify(payload),
+    timeoutMs
   });
-  if (status < 200 || status >= 300) throw Object.assign(new Error(result?.error?.message || `Profiler server returned HTTP ${status}.`), { code: result?.error?.code });
+  if (status < 200 || status >= 300) {
+    throw Object.assign(new Error(result?.error?.message || `Profiler server returned HTTP ${status}.`), {
+      code: result?.error?.code || "command-failed",
+      hint: result?.error?.hint
+    });
+  }
   return result;
 }
 
-// Once-handlers: close every harness (Chrome included) without draining, then exit
-// 128+signo. A second signal gets Node's default behaviour.
 function installSignalHandlers() {
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.once(signal, async () => {

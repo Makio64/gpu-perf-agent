@@ -4,7 +4,9 @@ Use the installed tool version throughout a measurement campaign. Inside its che
 replace `npx gpu-perf-agent` with `node src/cli.js` so local changes are actually tested.
 Keep report names distinct and retain the original baseline.
 
-## Persistent CLI
+## Warm background daemon & Persistent CLI
+
+By default, `agent` and `run` automatically start and reuse a background warm Chrome daemon (keyed by tool version, `src/*.js` mtime, and launch flags, with a 10-minute idle timeout). Pass `--no-daemon` or set `GPU_PERF_AGENT_NO_DAEMON=1` to force an in-process run. You can also manage an explicit server:
 
 ```bash
 npx gpu-perf-agent serve --port 9099 --auto-instrument
@@ -31,54 +33,38 @@ machine. A remote artifact path is not automatically available on the agent's ma
 
 ## MCP
 
-`npx gpu-perf-agent mcp` exposes profiling, comparison and saved-report inspection over stdio.
-Read `tools/list` for the installed version's schema. Current source uses the same fixed
-quick sampling as `agent`, saves measurements and retained diagnostics, and returns compact data with
-an artifact path. It lazily reuses one Chrome process, serializes captures, and retains
-isolated contexts. Request full output only when the raw evidence is needed. Older
-releases use three adaptive 500 ms samples and return full reports; explicitly set
-`samples`, `durationMs` and `adaptive: false` for comparisons on those versions.
+`npx gpu-perf-agent mcp` exposes `profile_webgpu`, `compare_webgpu_reports`, `ab_compare_webgpu`, `inspect_webgpu_report`, and `doctor_webgpu` over stdio (protocol `2025-11-25`).
+When configuring the MCP server in Claude Code, Cursor, or other clients on macOS, ensure `NODE_USE_SYSTEM_CA` is **unset** (`"env": { "NODE_USE_SYSTEM_CA": "" }`) so Node and Chrome do not stall on macOS keychain TLS checks:
 
-Use the profile result's saved report path in `compare_webgpu_reports`. `includeReport:
-true` requests the full inline capture. Comparisons save complete rows and confidence
-intervals at `structuredContent.comparisonPath` and return at most five changed rows.
-Inspect that file if the primary metric is omitted. Check `isError` and structured
-validity/comparison status, not just whether the RPC succeeded. An invalid capture still
-needs its diagnostic evidence; a successful comparison may be inconclusive.
-Set comparison `primaryMetric` to keep the selected row visible even when it passes;
-`not-measured` means absent evidence, not zero. All regression checks remain active.
-Screenshots are saved artifacts and require separate visual inspection.
+```json
+{
+  "mcpServers": {
+    "gpu-perf-agent": {
+      "command": "node",
+      "args": ["/path/to/gpu-perf-agent/src/cli.js", "mcp", "--report-dir", "reports/mcp"],
+      "env": { "NODE_USE_SYSTEM_CA": "" }
+    }
+  }
+}
+```
 
-When `tools/list` includes `inspect_webgpu_report`, use it to read a saved artifact on
-the MCP server without a new capture. Pass `reportPath`, a `section`, and optionally an
-exact `metric` key for `section: 'metrics'`. The selected evidence is in
-`structuredContent` and as JSON text for clients that only expose text content.
-This also works when the server's artifact path is unavailable on your own machine.
+`profile_webgpu` supports one-call capture + compare via `baseReportPath` (inheriting baseline options), `screenshot: "none" | "file" | "inline"` (returning an inline 640px JPEG when `"inline"`), `cpuProfile`, `label`, and emits a `resource_link` content item pointing to the saved report JSON. `ab_compare_webgpu` runs interleaved ABBA rounds on the warm browser harness.
 
 ## Select evidence without loading the whole report
 
-Start with the bounded digest. If the installed CLI exposes `inspect`, retrieve the
-specific evidence needed for the next decision:
+Start with the bounded digest. Retrieve specific evidence with `inspect`:
 
 ```bash
-npx gpu-perf-agent inspect --report reports/base.json --section metrics \
-  --metric health.gpuFrameMs.mean
-npx gpu-perf-agent inspect --report reports/base.json --section samples --offset 0 --limit 3
-npx gpu-perf-agent inspect --report reports/ab.json --run 0 --section errors
+npx gpu-perf-agent inspect --report reports/base-1.json --section gpu
+npx gpu-perf-agent inspect --report reports/base-1.json --section cpu
+npx gpu-perf-agent inspect --report reports/base-1.json --section metrics \
+  --metric health.autoGpuFrameMs.p50
+npx gpu-perf-agent inspect --report reports/base-1.json --section samples --offset 0 --limit 3
+npx gpu-perf-agent inspect --report reports/base-1.json --section samples --raw --offset 0
+npx gpu-perf-agent inspect --report reports/cand-1.compare.json --section metrics --changed
 ```
 
-Inspection returns bounded JSON with selection, totals, validity and omission metadata.
-Sections are `overview`, `metrics`, `samples`, `errors`, `environment`, `instrumentation`
-and `trace`. Use zero-based `--run` to select an A/B capture, `--offset` to page selected
-records and `--limit` up to 10. Missing metrics differ from measured zero. Comparison
-artifacts support metric rows, including confidence evidence. Inspection succeeds even
-when the saved capture is invalid; inspect its validity separately. For comparisons,
-also check `compatibility.compatible` and unverified metadata before trusting a selected
-row; inspect `overview` or `environment` for mismatch details. Original evidence
-stays in the saved file. The file is still parsed in full locally; bounded selection
-reduces agent context, not file I/O. Use direct extraction when omitted detail is needed.
-Saved comparison rows retain their original calculations; recompare raw captures with
-the current tool before treating an older artifact as newly verified evidence.
+Inspection returns bounded JSON with relative `reportPath`, slim stats (`{n, mean, p50, cv, ci95}`), and sections `overview`, `metrics`, `samples`, `errors`, `environment`, `instrumentation`, `trace`, `gpu` (per-pass GPU breakdown), and `cpu` (`cpuProfile` hotspots and caller attribution).
 
 For older versions without inspection, extract relevant fields directly:
 

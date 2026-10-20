@@ -26,15 +26,16 @@ quality, and browser/adapter. Confirm the app is doing its intended work: the pr
 own animation callbacks can continue even when the app stops drawing.
 
 ```bash
-npx gpu-perf-agent agent --url http://127.0.0.1:5173 --api webgpu --out reports/base.json
-# After the change, use identical capture settings:
-npx gpu-perf-agent agent --url http://127.0.0.1:5173 --api webgpu --out reports/candidate.json
-npx gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
+# 1. Capture baseline (auto-instrumentation + per-pass GPU timing on by default)
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --label base
+# 2. Edit code, then capture + screen against baseline in one call (inherits base options)
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --base reports/base-1.json --label cand
+# 3. Confirm GPU or frame-time deltas with interleaved paired A/B rounds
+npx gpu-perf-agent ab --base-url http://127.0.0.1:4173 --candidate-url http://127.0.0.1:5173
 ```
 
 Choose the app's API (`webgpu`, `webgl2`, or `webgl`); omit `--api` when unknown.
-`agent` enables instrumentation, six fixed 250 ms samples and two warmups. Its bounded
-digest points to saved measurements on disk; use `--json` for machine-readable output.
+`agent` enables auto-instrumentation, per-pass GPU timing, six fixed 250 ms samples and two warmups, and automatically reuses a warm background Chrome daemon (`--no-daemon` disables it). Its bounded digest (`<= 160` tokens) points to saved measurements on disk; use `--json` for bounded machine-readable output (`<= 1.6 KB`) or `--json-full` for the complete report.
 Page logs retain bounded examples with exact error totals and explicit omission counts.
 Read only the relevant report fields, rather than loading the entire report into context.
 
@@ -63,13 +64,9 @@ evidence before applying them.
 Read [measurement.md](references/measurement.md) for timing integration, bottleneck
 choices, fast fixed-work hook sampling, confirmation commands, budgets, or inconclusive results.
 
-Make a focused change, check rendered and numerical output, then recapture identically.
-Use quick captures for exploration; confirm promising changes with repeated evidence
-on the primary metric. Exit `0` includes inconclusive comparisons; inspect the metric's
-status, confidence interval and evidence method. Use `--metric health.gpuFrameMs.mean`
-on agent comparisons to keep GPU timing visible; this focuses output, not the gate.
-Exit `1` means regression or command
-error; `2` means invalid/incompatible evidence. Do not waive mismatches to manufacture
+Make a focused change, check rendered and numerical output, then screen with `agent <target> --base reports/base-1.json` (which automatically inherits capture options from the baseline report).
+Because automatic GPU timestamps are clock-sensitive across separate browser launches, separate captures report `UNVERIFIED (screen: better|worse|same)` on auto GPU rows and print the exact `ab` command needed to confirm. Run `ab` (or MCP `ab_compare_webgpu`) to confirm GPU deltas with interleaved paired rounds (`--auto-instrument` and `--gpu-timing` are enabled by default in `ab`).
+Exit codes: `0` ok / improved / unchanged / unverified / inconclusive; `1` confirmed regression or budget failure; `2` invalid capture or compatibility mismatch; `3` CLI/runner/navigation error. Do not waive mismatches to manufacture
 a win. The tool checks capture options and available environment identity; missing
 metadata and complete scene equivalence still require verification.
 

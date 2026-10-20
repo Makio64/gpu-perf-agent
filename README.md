@@ -45,14 +45,14 @@ A short digest lands in your terminal. Full measurements are saved to JSON. No c
 
 ## Make a change. Measure it again.
 
-Capture the candidate with the same settings, then compare:
+Capture and screen the candidate against the baseline in one command, then confirm GPU deltas with interleaved A/B rounds:
 
 ```bash
-npx gpu-perf-agent agent --url http://localhost:5173 --out reports/candidate.json
-npx gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --agent
+npx gpu-perf-agent agent --url http://localhost:5173 --base reports/base-1.json --label cand
+npx gpu-perf-agent ab --base-url http://localhost:4173 --candidate-url http://localhost:5173
 ```
 
-The comparison reports regressions, improvements, and inconclusive results. Invalid measurements are flagged explicitly. Exit codes: `0` valid / passing, `1` regression or command error, `2` invalid or incompatible evidence.
+The comparison reports regressions, improvements, directional screening (`screen: better|worse|same`), and inconclusive results. Invalid measurements are flagged explicitly. Exit codes: `0` valid / passing / unverified / inconclusive, `1` regression or budget failure, `2` invalid or incompatible evidence, `3` CLI or runner error.
 
 For more confidence, use [interleaved A/B runs](https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md#interleaved-ab-measurements) or enforce a [performance budget](https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md#baseline-and-candidate-reports).
 

@@ -12,15 +12,19 @@ same frame with a fixed timestep, and pause ordinary advancement while reading b
 capturing output. Free-running screenshots taken after different capture durations are
 not matched frames.
 
-Prefer existing app timestamps. If absent, add narrowly scoped timing to its existing
-device/passes, or use a deterministic benchmark hook. Do not create a separate device
-to time another device's workload. WebGPU requires `timestamp-query` in the device's
-requested features; feature-gate it and retain the normal unsupported path. Batched
-timers are exported from `gpu-perf-agent/browser/timing`:
+Prefer automatic per-pass GPU timing first: `agent` and `ab` enable `--auto-instrument` and `--gpu-timing` by default, automatically injecting WebGPU `timestampWrites` (with 32-slot × 64-pass ring buffers, interval-union `frameMsP50`, and per-pass exclusive duration attribution in `summary.gpu.passes`) and WebGL2 `EXT_disjoint_timer_query_webgl2` per-frame timing without modifying application code.
+
+For custom deterministic microbenchmarks or idempotent passes where you want warm GPU clocks inside a single capture, use `timer.measureWarm(record, { warmupMs: 20, maxWarmupPasses: 24 })` (or `glTimer.measureWarm(draw, { passes: 8 })` for WebGL2) from `gpu-perf-agent/browser/timing`:
 
 ```js
 import { createWebGPUTimer } from 'gpu-perf-agent/browser/timing';
 const timer = createWebGPUTimer(device); // null without timestamp-query
+// For idempotent passes only: runs untimed warmup passes to stabilize GPU clocks, then times one pass
+const { gpuTimeNs, gpuTiming } = await timer.measureWarm(encoder => {
+  const pass = encoder.beginRenderPass(descriptor);
+  // record idempotent draw/dispatch work
+  pass.end();
+});
 const batch = timer?.createBatch({ capacity: 8, label: 'profile' });
 ```
 
@@ -100,51 +104,23 @@ CPU oracle for compute results when practical.
 Make the hook throw on an output mismatch, or inspect its correctness result separately;
 an arbitrary returned `oraclePassed: false` does not automatically invalidate the report.
 
-## Confirmation
+## Confirmation: separate screening vs paired A/B gating
 
 Separate captures use Welch intervals; `--paired` is only for genuinely matched samples.
-Interleaved A/B preserves GPU scope evidence across rounds. A confidence interval
-cannot repair mixed scopes or differing scope identities. Recompare original captures
-with the current tool when verifying a result from an older version; inspecting a
-saved comparison displays its historical calculations without recomputing them.
-At least three observations per side are needed for estimated mean uncertainty, but short
-adjacent samples may be correlated. Inspect repeated runs when the effect is small.
-`threshold-only` rows do not establish statistical confidence. An interval must lie beyond
-the allowed threshold to confirm a regression/improvement. Missing budget metrics fail.
+Because vsync-paced automatic GPU timestamps (`health.autoGpuFrameMs.p50`, provenance `auto.frame-busy`) are sensitive to GPU DVFS clock shifts across separate browser launches, `compare` and `agent --base` mark auto GPU rows `unverified` (`reason: "separate-capture-gpu"`) with a directional `screen: "better" | "worse" | "same"` hint and exit `0`. Only warm/fixed-work hook GPU timings (`provenance: "warm" | "fixed-work"`) or interleaved paired `ab` runs gate GPU timing directly.
 
-For frame pacing, current `health.frameTimeMs.p95` is the p95 of per-window p95 values;
-`frame.frameTimeMs.p95` is their mean. Neither is pooled p95 across every frame. Use
-repeated A/B rounds for uncertainty on the selected statistic, or retain raw frame data
-and calculate the pooled percentile if that is the actual requirement.
-
-For two runnable builds, alternate A/B order in one browser:
+In `ab` (and MCP `ab_compare_webgpu`), `--auto-instrument` and `--gpu-timing` are **on by default**, and each round records the median of its per-sample values across ABBA-interleaved rounds:
 
 ```bash
 npx gpu-perf-agent ab \
   --base-url http://127.0.0.1:4173 --candidate-url http://127.0.0.1:5173 \
-  --api webgpu --auto-instrument --rounds 4 --samples 3 \
-  --duration-ms 500 --warmup 2 --out reports/ab.json \
-  --agent --metric health.gpuFrameMs.mean
+  --rounds 4 --out reports/ab.json
 ```
 
 For an asynchronously initialized workload, add `--wait-until domcontentloaded` with
 `--wait-for-hook` and/or its real `--wait-condition`; use `--hook` for a custom function
-name. `ab` accepts these readiness controls plus `--timeout` and `--device-scale-factor`.
-`--agent` returns a bounded digest; full rounds and comparisons stay in the saved JSON.
-`--metric` keeps the primary row visible without excluding other regressions. Use `--json`
-instead when complete machine-readable comparison rows are needed.
-
-`ab` still has its own sampling flags: it does not accept `--preset`, `--server`, or
-`--trace`. Check installed `ab --help` when using an older version; `runABComparison`
-from the Node API accepts normalized readiness options if the CLI does not. Alternatively,
-confirm separate captures with `agent --preset confirm` (15 × 500 ms, four warmups).
-Reacquire the baseline with the confirmation settings too. Do not compare a quick
-baseline against a confirmation candidate. With only one server, serve the preserved
-baseline build, capture it with the same timing integration/readiness, then serve and
-capture the candidate. Repeat alternating build order if needed; these separate captures
-are independent, not `--paired`. An earlier capture without GPU timings cannot become
-a timed baseline retroactively. If the original runnable workload cannot be recovered,
-report that limitation instead of claiming a before/after GPU gain.
+name. `ab` accepts `--preset`, readiness controls, `--timeout`, and `--device-scale-factor`.
+Default output is the bounded comparison digest (`<= 140` tokens); `--json` emits bounded JSON (`<= 2 KB`), and `--json-full` emits the full artifact.
 
 For a GPU-time gate, pass a budget file to `compare` or `ab`:
 

@@ -15,7 +15,7 @@ test('validity distinguishes zero measurements from absent evidence and failed s
   const finalized = finalizeReport(failed);
   assert.equal(finalized.diagnostics.validity.valid, false);
   assert.equal(compactReport(finalized).ok, false);
-  assert.match(formatAgentReport(finalized), /GPU INVALID/);
+  assert.match(formatAgentReport(finalized), /^INVALID —/);
   const comparison = compareReports(report(), finalized);
   assert.equal(comparisonExitCode(comparison, {allowMismatch: true}), 2);
   assert.match(formatAgentComparison(comparison), /INVALID/);
@@ -58,10 +58,9 @@ test('dropped runtime errors still invalidate measurements and all failures stay
   assert.ok(result.summary.findings.some(finding => finding.code === 'page-errors' && finding.role === 'info'));
   const compact = compactReport(result);
   assert.equal(compact.ok, false);
-  assert.equal(compact.diagnostics.pageErrorCount, 100);
-  assert.equal(compact.diagnostics.pageErrorsOmitted, 98);
-  assert.deepEqual(compact.pageEventSummary, r.pageEventSummary);
-  assert.match(formatAgentReport(result), /2\/10100 events retained; 10098 dropped, 1 shortened/);
+  assert.equal(compact.validity.valid, false);
+  assert.ok(compact.validity.issues.some(issue => issue.code === 'runtime-errors'));
+  assert.match(formatAgentReport(result), /100 page\/network errors/);
   assert.equal(comparisonExitCode(compareReports(report(), r)), 2);
 
   r.pageEvents = [];
@@ -89,7 +88,7 @@ test('hook mode requires a real hook and cannot waive incomplete samples using F
   const finalized = finalizeReport(r);
   assert.equal(finalized.summary.fps, null);
   assert.equal(finalized.diagnostics.signal.samplingMode, 'hook');
-  assert.match(formatAgentReport(finalized), /Sampling: hook completion/);
+  assert.match(formatAgentReport(finalized), /GPU p50 0 ms \(hook/);
   assert.ok(!finalized.summary.warnings.some(warning => warning.code === 'limited-frame-signal'));
   assert.ok(finalizeReport({ ...r, options: { ...r.options, samplingMode: 'frames' } }).summary.warnings.some(warning => warning.code === 'limited-frame-signal'));
   r.options.samples = 5;

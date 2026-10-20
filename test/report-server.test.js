@@ -62,7 +62,7 @@ test('HTTP API validates requests, bounds its queue and exposes compact output',
     assert.equal(health.pending, 0);
     const invalid = (await run({url:'http://localhost/fail'})).json;
     assert.equal(invalid.ok, false);
-    assert.equal(invalid.diagnostics.validity.valid, false);
+    assert.equal((invalid.validity ?? invalid.diagnostics?.validity).valid, false);
     assert.equal((await request(`${server.url}/health`)).json.failed, 4);
   } finally { release(); await server.close(); }
   assert.equal(closed, true);

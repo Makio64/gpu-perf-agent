@@ -1,7 +1,8 @@
 /**
  * Self-contained, zero-dependency interactive HTML report generator.
  * Produces an offline-first, dark-themed performance dashboard with
- * interactive SVG charts, diagnostic filters, and actionable fix guides.
+ * summary-first verdict reasons, GPU pass breakdown, interactive SVG charts,
+ * diagnostic filters, and actionable fix guides.
  */
 
 export function generateHtmlReport(report) {
@@ -9,8 +10,10 @@ export function generateHtmlReport(report) {
   const inPageSummary = report.inPage?.summary || {};
   const analysis = report.diagnostics || {};
   const recs = analysis.recommendations || summary.recommendations || [];
+  const verdictReasons = Array.isArray(summary.verdictReasons) ? summary.verdictReasons : [];
+  const bottleneck = summary.bottleneck || null;
+  const gpuPasses = Array.isArray(summary.gpu?.passes) ? summary.gpu.passes : [];
   const resources = analysis.resources || {};
-  const warmup = report.inPage?.warmup || summary.warmup || null;
   const slowFrames = report.inPage?.slowFrames || report.slowFrames || [];
   const apiSupport = report.inPage?.apiSupport || {};
 
@@ -20,7 +23,7 @@ export function generateHtmlReport(report) {
   const frameTimeP95 = summary.frameTimeMsP95 ?? inPageSummary.frameTimeMsP95?.mean ?? null;
   const frameTimeP99 = inPageSummary.frameTimeMsP99?.mean ?? null;
   const maxJitter = summary.maxJitterMs ?? inPageSummary.maxJitter?.mean ?? null;
-  const gpuFrameMs = summary.gpuFrameMsMean ?? (inPageSummary.gpuTimeNs?.mean ? inPageSummary.gpuTimeNs.mean / 1e6 : null);
+  const gpuFrameMs = summary.gpu?.frameMsP50 ?? summary.gpuFrameMsMean ?? (inPageSummary.gpuTimeNs?.mean ? inPageSummary.gpuTimeNs.mean / 1e6 : null);
   const computeMs = inPageSummary.computeTimeNs?.mean ? inPageSummary.computeTimeNs.mean / 1e6 : null;
   const renderMs = inPageSummary.renderTimeNs?.mean ? inPageSummary.renderTimeNs.mean / 1e6 : null;
 
@@ -31,16 +34,16 @@ export function generateHtmlReport(report) {
   const bufferCount = summary.trackedVram?.bufferCount ?? resources.bufferCount ?? 0;
 
   const pipelines = summary.pipelines || report.inPage?.memory?.after?.trackedGpuMemory?.pipelines || null;
-  const syncPipelines = pipelines?.syncCount ?? (recs.find(r => r.id === "pipeline-sync-stall")?.value || 0);
+  const syncPipelines = pipelines?.syncInWindow ?? pipelines?.syncCount ?? (recs.find(r => r.id === "pipeline-sync-stall")?.value || 0);
   const asyncPipelines = pipelines?.asyncCount ?? 0;
   const shaderModules = pipelines?.shaderModules ?? 0;
 
   const bindGroups = summary.bindGroups || report.inPage?.memory?.after?.trackedGpuMemory?.bindGroups || null;
-  const bindGroupsCreated = bindGroups?.createdCount ?? (recs.find(r => r.id === "bind-group-churn")?.value || 0);
+  const bindGroupsCreated = bindGroups?.createdCount ?? summary.perFrame?.createBindGroup ?? (recs.find(r => r.id === "bind-group-churn")?.value || 0);
 
   const ops = summary.webgpuOps || {};
-  const drawCalls = ops.drawCalls ?? inPageSummary.drawCalls?.mean ?? null;
-  const dispatchCalls = ops.dispatchCalls ?? inPageSummary.dispatchCalls?.mean ?? null;
+  const drawCalls = summary.drawCallsPerFrame ?? ops.drawCalls ?? inPageSummary.drawCalls?.mean ?? null;
+  const dispatchCalls = ops.dispatchCalls ?? summary.perFrame?.dispatches ?? inPageSummary.dispatchCalls?.mean ?? null;
 
   const verdict = analysis.validity?.valid === false ? "invalid" : summary.verdict || "unknown";
   const url = (typeof report.target === "string" ? report.target : (report.target?.file || report.target?.url)) ||
@@ -55,12 +58,82 @@ export function generateHtmlReport(report) {
                        verdict === "good" ? "#3b82f6" :
                        verdict === "needs-work" ? "#f59e0b" : "#ef4444";
 
+  // Summary-first banner (bottleneck + verdictReasons)
+  let summaryBannerHtml = "";
+  if (bottleneck || verdictReasons.length > 0) {
+    const bClass = bottleneck?.class || bottleneck?.classification || "unknown";
+    const bReason = bottleneck?.reason || "";
+    const bPrimary = bottleneck?.primaryMetric || "";
+    summaryBannerHtml = `
+      <section class="section summary-banner">
+        ${bottleneck ? `
+          <div class="bottleneck-line">
+            <strong>Bottleneck:</strong> <span class="badge sev-info">${escapeHtml(bClass)}</span>
+            ${bReason ? `<span>${escapeHtml(bReason)}</span>` : ""}
+            ${bPrimary ? `<span class="meta-time">Primary metric: ${escapeHtml(bPrimary)}</span>` : ""}
+          </div>
+        ` : ""}
+        ${verdictReasons.length > 0 ? `
+          <div class="verdict-reasons">
+            <strong>Verdict Reasons:</strong>
+            <ul>
+              ${verdictReasons.map(r => `
+                <li><span class="badge ${r.severity === "high" ? "sev-critical" : "sev-warning"}">${escapeHtml((r.severity || "medium").toUpperCase())}</span> <code>${escapeHtml(r.code)}</code> — ${escapeHtml(r.message || r.cause || "")}</li>
+              `).join("")}
+            </ul>
+          </div>
+        ` : ""}
+      </section>
+    `;
+  }
+
+  // GPU Passes breakdown table
+  let gpuPassesHtml = "";
+  if (gpuPasses.length > 0) {
+    gpuPassesHtml = `
+      <section class="section">
+        <div class="section-header">
+          <h2>GPU Pass Breakdown (Exclusive p50)</h2>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Pass</th>
+                <th>Type</th>
+                <th>Exclusive p50 (ms)</th>
+                <th>Duration p50 (ms)</th>
+                <th>Share</th>
+                <th>Overlapped</th>
+                <th>Call Site</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${gpuPasses.map(p => `
+                <tr>
+                  <td>${escapeHtml(p.key || "pass")}</td>
+                  <td>${escapeHtml(p.type || "—")}</td>
+                  <td>${Number.isFinite(p.exclusiveMs) ? p.exclusiveMs.toFixed(3) : "—"}</td>
+                  <td>${Number.isFinite(p.durationMs) ? p.durationMs.toFixed(3) : "—"}</td>
+                  <td>${Number.isFinite(p.share) ? `${(p.share * 100).toFixed(1)}%` : "—"}</td>
+                  <td>${p.overlapped ? "yes (~)" : "no"}</td>
+                  <td>${escapeHtml(p.site || "—")}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
   // SVG Frame Distribution Curve generator
   const samples = report.inPage?.samples || [];
   const frameDeltas = [];
   for (const s of samples) {
-    if (s.measurement?.frameTimeMs?.mean) {
-      frameDeltas.push(s.measurement.frameTimeMs.mean);
+    const val = s.measurement?.observedFrames?.frameTimeMs?.mean ?? s.measurement?.frameTimeMs?.mean;
+    if (val) {
+      frameDeltas.push(val);
     }
   }
 
@@ -104,13 +177,16 @@ export function generateHtmlReport(report) {
   }
 
   // Recommendations HTML
-  const recCards = recs.map((r, idx) => {
-    const sevBadge = r.severity === "critical" ? "sev-critical" : r.severity === "warning" ? "sev-warning" : "sev-info";
+  const recCards = recs.map((r) => {
+    const sev = r.severity || "info";
+    const sevBadge = (sev === "critical" || sev === "high") ? "sev-critical"
+      : (sev === "warning" || sev === "medium") ? "sev-warning"
+      : "sev-info";
     const catBadge = r.category || "general";
     return `
-      <div class="rec-card" data-category="${catBadge}" data-severity="${r.severity}">
+      <div class="rec-card" data-category="${catBadge}" data-severity="${sev}">
         <div class="rec-header">
-          <span class="badge ${sevBadge}">${r.severity.toUpperCase()}</span>
+          <span class="badge ${sevBadge}">${sev.toUpperCase()}</span>
           <span class="badge badge-cat">${catBadge.toUpperCase()}</span>
           <h3 class="rec-title">${escapeHtml(r.title)}</h3>
         </div>
@@ -151,8 +227,8 @@ export function generateHtmlReport(report) {
             <tbody>
               ${slowFrames.map(f => `
                 <tr>
-                  <td>${Math.round(f.timestamp)}ms</td>
-                  <td class="bad">${f.frameDurationMs.toFixed(1)}ms</td>
+                  <td>${Math.round(f.timestamp ?? 0)}ms</td>
+                  <td class="bad">${(f.frameDurationMs ?? 0).toFixed(1)}ms</td>
                   <td>${f.stats?.renderPasses ?? "—"}</td>
                   <td>${f.stats?.computePasses ?? "—"}</td>
                   <td>${f.stats?.drawCalls ?? "—"}</td>
@@ -167,6 +243,9 @@ export function generateHtmlReport(report) {
       </section>
     `;
   }
+
+  const highCount = recs.filter(r => r.severity === "critical" || r.severity === "high").length;
+  const warnCount = recs.filter(r => r.severity === "warning" || r.severity === "medium").length;
 
   return `<!doctype html>
 <html lang="en">
@@ -207,7 +286,7 @@ export function generateHtmlReport(report) {
       gap: 20px;
       padding-bottom: 24px;
       border-bottom: 1px solid var(--card-border);
-      margin-bottom: 32px;
+      margin-bottom: 24px;
     }
     .brand { display: flex; align-items: center; gap: 12px; }
     .brand-icon {
@@ -232,6 +311,18 @@ export function generateHtmlReport(report) {
       font-size: 12px; font-family: var(--mono); color: var(--text-muted);
       background: rgba(255,255,255,0.04); padding: 4px 10px; border-radius: 6px;
     }
+    .summary-banner {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bottleneck-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+    .verdict-reasons ul { list-style: none; margin-top: 6px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 
     /* Grid cards */
     .metrics-grid {
@@ -388,6 +479,8 @@ export function generateHtmlReport(report) {
       </div>
     </header>
 
+    ${summaryBannerHtml}
+
     <div class="metrics-grid">
       <!-- Frame Rate & Cadence -->
       <div class="metric-card">
@@ -456,6 +549,8 @@ export function generateHtmlReport(report) {
       </div>
     </div>
 
+    ${gpuPassesHtml}
+
     ${sparklineSvg ? `
       <div class="chart-container">
         <div class="chart-header">
@@ -473,8 +568,8 @@ export function generateHtmlReport(report) {
         <div class="filters">
           <input type="text" class="search-input" id="searchInput" placeholder="Search recommendations..."/>
           <button class="filter-btn active" data-filter="all">All (${recs.length})</button>
-          <button class="filter-btn" data-filter="critical">Critical (${recs.filter(r => r.severity === "critical").length})</button>
-          <button class="filter-btn" data-filter="warning">Warning (${recs.filter(r => r.severity === "warning").length})</button>
+          <button class="filter-btn" data-filter="high">Critical / High (${highCount})</button>
+          <button class="filter-btn" data-filter="medium">Warning / Medium (${warnCount})</button>
           <button class="filter-btn" data-filter="pipeline">Pipeline</button>
           <button class="filter-btn" data-filter="memory">Memory</button>
         </div>
@@ -508,7 +603,11 @@ export function generateHtmlReport(report) {
         const sev = card.getAttribute('data-severity');
         const text = card.textContent.toLowerCase();
 
-        const matchesFilter = activeFilter === 'all' || activeFilter === sev || activeFilter === cat;
+        const matchesFilter = activeFilter === 'all'
+          || activeFilter === sev
+          || (activeFilter === 'high' && (sev === 'high' || sev === 'critical'))
+          || (activeFilter === 'medium' && (sev === 'medium' || sev === 'warning'))
+          || activeFilter === cat;
         const matchesSearch = !searchQuery || text.includes(searchQuery);
 
         card.style.display = matchesFilter && matchesSearch ? 'block' : 'none';

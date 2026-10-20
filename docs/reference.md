@@ -22,14 +22,21 @@ From this checkout, use `node src/cli.js` in place of `npx gpu-perf-agent`. To u
 ## Agent fast path
 
 ```bash
-# Short digest on stdout; full evidence saved to JSON.
-node src/cli.js agent --url http://127.0.0.1:5173 --out reports/base.json
-# After an edit, use the same measurement settings.
-node src/cli.js agent --url http://127.0.0.1:5173 --out reports/candidate.json
-node src/cli.js agent --base reports/base.json --candidate reports/candidate.json
+# Short digest on stdout; full evidence saved to reports/base-1.json.
+node src/cli.js agent --url http://127.0.0.1:5173 --label base
+# After an edit, capture and compare against base in one call (inherits base options):
+node src/cli.js agent --url http://127.0.0.1:5173 --base reports/base-1.json --label cand
+# Confirm GPU deltas with interleaved ABBA rounds in one browser:
+node src/cli.js ab --base-url http://127.0.0.1:4173 --candidate-url http://127.0.0.1:5173
 ```
 
-`agent` enables auto-instrumentation and the `quick` preset (6 × 250 ms, 2 warmups). Explicit sampling flags override these defaults. Its digest includes frame/GPU timing, memory, signal counts, and up to three actionable warnings. Missing measurements are shown as `n/a`. Use `--json` instead for structured output, or `run --agent` / `compare --agent` for the same concise format with your own defaults. Sampling stays fixed by default for reproducible comparisons. Opt into `--adaptive` to stop after at least three samples when FPS CV is below 1.5%; this checks FPS stability only, not GPU timing convergence.
+`agent` enables auto-instrumentation, per-pass GPU timing, and the `quick` preset (6 × 250 ms, 2 warmups), and automatically reuses a warm background Chrome daemon (`--no-daemon` disables it). Explicit sampling flags override these defaults. Its bounded digest (`<= 160` tokens) includes verdict, bottleneck classification, frame/GPU timing, top GPU passes, CPU hotspots (`cpuProfile`), hitches, trust status, and the next concrete action. Use `--json` for bounded machine-readable output (`<= 1.6 KB`) or `--json-full` for the full report.
+
+Exit codes across all commands:
+- `0`: valid capture, or comparison `improved` / `unchanged` / `unverified` / `inconclusive` / `different-work`
+- `1`: confirmed `regression` or breached budget
+- `2`: invalid capture (`diagnostics.validity.valid === false`) or compatibility `mismatch`
+- `3`: CLI usage, navigation, or runner error (writes a failure report with `runError` when a target was given)
 
 `doctor --quick --json` checks the local runtime and native profiler location without launching Chrome or enumerating Instruments templates. `xctrace.templatesProbed: false` means the template list was intentionally not queried. Full `doctor --json` retains browser capability probing and template enumeration.
 
@@ -367,6 +374,8 @@ WebGPU coverage includes buffers, textures, command encoders, render/compute pas
 Texture estimates account for mip levels, array layers, 3D mip depth, multisampling, common sized formats, BC/ETC/EAC compression blocks, and ASTC block dimensions. These are deterministic declared-storage estimates, not exact physical residency.
 
 The manual `createTracker`, `trackWebGPUDevice`, and `trackWebGL2Context` helpers also maintain incremental totals. Summary snapshots scale with resource kinds, rather than the number of live objects. Resource details are capped at 1,000 entries by default (`resourceLimit` changes the cap); `truncatedResources` reports omitted entries. Use `snapshot({ includeHistory: false, includeResources: false })` for inexpensive repeated sampling. Returned details are copies, and reattaching an object updates its existing entry instead of counting it twice. Both manual and automatic tracking account for partial buffer upload ranges.
+
+Measured auto-instrumentation overhead: on a 100,000 WebGPU `draw` + `setBindGroup` calls/frame encode benchmark, paired median CPU encode overhead is `0.000 ms/frame` (`3.10 ms` instrumented vs `3.20 ms` uninstrumented, well below the `0.3 ms/frame` budget). On a pathological 200,000 WebGL `drawArrays` calls/frame stress test (`draws200k.html`), JS wrapper dispatch lowers frame rate from `52.0 FPS` to `41.4 FPS` (`-20.4%`); whenever WebGL draw calls exceed `20,000/frame` or profiler tool frames exceed `10%` of busy time, the report automatically emits the `instrumentation-overhead` validity warning and advises comparing CPU metrics only against captures with identical options (or `--no-auto-instrument`).
 
 ## Optional benchmark hook
 

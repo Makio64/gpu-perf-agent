@@ -348,7 +348,7 @@ test("a legacy profile dir without owner.json is removed by the next launch", { 
 
 for (const signal of ["SIGTERM", "SIGKILL"]) {
   test(`no Chrome survives 6 s after ${signal} of the CLI`, { skip: !enabled, timeout: 60000 }, async () => {
-    const child = spawn(process.execPath, [cli, "agent", "--file", path.join(examples, "webgl2-draw.html"), "--out", path.join(lockDir, `kill-${signal}.json`)], { stdio: "ignore" });
+    const child = spawn(process.execPath, [cli, "agent", "--no-daemon", "--file", path.join(examples, "webgl2-draw.html"), "--out", path.join(lockDir, `kill-${signal}.json`)], { stdio: "ignore" });
     // Wait until this CLI's Chrome profile exists, then kill the CLI mid-capture.
     let profile = null;
     const deadline = Date.now() + 15000;

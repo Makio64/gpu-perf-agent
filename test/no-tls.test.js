@@ -34,7 +34,7 @@ async function runCli(args, { timeout = 30000 } = {}) {
 test('--help and compare never load tls or undici', async () => {
   assert.deepEqual((await runCli(['--help'])).loaded, []);
   const base = fileURLToPath(new URL('fixtures/v3/report-capture.json', import.meta.url));
-  const compare = await runCli(['compare', '--base', base, '--candidate', base, '--json']);
+  const compare = await runCli(['compare', '--base', base, '--candidate', base, '--out', '$TMP/compare.json', '--json']);
   assert.ok(compare.stdout.trim().startsWith('{'), compare.stderr.slice(-300));
   assert.deepEqual(compare.loaded, []);
 });

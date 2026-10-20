@@ -125,8 +125,8 @@ test('CLI saves failed benchmark evidence and exits 2; A/B preserves failed roun
       assert.equal(error.code, 2);
       const output = JSON.parse(error.stdout);
       assert.equal(output.ok, false);
-      assert.equal(output.out, out);
-      assert.ok(output.diagnostics.validity.issues.some(issue => issue.code === 'sample-errors'));
+      assert.equal(output.reportPath ?? output.out, out);
+      assert.ok(output.validity.issues.some(issue => issue.code === 'sample-errors'));
       return true;
     });
     const report = JSON.parse(await readFile(out, 'utf8'));
@@ -290,11 +290,11 @@ test('A/B CLI waits for async scene readiness and custom hooks with compact evid
       '--wait-condition', 'window.sceneReady === true', '--wait-condition-timeout', '3000',
       '--wait-for-hook', '--hook', 'measureScene', '--timeout', '5000',
       '--device-scale-factor', '2', '--out', out, '--agent'], {timeout:15000}).catch(error => {
-        if (error.code === 1 && error.stdout?.includes('Compare:')) return error;
+        if (error.code === 1 && error.stdout?.includes('Saved:')) return error;
         throw error;
       });
-    assert.match(result.stdout, /Compare:/);
-    assert.match(result.stdout, /Report:/);
+    assert.match(result.stdout, /— primary/);
+    assert.match(result.stdout, /Saved:/);
     assert.ok(result.stdout.length < 5000);
     const report = JSON.parse(await readFile(out, 'utf8'));
     assert.equal(report.comparison.validity.valid, true, JSON.stringify(report.comparison.validity));

@@ -1,6 +1,8 @@
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { FastCDPHarness, TOOL } from "./fast-cdp-runner.js";
 import { invalidOption, normalizeOptions, numberOption } from "./options.js";
 import { compactReport } from "./output.js";
@@ -149,9 +151,10 @@ export async function startReportServer(options = {}) {
       const invalid = error.statusCode === undefined && (error instanceof SyntaxError || error instanceof TypeError || ["invalid-options", "file-not-found"].includes(error?.code));
       const status = error.statusCode || (invalid ? 400 : 500);
       sendJson(response, status, { ok: false, error: {
-        code: status === 400 ? 'INVALID_OPTIONS' : error?.code || 'RUN_FAILED',
+        code: error?.code || (status === 400 ? 'INVALID_OPTIONS' : 'RUN_FAILED'),
         message: error?.message || String(error),
-        ...(error?.hint ? { hint: error.hint } : {})
+        ...(error?.hint ? { hint: error.hint } : {}),
+        ...(typeof error?.samplingStarted === "boolean" ? { samplingStarted: error.samplingStarted } : {})
       } });
     }
   });
@@ -265,4 +268,49 @@ function sendJson(response, statusCode, value) {
   if (response.destroyed || response.writableEnded) return;
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8", 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(value));
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { values } = parseArgs({
+    allowPositionals: false,
+    args: process.argv.slice(2),
+    options: {
+      angle: { type: "string" },
+      "auto-instrument": { type: "boolean" },
+      "chromium-arg": { multiple: true, type: "string" },
+      channel: { type: "string" },
+      context: { type: "string" },
+      "executable-path": { type: "string" },
+      headful: { type: "boolean" },
+      "idle-timeout-ms": { default: "600000", type: "string" },
+      "max-queue": { default: "8", type: "string" },
+      port: { default: "0", type: "string" },
+      "report-dir": { type: "string" },
+      "slow-frame-threshold": { default: "20", type: "string" },
+      "state-file": { type: "string" },
+      viewport: { default: "1280x720", type: "string" }
+    }
+  });
+  startReportServer({
+    angle: values.angle,
+    autoInstrument: values["auto-instrument"] ?? true,
+    channel: values.channel,
+    contextMode: values.context,
+    chromiumArgs: values["chromium-arg"] || [],
+    executablePath: values["executable-path"],
+    headful: Boolean(values.headful),
+    idleTimeoutMs: Number(values["idle-timeout-ms"]),
+    maxQueue: Number(values["max-queue"]),
+    port: Number(values.port),
+    reportDir: values["report-dir"] || process.cwd(),
+    slowFrameThresholdMs: Number(values["slow-frame-threshold"]),
+    stateFile: values["state-file"] || null,
+    viewport: values.viewport
+  }).then(server => {
+    const close = () => server.close().finally(() => process.exit(0));
+    process.once("SIGINT", close);
+    process.once("SIGTERM", close);
+  }).catch(() => {
+    process.exit(1);
+  });
 }

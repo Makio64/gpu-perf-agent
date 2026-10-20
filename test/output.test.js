@@ -1,191 +1,304 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import { compactReport, formatAgentReport, comparisonExitCode, formatAgentComparison } from '../src/output.js';
-import { finalizeReport } from '../src/analysis.js';
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import {
+  compactComparison,
+  compactReport,
+  comparisonExitCode,
+  formatAgentComparison,
+  formatAgentReport,
+  formatCaptureAndCompare,
+  formatCliError,
+  formatGpuTimingSignal
+} from "../src/output.js";
 
-test('agent digest is bounded and preserves zero versus unavailable metrics', () => {
-  const report = { summary: { fps: 0, gpuFrameMsMean: null, warnings: Array.from({length:100}, (_,i)=>({ code: `warning-${i}`, severity: 'high', recommendation: 'x'.repeat(1000) })) } };
-  const digest = formatAgentReport(report, { out: '/tmp/report.json' });
-  assert.match(digest, /0.0 FPS/);
-  assert.match(digest, /GPU n\/a ms/);
-  assert.match(digest, /\+97 more/);
-  assert.ok(digest.length < 1200);
-  assert.match(digest, /Report: \/tmp\/report.json/);
-});
+const root = path.resolve(new URL("..", import.meta.url).pathname);
 
-test('compact JSON avoids duplicating warnings and caps error details', () => {
-  const report = { summary: { warnings: [{code:'test'}] }, diagnostics: { warnings: [{code:'test'}], pageErrors: Array(100).fill({type:'pageerror'}) } };
-  const result = compactReport(report);
-  assert.equal(result.diagnostics.warnings, undefined);
-  assert.equal(result.diagnostics.pageErrorCount, 100);
-  assert.equal(result.diagnostics.pageErrors.length, 5);
-  assert.equal(report.diagnostics.pageErrors.length, 100);
-});
-
-test('agent output retains GPU scope evidence even with no warning rows', () => {
-  const timing = { schemaVersion: 1, status: 'ambiguous', scope: null, sampleCount: 3, validSampleCount: 0, timingCount: 9, ambiguousSampleCount: 3, negativeTimingCount: 0, reasons: ['multiple-timings'] };
-  const report = { summary: { gpuFrameMsMean: null, warnings: [] }, diagnostics: { validity: { valid: true, issues: [] }, signal: { gpuTiming: timing } } };
-  const digest = formatAgentReport(report, { maxWarnings: 0 });
-  assert.match(digest, /GPU n\/a ms/);
-  assert.match(digest, /GPU timing scope: ambiguous; aggregate GPU time unavailable \(multiple-timings\)/);
-  assert.deepEqual(compactReport(report).diagnostics.signal.gpuTiming, timing);
-  report.diagnostics.signal.gpuTiming = { ...timing, status: 'single-scope', scope: '', validSampleCount: 3, reasons: [] };
-  report.summary.gpuFrameMsMean = 0;
-  assert.match(formatAgentReport(report), /GPU 0.00 ms/);
-  assert.match(formatAgentReport(report), /GPU timing scope: \(root\); 3\/3 samples/);
-});
-
-test('allowed mismatches have consistent success and exit status', () => {
-  const result = { compatibility: { compatible: false }, failures: [] };
-  assert.equal(comparisonExitCode(result), 2);
-  assert.equal(comparisonExitCode(result, {allowMismatch:true}), 0);
-  result.failures.push({});
-  assert.equal(comparisonExitCode(result, {allowMismatch:true}), 1);
-});
-
-test('compact JSON bounds large guidance and preserves numeric signal, identity, artifacts and omission counts', () => {
-  const longText = 'x'.repeat(10000);
-  const report = {
-    summary: {
-      verdict: 'poor', fps: 0, gpuFrameMsMean: null, trackedVram: { totalMiB: 0, available: true },
-      warnings: Array.from({ length: 100 }, (_, index) => ({ code: `warning-${index}`, severity: 'high', recommendation: longText })),
-      recommendations: Array.from({ length: 100 }, (_, index) => ({ id: `rec-${index}`, severity: 'critical', title: 'Title', evidence: longText, action: longText, codeHint: longText, agentPrompt: longText }))
-    },
-    diagnostics: {
-      validity: { valid: true, issues: [] },
-      signal: { sampleCount: 6, observedFrameCount: 0, gpuTimingSamples: 0 },
-      instrumentation: { enabled: true, errors: [] },
-      pageErrors: Array.from({ length: 100 }, () => ({ type: 'requestfailed', message: longText, stack: longText })),
-      sampleErrors: []
-    },
-    artifacts: { screenshotPath: `/tmp/${'nested/'.repeat(60)}screenshot.png` },
-    timings: { samplingMs: 0 }
-  };
-  const snapshot = structuredClone(report);
-  const result = compactReport(report, '/tmp/report.json');
-  assert.equal(result.ok, true);
-  assert.equal(result.summary.fps, 0);
-  assert.equal(result.summary.gpuFrameMsMean, null);
-  assert.equal(result.summary.trackedVram.totalMiB, 0);
-  assert.deepEqual(result.diagnostics.signal, report.diagnostics.signal);
-  assert.equal(result.summary.warnings.length, 5);
-  assert.equal(result.summary.warningCount, 100);
-  assert.equal(result.summary.warningsOmitted, 95);
-  assert.equal(result.summary.recommendations.length, 3);
-  assert.equal(result.summary.recommendationCount, 100);
-  assert.equal(result.summary.recommendationsOmitted, 97);
-  assert.equal(result.summary.recommendations[0].codeHint, undefined);
-  assert.equal(result.summary.recommendations[0].agentPrompt, undefined);
-  assert.equal(result.diagnostics.pageErrors.length, 5);
-  assert.equal(result.diagnostics.pageErrors[0].type, 'requestfailed');
-  assert.equal(result.diagnostics.pageErrorCount, 100);
-  assert.equal(result.diagnostics.pageErrorsOmitted, 95);
-  assert.equal(result.artifacts.screenshotPath, report.artifacts.screenshotPath);
-  assert.equal(result.timings.samplingMs, 0);
-  assert.ok(result.truncation.truncatedText > 0);
-  assert.ok(result.truncation.omittedFields >= 6);
-  assert.ok(Buffer.byteLength(JSON.stringify(result)) < 10000);
-  assert.deepEqual(report, snapshot);
-});
-
-test('compact JSON caps nested validity without hiding invalid state or exhausting measurement output', () => {
-  const nested = { valid: false, issues: Array.from({ length: 100 }, () => ({ code: 'bad-round', message: 'invalid measurement'.repeat(100), issues: Array(10).fill({ message: 'inner failure'.repeat(100) }) })) };
-  const report = {
-    summary: { fps: 60, verdict: 'good', warnings: [] },
-    diagnostics: { validity: nested, signal: { sampleCount: 6 }, sampleErrors: Array(100).fill({ message: 'failed', details: nested }) }
-  };
-  const result = compactReport(report);
-  assert.equal(result.ok, false);
-  assert.equal(result.diagnostics.validity.valid, false);
-  assert.equal(result.diagnostics.validity.issues.length, 5);
-  assert.equal(result.diagnostics.validity.issuesOmitted, 95);
-  assert.equal(result.diagnostics.sampleErrors.length, 3);
-  assert.equal(result.diagnostics.sampleErrorCount, 100);
-  assert.equal(result.diagnostics.sampleErrorsOmitted, 97);
-  assert.equal(result.summary.fps, 60);
-  assert.equal(result.diagnostics.signal.sampleCount, 6);
-  assert.ok(Buffer.byteLength(JSON.stringify(result)) < 18000);
-});
-
-test('compact JSON preserves every finalized core measurement ahead of arbitrary extra fields', () => {
-  const report = finalizeReport({
-    options: { samples: 1 },
-    inPage: {
-      samples: [{ measurement: { fps: 60, gpuTimeNs: 0, frameTimeMsMean: 16.7, trackedGpuMemory: { pipelines: { syncCount: 0, asyncCount: 2, shaderModules: 2 }, bindGroups: { createdCount: 2 } } } }],
-      summary: { fps: { mean: 60 }, frameTimeMsMean: { mean: 16.7 }, frameTimeMsP95: { mean: 17 }, sampleCount: 1, observedFrameCount: 30, cadence: { hz: 60, intervalMs: 16.7, hitRate: 1 } },
-      warmup: { durationMs: 200, lagSpikeMs: 0 }
-    }
-  });
-  const core = structuredClone(report.summary);
-  report.summary = { ...Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`custom${i}`, i])), ...report.summary };
-  const result = compactReport(report);
-  for (const [key, value] of Object.entries(core)) {
-    if (['warnings', 'recommendations', 'highlights', 'warningCount'].includes(key)) continue;
-    assert.deepEqual(result.summary[key], value, key);
-  }
-  assert.ok(result.truncation.omittedFields > 0);
-  assert.equal(result.summary.warningCount, core.warnings.length);
-});
-
-test('report digest preserves unavailable counters, finite limits and invalid issue counts', () => {
-  const report = { diagnostics: { validity: { valid: false, issues: Array(50).fill({ message: 'failure' }) } }, summary: { warnings: Array(100).fill({ code: 'warning', message: 'x'.repeat(10000) }) } };
-  const digest = formatAgentReport(report, { maxWarnings: Infinity });
-  assert.match(digest, /slow n\/a/);
-  assert.match(digest, /n\/a samples, n\/a frames, n\/a GPU timings/);
-  assert.match(digest, /\+47 more issues/);
-  assert.match(digest, /\+97 more warnings/);
-  assert.ok(digest.length < 1500);
-  const artifact = `/tmp/${'directory/'.repeat(40)}report.json`;
-  assert.ok(formatAgentReport(report, { out: artifact }).endsWith(`Report: ${artifact}`));
-});
-
-function comparison(rows) {
-  const summary = { regressions: 0, improved: 0, inconclusive: 0, passed: 0, missing: 0, total: rows.length };
-  for (const row of rows) summary[{ regression: 'regressions', pass: 'passed' }[row.status] || row.status]++;
-  return { rows, summary, compatibility: { compatible: true, differences: [] }, validity: { valid: true, issues: [] }, diagnostics: { resolvedWarnings: [], introducedWarnings: [] }, failures: rows.filter(row => row.status === 'regression') };
+function approxTokens(text) {
+  return Math.ceil(Buffer.byteLength(text, "utf8") / 4);
 }
 
-test('comparison digest prioritizes regressions and discloses omitted metrics with evidence', () => {
-  const result = comparison([
-    ...Array.from({ length: 10 }, (_, i) => ({ key: `a.improvement${i}`, base: 100, candidate: 50, deltaPercent: -50, status: 'improved', evidence: 'independent-samples', confidence95: { low: -55, high: -45 } })),
-    ...Array.from({ length: 6 }, (_, i) => ({ key: `z.regression${i}`, base: 0, candidate: 5, deltaPercent: null, status: 'regression', evidence: 'threshold-only' }))
-  ]);
-  const digest = formatAgentComparison(result);
-  assert.match(digest, /10 with 95% intervals, 6 threshold-only/);
-  assert.match(digest, /regression: z\.regression0 0\.00 → 5\.00 \(n\/a%\); threshold-only/);
-  assert.doesNotMatch(digest, /- improved/);
-  assert.match(digest, /Omitted: .*10 improved.*1 regression/);
-  assert.equal((digest.match(/^- /gm) || []).length, 5);
+test("formatAgentReport renders §8.1 healthy capture within token and line budgets", async () => {
+  const fixture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-capture.json"), "utf8"));
+  const digest = formatAgentReport(fixture, { out: path.join(root, "reports/three-healthy.json"), cwd: root });
+  const lines = digest.split("\n").filter(Boolean);
+
+  assert.ok(lines.length <= 10, `expected <=10 lines, got ${lines.length}`);
+  assert.ok(approxTokens(digest) <= 160, `expected <=160 tokens, got ${approxTokens(digest)}`);
+  assert.match(lines[0], /^EXCELLENT — no limiting cause; vsync-capped at 60 Hz$/);
+  assert.match(lines[1], /^Bound: vsync-capped 60 Hz; GPU 8\.41 ms \(51% of 16\.67 ms\), CPU 1\.3 ms\/frame → primary health\.autoGpuFrameMs\.p50$/);
+  assert.match(lines[2], /^Frame 16\.67 ms p95 16\.7 \| GPU p50 8\.41 ms \(auto, 88\/90 frames\) \| 3 passes\/f, 200 draws\/f \| VRAM 16 MiB \| heap 0\.00 MiB\/s retained$/);
+  assert.match(lines[3], /^Passes \(excl p50\): render#0@frame\(app\.js:88\) 8\.3 ms  sim@frame\(app\.js:81\) 0\.05 ms$/);
+  assert.match(digest, /Trust: valid; .*GPU clock-sensitive: confirm GPU deltas with ab/);
+  assert.doesNotMatch(digest, /GPU stable/);
+  assert.match(digest, /Next: No action needed/);
+  assert.match(digest, /Report: reports\/three-healthy\.json$/);
 });
 
-test('comparison digest always displays requested primary metric even when passing', () => {
-  const result = comparison([
-    ...Array.from({ length: 6 }, (_, i) => ({ key: `z.regression${i}`, base: 1, candidate: 2, status: 'regression', evidence: 'threshold-only' })),
-    { key: 'custom.primary.mean', base: 1, candidate: 1, deltaPercent: 0, status: 'pass', evidence: 'paired-samples', confidence95: { low: -0.1, high: 0.1 } }
-  ]);
-  const digest = formatAgentComparison(result, { primaryMetric: 'custom.primary.mean' });
-  assert.match(digest, /primary pass: custom\.primary\.mean/);
-  assert.match(digest, /paired-samples; 95% Δ \[-0\.10, 0\.10\]/);
-  assert.match(digest, /Omitted: 2 regression/);
-  assert.match(digest, /passing alone does not establish equivalence/);
-  assert.equal((digest.match(/^- /gm) || []).length, 5);
-  assert.equal(result.failures.length, 6);
-  const absent = formatAgentComparison(result, { primaryMetric: 'not.captured' });
-  assert.match(absent, /Primary metric not measured: not\.captured/);
-  assert.match(absent, /regression: z\.regression0/);
+test("formatAgentReport renders §8.1 GPU-bound, saturated GPU, CPU hotspot, hitch, and capture anomalies", () => {
+  const gpuBoundReport = {
+    summary: {
+      verdict: "needs-work",
+      verdictReasons: [
+        { code: "gpu-bound", severity: "high", message: "GPU-bound (9.27 ms/frame vs 8.33 ms budget at 120 Hz)" }
+      ],
+      bottleneck: {
+        class: "gpu-bound",
+        subtype: null,
+        hz: 120,
+        budgetMs: 8.33,
+        gpuMs: 9.27,
+        gpuShare: 1.11,
+        gpuSaturated: false,
+        cpuMsPerFrame: 1.9,
+        primaryMetric: "health.autoGpuFrameMs.p50"
+      },
+      frameTimeMsMean: 9.52,
+      frameTimeMsP95: 13.8,
+      observedFrameCount: 60,
+      sampleCount: 6,
+      cpuMsPerFrame: 1.9,
+      gpu: {
+        source: "auto",
+        frameMsP50: 9.27,
+        frameMsP95: 10.1,
+        timedFrames: 58,
+        stability: { status: "stable", clockSensitive: true },
+        passes: [
+          { key: "render#1", exclusiveMs: 6.91, overlapped: false, site: "frame scene.js:142" },
+          { key: "render#0", exclusiveMs: 1.88, overlapped: false, site: "frame scene.js:98" },
+          { key: "compute#0", exclusiveMs: 0.48, overlapped: true, site: "step sim.js:54" }
+        ]
+      },
+      perFrame: { renderPasses: 2, computePasses: 1, drawCalls: 420 },
+      drawCallsPerFrame: 420,
+      trackedVram: { totalMiB: 590.5 },
+      heap: { retainedMiBPerSec: 0.12 },
+      findings: [
+        { code: "gpu-bound", role: "cause", severity: "high", message: "GPU-bound", next: "Reduce fragment cost in render#1 (6.91 ms, 75% of GPU time)." }
+      ]
+    },
+    diagnostics: { validity: { valid: true, issues: [], warnings: [] } }
+  };
+
+  const digest = formatAgentReport(gpuBoundReport, { out: "reports/scene.json" });
+  assert.ok(approxTokens(digest) <= 160, `expected <=160 tokens, got ${approxTokens(digest)}`);
+  assert.match(digest, /^NEEDS-WORK — GPU-bound \(9\.27 ms\/frame vs 8\.33 ms budget at 120 Hz\)/);
+  assert.match(digest, /Bound: gpu-bound 120 Hz; GPU 9\.27 ms \(111% of 8\.33 ms\), CPU 1\.9 ms\/frame → primary health\.autoGpuFrameMs\.p50/);
+  assert.match(digest, /Passes \(excl p50\): render#1@frame\(scene\.js:142\) 6\.91 ms  render#0@frame\(scene\.js:98\) 1\.88 ms  compute#0@step\(sim\.js:54\) 0\.48 ms~/);
+  assert.match(digest, /Next: Reduce fragment cost in render#1/);
+
+  // Hitch line formatting
+  const hitchDigest = formatAgentReport({
+    ...gpuBoundReport,
+    summary: { ...gpuBoundReport.summary, gpu: { ...gpuBoundReport.summary.gpu, passes: [] }, hitches: [{ durationMs: 28.4, where: "compilePost @ post.js:48", loaf: true }] }
+  });
+  assert.match(hitchDigest, /Hitch: 28\.4 ms frame @ compilePost @ post\.js:48/);
+
+  // Saturated GPU prints GPU >= budget (saturated) instead of GPU <x> ms (<share>%)
+  gpuBoundReport.summary.bottleneck.gpuSaturated = true;
+  const satDigest = formatAgentReport(gpuBoundReport);
+  assert.match(satDigest, /Bound: gpu-bound 120 Hz; GPU ≥ budget \(saturated\), CPU 1\.9 ms\/frame/);
+
+  // CPU submission-bound + capture anomaly
+  const cpuBoundReport = {
+    summary: {
+      verdict: "poor",
+      verdictReasons: [{ code: "cpu-bound", severity: "high", message: "CPU submission-bound (main thread 95% busy at 46.2 fps)" }],
+      bottleneck: {
+        class: "cpu-bound",
+        subtype: "submission-bound",
+        hz: 120,
+        budgetMs: 8.33,
+        gpuMs: 0.38,
+        gpuShare: 0.05,
+        cpuMsPerFrame: 12.1,
+        primaryMetric: "frame.frameTimeMs.mean"
+      },
+      frameTimeMsMean: 21.6,
+      frameTimeMsP95: 25.4,
+      observedFrameCount: 30,
+      sampleCount: 6,
+      cpuMsPerFrame: 12.1,
+      gpu: { source: "auto", frameMsP50: 0.38, timedFrames: 30, passes: [] },
+      perFrame: { renderPasses: 1, computePasses: 0, drawCalls: 2500 },
+      drawCallsPerFrame: 2500,
+      trackedVram: { totalMiB: 24.1 },
+      heap: { retainedMiBPerSec: 0 },
+      findings: [{ code: "cpu-bound", role: "cause", severity: "high", message: "CPU-bound", next: "Batch the 2500 draws/f in frame (index.html:64)." }]
+    },
+    cpuProfile: {
+      msPerFrame: { appJs: 2.34, gc: 0.24 },
+      top: [{ fn: "draw", kind: "native", selfMsPerFrame: 8.92, caller: { fn: "frame", url: "index.html", line: 64 } }]
+    },
+    timings: {
+      anomalies: [
+        { code: "slow-navigation", ms: 25600 },
+        { code: "slow-tls", ms: 25300, host: "unpkg.com" }
+      ]
+    },
+    diagnostics: { validity: { valid: true, issues: [], warnings: [{ code: "instrumentation-overhead", message: "overhead" }] } }
+  };
+  const cpuDigest = formatAgentReport(cpuBoundReport, { out: "reports/cpu.json" });
+  assert.ok(approxTokens(cpuDigest) <= 160, `expected <=160 tokens, got ${approxTokens(cpuDigest)}`);
+  assert.match(cpuDigest, /CPU: native draw 8\.92 ms\/f <- frame index\.html:64; app JS 2\.34 ms; GC 0\.24 ms/);
+  assert.match(cpuDigest, /Capture: slow navigation 25\.6 s \(TLS 25\.3 s on unpkg\.com\); keep Chrome warm \(daemon\/serve\)/);
+  assert.match(cpuDigest, /instrumentation overhead/);
 });
 
-test('comparison digest bounds mismatch and warning lists and retains a passing measurement', () => {
-  const result = comparison([{ key: 'frame.fps.mean', base: 0, candidate: 0, deltaPercent: null, status: 'pass', evidence: 'threshold-only' }]);
-  result.compatibility = { compatible: false, differences: Array.from({ length: 100 }, (_, i) => ({ key: `option-${i}` })) };
-  result.compatibility.environment = { checkedKeys: ['host.arch'], unverifiedKeys: ['browser.version', 'adapter.device'] };
-  result.diagnostics.resolvedWarnings = Array.from({ length: 100 }, (_, i) => ({ code: `resolved-${i}` }));
-  result.diagnostics.introducedWarnings = Array.from({ length: 100 }, (_, i) => ({ code: `new-${i}` }));
-  const digest = formatAgentComparison(result);
-  assert.match(digest, /pass: frame\.fps\.mean 0\.00 → 0\.00/);
-  assert.match(digest, /0 with 95% intervals, 1 threshold-only/);
-  assert.match(digest, /Mismatched capture\/environment/);
-  assert.match(digest, /Environment: 1 fields checked; 2 unverified/);
-  assert.equal((digest.match(/\+95 more/g) || []).length, 3);
-  assert.ok(digest.length < 1000);
+test("formatAgentReport renders §8.1 invalid capture concisely", () => {
+  const invalidReport = {
+    summary: { verdict: "invalid" },
+    diagnostics: {
+      validity: {
+        valid: false,
+        issues: [
+          { code: "page-errors", message: "2 runtime/network errors occurred during capture." },
+          { code: "no-gpu-work", message: "No GPU work observed." }
+        ]
+      },
+      pageErrors: [
+        { type: "httperror", status: 404, url: "http://localhost:8080/assets/env.hdr" },
+        { type: "pageerror", message: "ReferenceError: HDRLoader is not defined" }
+      ]
+    },
+    pageEvents: [
+      { type: "httperror", status: 404, url: "http://localhost:8080/assets/env.hdr" },
+      { type: "pageerror", message: "ReferenceError: HDRLoader is not defined" }
+    ]
+  };
+  const digest = formatAgentReport(invalidReport, { out: "reports/three-broken.json" });
+  const lines = digest.split("\n");
+  assert.equal(lines.length, 4);
+  assert.equal(lines[0], "INVALID — page-errors: 2 runtime/network errors occurred during capture; no GPU work during sampling");
+  assert.match(lines[1], /^Trust: invalid \(2 issues\); 2 page\/network errors \(404 \/assets\/env\.hdr, ReferenceError: HDRLoader is not defined\)$/);
+  assert.match(lines[2], /^Next: Fix the 2 runtime\/network errors first/);
+  assert.equal(lines[3], "Report: reports/three-broken.json");
+});
+
+test("formatAgentComparison renders §8.2 paired and separate digests within 140-token budget", async () => {
+  const paired = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  const pairedDigest = formatAgentComparison(paired, { out: "reports/ab-1.json" });
+  assert.ok(approxTokens(pairedDigest) <= 140, `expected <=140 tokens, got ${approxTokens(pairedDigest)}`);
+  assert.match(pairedDigest, /^IMPROVED — primary health\.autoGpuFrameMs\.p50 1\.68 → 1\.49 ms \(-11\.3%, 95% CI -0\.23\.\.-0\.15 ms; paired, 4 rounds\) \(primary from base bottleneck\)/);
+  assert.match(pairedDigest, /Trust: base valid, cand valid; GPU stable both sides/);
+  assert.match(pairedDigest, /Not gated: 3 changed/);
+  assert.match(pairedDigest, /Saved: reports\/ab-1\.json$/);
+
+  // Separate unverified comparison with copied flags in Next:
+  const separate = {
+    ...paired,
+    status: "unverified",
+    exitCode: 0,
+    mode: "separate",
+    baseFile: "base.html",
+    candidateFile: "cand.html",
+    primary: {
+      key: "health.autoGpuFrameMs.p50",
+      selection: "bottleneck",
+      row: {
+        ...paired.primary.row,
+        status: "unverified",
+        screen: "better",
+        reasons: ["auto GPU is clock-sensitive across separate Chrome launches"]
+      }
+    }
+  };
+  const sepDigest = formatAgentComparison(separate, {
+    out: "reports/cand-1.compare.json",
+    baseOptions: { autoInstrument: false, gpuTiming: false, api: "webgpu", hookName: "customBench" }
+  });
+  assert.ok(approxTokens(sepDigest) <= 140, `expected <=140 tokens, got ${approxTokens(sepDigest)}`);
+  assert.match(sepDigest, /^UNVERIFIED \(screen: better\) — primary health\.autoGpuFrameMs\.p50 1\.68 → 1\.49 ms \(-11\.3%; separate, auto GPU is clock-sensitive across separate Chrome launches\) \(primary from base bottleneck\)/);
+  assert.match(sepDigest, /Next: confirm with ab --base-file base\.html --candidate-file cand\.html --metric health\.autoGpuFrameMs\.p50 --no-auto-instrument --no-gpu-timing --api webgpu --hook-name customBench/);
+
+  // Work equivalence + compatibility mismatch + schemaVersion warning
+  const mismatchDigest = formatAgentComparison({
+    ...paired,
+    workEquivalence: { status: "different", differences: [{ key: "drawCallsPerFrame", base: 200, candidate: 100 }] },
+    compatibility: {
+      compatible: false,
+      differences: [{ key: "autoInstrument", base: false, candidate: true }],
+      warnings: [{ key: "schemaVersion", base: 2, candidate: 3 }]
+    }
+  });
+  assert.ok(approxTokens(mismatchDigest) <= 140);
+  assert.match(mismatchDigest, /Work: drawCallsPerFrame 200 → 100 — confirm identical output/);
+  assert.match(mismatchDigest, /Mismatch: autoInstrument base false ≠ cand true → recapture with --no-auto-instrument, or use agent --base/);
+  assert.match(mismatchDigest, /baseline schemaVersion 2: recapture/);
+});
+
+test("formatCaptureAndCompare combines capture, baseline overrides, comparison, and saved paths", async () => {
+  const capture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-capture.json"), "utf8"));
+  const comparison = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  const combined = formatCaptureAndCompare(capture, comparison, {
+    out: "reports/cand-1.json",
+    comparisonOut: "reports/cand-1.compare.json",
+    baseReportPath: "reports/base-1.json",
+    overrides: [{ key: "autoInstrument", value: false, flag: "--auto-instrument" }]
+  });
+  assert.match(combined, /^EXCELLENT — no limiting cause; vsync-capped at 60 Hz/m);
+  assert.match(combined, /^Matched baseline: autoInstrument=false \(override with --auto-instrument\)/m);
+  assert.match(combined, /^vs reports\/base-1\.json:/m);
+  assert.match(combined, /^IMPROVED — primary health\.autoGpuFrameMs\.p50/m);
+  assert.match(combined, /^Saved: reports\/cand-1\.json, reports\/cand-1\.compare\.json$/m);
+});
+
+test("compactReport and compactComparison obey §8.3 byte caps (<=1.6 KB and <=2 KB)", async () => {
+  const capture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-capture.json"), "utf8"));
+  const comparison = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+
+  const cReport = compactReport(capture, path.join(root, "reports/scene-1.json"));
+  const reportBytes = Buffer.byteLength(JSON.stringify(cReport), "utf8");
+  assert.ok(reportBytes <= 1638, `expected compactReport <= 1638 bytes, got ${reportBytes}`);
+  assert.equal(cReport.schemaVersion, 3);
+  assert.equal(cReport.ok, true);
+  assert.equal(cReport.exitCode, 0);
+  assert.equal(cReport.reportPath, "reports/scene-1.json");
+  assert.equal(cReport.verdict, "excellent");
+  assert.equal(cReport.bottleneck.class, "vsync-capped");
+  assert.equal(cReport.headline.fps, 60);
+  assert.equal(cReport.topPasses.length, 2);
+  assert.equal(cReport.validity.valid, true);
+
+  const cComp = compactComparison(comparison, path.join(root, "reports/cand-1.compare.json"));
+  const compBytes = Buffer.byteLength(JSON.stringify(cComp), "utf8");
+  assert.ok(compBytes <= 2048, `expected compactComparison <= 2048 bytes, got ${compBytes}`);
+  assert.equal(cComp.kind, "comparison");
+  assert.equal(cComp.schemaVersion, 2);
+  assert.equal(cComp.status, "improved");
+  assert.equal(cComp.exitCode, 0);
+  assert.equal(cComp.comparisonPath, "reports/cand-1.compare.json");
+  assert.equal(cComp.primary.key, "health.autoGpuFrameMs.p50");
+});
+
+test("formatCliError unwraps nested Error: Error: prefixes and hides stack unless GPU_PERF_DEBUG=1", () => {
+  const err = Object.assign(new Error("Error: Error: File not found: /tmp/missing.html"), {
+    code: "file-not-found",
+    hint: "resolved from --file missing.html, cwd /tmp"
+  });
+  const text = formatCliError(err, { reportPath: "reports/failed-1.json", debug: false });
+  assert.equal(
+    text,
+    "error[file-not-found]: File not found: /tmp/missing.html\nhint: resolved from --file missing.html, cwd /tmp\nReport: reports/failed-1.json"
+  );
+  assert.doesNotMatch(text, /Error: Error:/);
+  assert.doesNotMatch(text, /\n\s+at /);
+
+  const withDebug = formatCliError(err, { debug: true });
+  assert.match(withDebug, /at /);
+});
+
+test("comparisonExitCode and formatGpuTimingSignal preserve contract semantics", () => {
+  const result = { compatibility: { compatible: false, differences: [{ key: "api", base: "webgpu", candidate: "webgl2" }] }, failures: [], validity: { valid: true, issues: [] } };
+  assert.equal(comparisonExitCode(result), 2);
+  assert.equal(comparisonExitCode(result, { allowMismatch: true }), 0);
+  result.failures.push({ key: "frame.frameTimeMs.mean", status: "regression" });
+  assert.equal(comparisonExitCode(result, { allowMismatch: true }), 1);
+
+  assert.equal(
+    formatGpuTimingSignal({ status: "single-scope", scope: "", validSampleCount: 3, sampleCount: 3 }),
+    "GPU timing scope: (root); 3/3 samples."
+  );
 });

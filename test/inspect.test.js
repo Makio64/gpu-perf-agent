@@ -316,5 +316,54 @@ test('overview retains invalidity even when issue evidence needs clipping', () =
   assert.deepEqual(result.validity, { valid: false, issueCount: 1000, savedValid: false, currentValid: true });
   assert.ok(result.omissions.items > 0);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= INSPECT_MAX_BYTES);
-  assert.equal(INSPECT_SECTIONS.length, 7);
+  assert.equal(INSPECT_SECTIONS.length, 9);
+});
+
+test('gpu and cpu sections, sample table projection, raw sample mode, and prefix/changed metrics', () => {
+  const report = {
+    summary: {
+      cpuMsPerFrame: 1.4,
+      mainThreadBusy: 0.12,
+      gpu: { source: 'auto', frameMsP50: 4.2, passes: [{ key: 'render#0', exclusiveMs: 4.1 }] }
+    },
+    cpuProfile: { classification: 'mixed', top: [{ fn: 'step', kind: 'app', selfMsPerFrame: 0.8 }] },
+    inPage: {
+      samples: [
+        { index: 0, elapsedMs: 250, autoGpu: { gpuBusyMs: 4.2, timedFrames: 15, passes: [{ key: 'render#0' }] }, measurement: { observedFrames: { fps: 60, frameTimeMs: { mean: 16.67, p95: 16.8 } } }, memory: { before: { a: 1 }, delta: { performanceMemory: { usedJSHeapSize: 2048 } } }, instrumentation: { delta: { 'webgpu.drawCalls': 100, 'webgpu.queueSubmits': 15 } } },
+        { index: 1, elapsedMs: 251, autoGpu: { gpuBusyMs: 4.3, timedFrames: 15, passes: [{ key: 'render#0' }] }, measurement: { observedFrames: { fps: 60, frameTimeMs: { mean: 16.65, p95: 16.7 } } } }
+      ],
+      summary: { autoGpu: { pooled: { count: 30, mean: 4.25, p50: 4.2, min: 4.0, max: 4.5, stdev: 0.1, cv: 0.02 } } }
+    },
+    pageEventSummary: { total: 2, retained: 2, dropped: 0, truncated: 0, counts: { console: 0, consoleError: 0, pageerror: 1, requestfailed: 0, log: 0, logError: 0, httpError: 1, renderingError: 0 } }
+  };
+
+  const gpuView = inspectReport(report, { section: 'gpu' });
+  assert.equal(gpuView.data.present, true);
+  assert.equal(gpuView.data.gpu.frameMsP50, 4.2);
+  assert.equal(gpuView.data.autoGpu.pooled.n, 30);
+
+  const cpuView = inspectReport(report, { section: 'cpu' });
+  assert.equal(cpuView.data.present, true);
+  assert.equal(cpuView.data.cpuMsPerFrame, 1.4);
+  assert.equal(cpuView.data.cpuProfile.top[0].fn, 'step');
+
+  const samplesView = inspectReport(report, { section: 'samples', limit: 2 });
+  assert.deepEqual(samplesView.data.table.cols, ['i', 'ms', 'fps', 'frameMs', 'p95', 'gpuMs', 'heapKiB', 'draws', 'submits', 'err']);
+  assert.equal(samplesView.data.table.rows.length, 2);
+  assert.equal(samplesView.data.samples[0].memory, undefined);
+
+  const rawSample = inspectReport(report, { section: 'samples', offset: 0, raw: true });
+  assert.equal(rawSample.data.samples.length, 1);
+  assert.deepEqual(rawSample.data.samples[0].memory.before, { a: 1 });
+
+  const errView = inspectReport(report, { section: 'errors' });
+  assert.equal(errView.totals.pageEvents.retainedCounts, undefined);
+  assert.equal(errView.totals.pageEvents.counts.httpError, 1);
+  assert.equal(errView.totals.errors.runtimeAndNetwork, 2);
+
+  const cmp = comparison();
+  const changedMetrics = inspectReport(cmp, { section: 'metrics', changed: true });
+  assert.ok(changedMetrics.data.rows.every(r => r.status !== 'pass' && r.status !== 'unchanged'));
+  const prefixMetrics = inspectReport(cmp, { section: 'metrics', metric: 'custom.*' });
+  assert.equal(prefixMetrics.data.rows.length, 3);
 });

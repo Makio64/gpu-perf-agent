@@ -1,27 +1,39 @@
 import { reportEnvironment, reportMetrics } from './compare.js';
 import { pageErrorCounts, reportValidity } from './validity.js';
 
-export const INSPECT_SECTIONS = Object.freeze(['overview', 'metrics', 'samples', 'errors', 'environment', 'instrumentation', 'trace']);
+export const INSPECT_SECTIONS = Object.freeze(['overview', 'metrics', 'samples', 'errors', 'environment', 'instrumentation', 'trace', 'gpu', 'cpu']);
 export const INSPECT_MAX_BYTES = 16 * 1024;
 
 /** Validate selectors before reading an artifact. This API does not perform I/O. */
 export function validateInspectOptions(options = {}) {
   object(options, 'Inspection options');
   for (const key of Object.keys(options)) {
-    if (!['section', 'metric', 'offset', 'limit', 'runIndex'].includes(key)) throw new TypeError(`Unknown inspection option: ${key}.`);
+    if (!['section', 'metric', 'offset', 'limit', 'runIndex', 'raw', 'changed'].includes(key)) {
+      throw new TypeError(`Unknown inspection option: ${key}.`);
+    }
   }
-  const { section = 'overview', metric, offset = 0, limit = 3, runIndex } = options;
+  const { section = 'overview', metric, offset = 0, limit = 3, runIndex, raw, changed } = options;
   if (!INSPECT_SECTIONS.includes(section)) throw new TypeError(`section must be one of ${INSPECT_SECTIONS.join(', ')}.`);
   integer(offset, 'offset', 0, Number.MAX_SAFE_INTEGER);
   integer(limit, 'limit', 1, 10);
   if (runIndex !== undefined) integer(runIndex, 'runIndex', 0, Number.MAX_SAFE_INTEGER);
+  if (raw !== undefined && typeof raw !== 'boolean') throw new TypeError('raw must be a boolean.');
+  if (changed !== undefined && typeof changed !== 'boolean') throw new TypeError('changed must be a boolean.');
   if (metric !== undefined) {
     if (typeof metric !== 'string' || !metric.trim() || metric.length > 1024) throw new TypeError('metric must be a non-empty exact key of at most 1024 characters.');
     if (section !== 'metrics') throw new TypeError('metric requires section "metrics".');
     if (offset !== 0) throw new TypeError('An exact metric selection requires offset 0.');
   }
   if (offset !== 0 && !['metrics', 'samples', 'errors'].includes(section)) throw new TypeError('offset requires metrics, samples, or errors.');
-  return { section, ...(metric === undefined ? {} : { metric }), offset, limit, ...(runIndex === undefined ? {} : { runIndex }) };
+  return {
+    section,
+    ...(metric === undefined ? {} : { metric }),
+    offset,
+    limit,
+    ...(runIndex === undefined ? {} : { runIndex }),
+    ...(raw === undefined ? {} : { raw }),
+    ...(changed === undefined ? {} : { changed })
+  };
 }
 
 /** Inspect a parsed saved artifact. Parsing the artifact is the caller's responsibility. */
@@ -75,21 +87,43 @@ export function inspectReport(artifact, options = {}) {
       data = { validity, signal: report.diagnostics?.signal ?? null, summary: overviewSummary(report.summary), sampling: report.inPage?.sampling ?? report.inPage?.config ?? null, timings: report.timings ?? null, runError: report.runError ?? null };
     }
   } else if (selected.section === 'metrics') {
-    const rows = comparison ? comparison.rows : Object.entries(reportMetrics(report)).map(([key, value]) => ({ key, value }));
+    const allRows = comparison ? comparison.rows : Object.entries(reportMetrics(report)).map(([key, value]) => ({ key, value }));
+    const rows = selected.changed && comparison
+      ? allRows.filter(row => row.status !== 'unchanged' && row.status !== 'pass')
+      : allRows;
     result.totals.rows = rows.length;
-    const indices = selected.metric === undefined ? pageIndices(rows.length, selected) : [rows.findIndex(row => row.key === selected.metric)].filter(index => index !== -1);
+    let indices;
+    const isPrefix = typeof selected.metric === 'string' && selected.metric.endsWith('*');
+    if (selected.metric === undefined) {
+      indices = pageIndices(rows.length, selected);
+    } else if (isPrefix) {
+      const prefix = selected.metric.slice(0, -1);
+      indices = rows.map((row, idx) => row.key.startsWith(prefix) ? idx : -1).filter(idx => idx !== -1).slice(0, selected.limit);
+    } else {
+      indices = [rows.findIndex(row => row.key === selected.metric)].filter(index => index !== -1);
+    }
     result.selection.indices = indices.map(index => ({ source: comparison ? (report === comparison ? 'rows' : 'comparison.rows') : 'reportMetrics', index }));
     result.omissions.items += rows.length - indices.length;
     const projected = indices.map(index => comparison ? comparisonRow(rows[index]) : { ...rows[index], present: true });
-    if (selected.metric !== undefined && !indices.length) projected.push(comparison
+    if (selected.metric !== undefined && !isPrefix && !indices.length) projected.push(comparison
       ? { key: selected.metric, present: false, basePresent: false, candidatePresent: false, base: null, candidate: null }
       : { key: selected.metric, present: false, value: null });
     data = { rows: projected, ...(comparison && selected.metric === 'health.gpuFrameMs.mean' ? { gpuTiming: comparison.gpuTiming ?? null } : {}) };
   } else if (selected.section === 'samples') {
-    const indices = pageIndices(samples?.length ?? 0, selected);
+    const effective = selected.raw ? { ...selected, limit: Math.min(selected.limit, 1) } : selected;
+    const indices = pageIndices(samples?.length ?? 0, effective);
     result.selection.indices = indices.map(index => ({ source: 'inPage.samples', index }));
     result.omissions.items += (samples?.length || 0) - indices.length;
-    data = { present: samples !== null, samples: samples ? indices.map(index => samples[index]) : null };
+    if (samples === null) {
+      data = { present: false, samples: null };
+    } else {
+      const selectedSamples = indices.map(index => selected.raw ? samples[index] : slimSample(samples[index]));
+      const table = {
+        cols: ['i', 'ms', 'fps', 'frameMs', 'p95', 'gpuMs', 'heapKiB', 'draws', 'submits', 'err'],
+        rows: indices.map(index => sampleTableRow(samples[index], index))
+      };
+      data = { present: true, samples: selectedSamples, table };
+    }
   } else if (selected.section === 'errors') {
     const errors = [];
     if (report.runError != null) errors.push({ source: 'runError', index: null, error: report.runError });
@@ -145,6 +179,27 @@ export function inspectReport(artifact, options = {}) {
       : { present: Object.keys(environment).length > 0, environment, options: report.options ?? null, unverifiedKeys: report.environment?.unverifiedKeys ?? null };
   } else if (selected.section === 'instrumentation') {
     data = { present: report.inPage?.instrumentation != null || report.diagnostics?.instrumentation != null, instrumentation: report.inPage?.instrumentation ?? null, diagnostics: report.diagnostics?.instrumentation ?? null };
+  } else if (selected.section === 'gpu') {
+    const gpu = report.summary?.gpu ?? null;
+    const autoGpu = report.inPage?.summary?.autoGpu ?? report.diagnostics?.signal?.autoGpu ?? null;
+    const hookGpu = report.diagnostics?.signal?.gpuTiming ?? null;
+    data = {
+      present: gpu != null || autoGpu != null || hookGpu != null,
+      gpu,
+      autoGpu: slimStatsTree(autoGpu),
+      hookGpu
+    };
+  } else if (selected.section === 'cpu') {
+    const cpuProfile = report.cpuProfile ?? null;
+    const cpuMsPerFrame = report.summary?.cpuMsPerFrame ?? null;
+    const mainThreadBusy = report.summary?.mainThreadBusy ?? null;
+    data = {
+      present: cpuProfile != null || cpuMsPerFrame != null || mainThreadBusy != null,
+      cpuMsPerFrame,
+      mainThreadBusy,
+      cpuProfile,
+      cdpSamples: report.cdp?.samples ?? null
+    };
   } else {
     data = { present: report.trace != null, trace: report.trace ?? null };
   }
@@ -155,6 +210,68 @@ export function inspectReport(artifact, options = {}) {
   const state = { remaining: INSPECT_MAX_BYTES - Buffer.byteLength(JSON.stringify(result)) - 512, nodes: 256, omissions: result.omissions };
   result.data = boundedCopy(data, state);
   return result;
+}
+
+function roundNum(value, digits = 2) {
+  if (!Number.isFinite(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function slimSample(sample) {
+  if (!sample || typeof sample !== 'object') return sample;
+  if (!('autoGpu' in sample) && !('memory' in sample) && !('instrumentation' in sample)) return sample;
+  const { memory, instrumentation, autoGpu, ...rest } = sample;
+  return {
+    ...rest,
+    ...(autoGpu ? { autoGpu: { gpuBusyMs: autoGpu.gpuBusyMs ?? null, timedFrames: autoGpu.timedFrames ?? null } } : {}),
+    ...(memory?.delta ? { memoryDelta: memory.delta } : {}),
+    ...(instrumentation?.delta ? { instrumentationDelta: instrumentation.delta } : {})
+  };
+}
+
+function sampleTableRow(sample, idx) {
+  const m = sample?.measurement || {};
+  const obs = m.observedFrames || {};
+  const inst = sample?.instrumentation?.delta || {};
+  const fps = roundNum(obs.fps ?? m.fps?.mean ?? m.fps, 1);
+  const frameMs = roundNum(obs.frameTimeMs?.mean ?? m.frameTimeMs?.mean ?? m.frameTimeMs, 2);
+  const p95 = roundNum(obs.frameTimeMs?.p95 ?? m.frameTimeMs?.p95, 2);
+  const gpuMs = roundNum(
+    sample?.autoGpu?.gpuBusyMs ?? m.gpuMs ?? (Number.isFinite(m.gpuTimeNs) ? m.gpuTimeNs / 1e6 : null),
+    3
+  );
+  const usedDelta = sample?.memory?.delta?.performanceMemory?.usedJSHeapSize;
+  const heapKiB = roundNum(Number.isFinite(usedDelta) ? usedDelta / 1024 : null, 1);
+  const draws = inst['webgpu.drawCalls'] ?? inst['webgl2.drawCalls'] ?? null;
+  const submits = inst['webgpu.queueSubmits'] ?? null;
+  return [
+    sample?.index ?? idx,
+    roundNum(sample?.elapsedMs, 1),
+    fps,
+    frameMs,
+    p95,
+    gpuMs,
+    heapKiB,
+    draws,
+    submits,
+    sample?.error ? 1 : 0
+  ];
+}
+
+function slimStatsTree(value) {
+  if (!value || typeof value !== 'object') return value ?? null;
+  if (Array.isArray(value)) return value.map(slimStatsTree);
+  if ('count' in value && 'mean' in value && 'p50' in value && ('min' in value || 'max' in value || 'stdev' in value)) {
+    return {
+      n: value.count,
+      mean: roundNum(value.mean, 4),
+      p50: roundNum(value.p50, 4),
+      cv: roundNum(value.cv, 4),
+      ci95: value.ci95 ?? null
+    };
+  }
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, slimStatsTree(v)]));
 }
 
 function object(value, name) {
@@ -201,7 +318,9 @@ function runtimeNetworkCounts(events, fromPageEvents, summary) {
   const retained = events ? pageErrorCounts({ pageEvents: events }).total : null;
   const runtime = summary?.counts.pageerror;
   const network = summary?.counts.requestfailed;
-  const reported = runtime != null && network != null ? runtime + network : null;
+  const http = summary?.counts.httpError ?? 0;
+  const rendering = summary?.counts.renderingError ?? 0;
+  const reported = runtime != null && network != null ? runtime + network + http + rendering : null;
   // A representative list gives only a lower bound. A complete source or both
   // category counters is needed to assert an exact total, including zero.
   const complete = fromPageEvents && summary?.dropped === 0 && summary.retained === events.length && summary.total === events.length;
@@ -210,18 +329,26 @@ function runtimeNetworkCounts(events, fromPageEvents, summary) {
 }
 
 function isPageError(event) {
-  return ['pageerror', 'requestfailed', 'console.error', 'console.assert'].includes(event?.type) || (event?.type === 'log.entry' && event.level === 'error');
+  return ['pageerror', 'requestfailed', 'httperror', 'console.error', 'console.assert'].includes(event?.type) || (event?.type === 'log.entry' && event.level === 'error');
 }
 
 function pageEventTotals(summary) {
   if (!summary || typeof summary !== 'object') return null;
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
-  const categories = ['console', 'consoleError', 'pageerror', 'requestfailed', 'log', 'logError'];
-  return {
-    total: count(summary.total), retained: count(summary.retained), dropped: count(summary.dropped), truncated: count(summary.truncated),
+  const baseCategories = ['console', 'consoleError', 'pageerror', 'requestfailed', 'log', 'logError'];
+  const extraCategories = ['httpError', 'renderingError'].filter(key => summary.counts && key in summary.counts);
+  const categories = [...baseCategories, ...extraCategories];
+  const result = {
+    total: count(summary.total),
+    retained: count(summary.retained),
+    dropped: count(summary.dropped),
+    truncated: count(summary.truncated),
     counts: Object.fromEntries(categories.map(key => [key, count(summary.counts?.[key])])),
-    retainedCounts: Object.fromEntries(categories.map(key => [key, count(summary.retainedCounts?.[key])])),
   };
+  if (summary.retainedCounts !== undefined) {
+    result.retainedCounts = Object.fromEntries(baseCategories.map(key => [key, count(summary.retainedCounts?.[key])]));
+  }
+  return result;
 }
 
 function overviewSummary(summary) {
