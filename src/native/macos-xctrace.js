@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-export async function macOSProfilerStatus() {
+export async function macOSProfilerStatus({ includeTemplates = true } = {}) {
   if (process.platform !== "darwin") {
     return {
       available: false,
@@ -13,13 +13,14 @@ export async function macOSProfilerStatus() {
   }
 
   const xctrace = await capture("xcrun", ["--find", "xctrace"]);
-  const templates = xctrace.ok
+  const templates = xctrace.ok && includeTemplates
     ? await capture("xcrun", ["xctrace", "list", "templates"])
     : null;
 
   return {
     available: xctrace.ok,
     templates: templates?.ok ? parseTemplates(templates.stdout) : [],
+    templatesProbed: Boolean(templates),
     xctracePath: xctrace.ok ? xctrace.stdout.trim() : null,
     xctraceError: xctrace.ok ? null : xctrace.stderr || xctrace.stdout
   };
@@ -108,6 +109,9 @@ function capture(command, args) {
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
+    });
+    child.on("error", error => {
+      resolve({ code: null, ok: false, stderr: error.message, stdout });
     });
     child.on("close", (code) => {
       resolve({ code, ok: code === 0, stderr, stdout });

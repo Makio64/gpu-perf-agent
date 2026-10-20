@@ -1,55 +1,93 @@
 ---
 name: gpu-perf-agent
-description: Profile WebGPU and WebGL pages, diagnose frame pacing and declared GPU allocations, and compare performance across builds with measured regression evidence.
+description: Profile and optimize WebGPU, WebGL, and three.js applications using measured bottlenecks, GPU timing, allocation evidence, and before/after regression checks. Use for performance investigations and optimization loops, not ordinary scene authoring.
 ---
 
-# GPU performance profiling
+# GPU performance optimization
 
-Requires Node.js 22+ and Chrome/Chromium. Use a project's installed `gpu-perf-agent`, `npx gpu-perf-agent`, or `node src/cli.js` from the tool checkout. The default CDP runner has no required npm dependencies. `doctor --quick --json` checks local setup; a full `doctor --json` also probes browser capabilities.
+Improve the user's workload while preserving its output and quality. Optimize the metric
+that matters to that workload; a healthy verdict, fewer warnings, or display-capped FPS
+does not establish a GPU speedup.
 
-## Efficient capture
+## Start with the smallest useful capture
+
+Use the project's installed `gpu-perf-agent`, `npx gpu-perf-agent`, or `node src/cli.js`
+in this tool's checkout. Keep the same tool version throughout a comparison. Node 22+
+and Chrome/Chromium are required; the default runner needs no npm dependencies.
+Check installed help once before using optional flags; a published version may lag this
+skill's source checkout. Unsupported flags need a compatible checkout or the documented fallback.
+Run `doctor --quick --json` for setup problems, not before every capture; it does not
+probe browser/GPU support or enumerate Instruments templates. Full `doctor --json`
+probes browser capabilities and native templates.
+
+Establish the target scene, readiness, primary metric, and output checks before editing.
+Preserve a runnable baseline build/revision and its capture, fixed input/seed, camera, viewport, pixel density,
+quality, and browser/adapter. Confirm the app is doing its intended work: the profiler's
+own animation callbacks can continue even when the app stops drawing.
 
 ```bash
-npx gpu-perf-agent agent --url http://127.0.0.1:5173 --out reports/base.json
-# After a change, repeat with the same settings:
-npx gpu-perf-agent agent --url http://127.0.0.1:5173 --out reports/candidate.json
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --api webgpu --out reports/base.json
+# After the change, use identical capture settings:
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --api webgpu --out reports/candidate.json
 npx gpu-perf-agent agent --base reports/base.json --candidate reports/candidate.json
 ```
 
-`agent` uses instrumentation, six 250 ms samples, and two warmups. It saves full evidence and prints a bounded digest with up to three warnings. `--json` prints structured compact output. Use the saved report for detailed recommendations and measurements. Missing evidence is not a zero measurement.
+Choose the app's API (`webgpu`, `webgl2`, or `webgl`); omit `--api` when unknown.
+`agent` enables instrumentation, six fixed 250 ms samples and two warmups. Its bounded
+digest points to saved measurements on disk; use `--json` for machine-readable output.
+Page logs retain bounded examples with exact error totals and explicit omission counts.
+Read only the relevant report fields, rather than loading the entire report into context.
 
-For repeated captures, reuse Chrome:
+For asynchronous initialization, add `--wait-for-hook` when the app exposes
+`globalThis.__gpuReportBench`, or `--wait-condition 'window.ready === true'` when it
+has a real readiness signal. With persistent network traffic, use
+`--wait-until domcontentloaded` plus explicit readiness. For local HTML use
+`--file page.html --file-root .`; bundled apps generally need their normal dev server.
 
-```bash
-npx gpu-perf-agent serve --port 9099 --auto-instrument
-npx gpu-perf-agent agent --server http://127.0.0.1:9099 --url http://127.0.0.1:5173 --out reports/candidate.json
-```
+## Diagnose, change, confirm
 
-Each job gets a fresh browser context by default. Use `--context shared` only for intentional stateful measurements. Configure browser launch flags on `serve`. Paths in HTTP jobs are resolved on the service machine. `run --cdp 9222` also attaches to an existing debug-enabled Chrome; it creates profiling pages and leaves the browser running afterward.
+Check `diagnostics.validity`, signal counts, and actual rendering first. Failed or
+missing measurements need repair before optimization. Missing GPU time is not zero.
+Check `diagnostics.signal.gpuTiming` when present: mixed or changing timing scopes
+cannot establish a GPU mean, even when every sample contains a number.
+Recommendations and code hints are hypotheses: inspect the implicated source and
+evidence before applying them.
 
-## Choosing measurement settings
+| Observed signal | Next useful evidence |
+| --- | --- |
+| FPS pinned at refresh rate | GPU timestamps or a fixed-work throughput measurement |
+| Slow frames / high p95 | Reproduce the spike; inspect CPU work, uploads and pipeline creation |
+| High GPU time | Time relevant passes; separate arithmetic, bandwidth, overdraw and dispatch costs |
+| Growing allocations | Repeat the same lifecycle and verify resource release |
 
-- `--file page.html --file-root .` serves local HTML and its project imports. A running dev server is preferable for bundled applications.
-- `--api webgpu`, `--api webgl2`, or `--api webgl` avoids unrelated API probes; `auto` probes WebGPU and WebGL2.
-- `--wait-for-hook` waits for asynchronous `globalThis.__gpuReportBench` setup. `--wait-condition 'window.ready === true'` supports custom readiness, bounded by `--wait-condition-timeout` in milliseconds.
-- Keep fixed sampling for comparisons. `--adaptive` may stop after three samples when FPS CV is below 1.5%; it is a turnaround aid, not proof of statistical convergence or GPU stability.
-- `--preset confirm` provides 15 × 500 ms samples with four warmups. Use `ab` with `--base-url`, `--candidate-url`, and `--rounds 4` to interleave A/B runs in one browser. Local alternatives are `--base-file` and `--candidate-file`.
-- `--trace` adds Chrome diagnostics; `--minimal-trace` limits categories to GPU events. `--raw-trace` retains the trace. Keep tracing settings identical between compared captures.
-- `--html` writes an interactive HTML report; `--html-out` sets its path. `--screenshot` saves a PNG. Screenshot capture alone does not establish visual equivalence.
-- `--executable-path` or `CHROME_PATH` selects a browser. The optional `--runner playwright` needs Playwright installed separately.
+Read [measurement.md](references/measurement.md) for timing integration, bottleneck
+choices, fast fixed-work hook sampling, confirmation commands, budgets, or inconclusive results.
 
-## Interpreting evidence
+Make a focused change, check rendered and numerical output, then recapture identically.
+Use quick captures for exploration; confirm promising changes with repeated evidence
+on the primary metric. Exit `0` includes inconclusive comparisons; inspect the metric's
+status, confidence interval and evidence method. Use `--metric health.gpuFrameMs.mean`
+on agent comparisons to keep GPU timing visible; this focuses output, not the gate.
+Exit `1` means regression or command
+error; `2` means invalid/incompatible evidence. Do not waive mismatches to manufacture
+a win. The tool checks capture options and available environment identity; missing
+metadata and complete scene equivalence still require verification.
 
-Read `diagnostics.validity` before `summary.verdict`. Failed hooks, uncaught runtime errors, missing requested capture data, and missing workload measurements invalidate a run. Inspect `inPage.samples`, `pageEvents`, and the validity issues before comparing it.
+Keep a change when its benefit repeats, output checks pass, and relevant costs remain
+acceptable. Stop when the requested budget is met or tested candidates yield no supported
+gain; do not iterate just to make the verdict excellent. Deliver the retained changes,
+before/after metric and uncertainty, correctness result, report paths, and reproduction
+command. State unmeasured hardware/workload limits.
 
-Exit codes: `0` means a valid capture or passing comparison, `1` means an execution error or regression, and `2` means invalid measurements or incompatible comparison settings. `--allow-mismatch` can waive configuration differences but cannot waive invalid measurements.
+## Keep iteration cheap
 
-Independent captures use Welch confidence intervals. `--paired` is only appropriate for genuinely matched samples; interleaved A/B comparisons pair rounds automatically. A regression's interval must cross the allowed threshold. Metrics without enough repeated evidence are labeled `threshold-only`. Budget files can set absolute limits and per-metric regression thresholds; a missing budget metric invalidates the gate.
+For multiple captures, reuse Chrome via `serve` or the MCP server. Keep isolated contexts
+and serialize measurements; parallel agents can inspect code and prepare candidates while
+one owns timed runs. Read [transports.md](references/transports.md) for persistent CLI,
+MCP, readiness options and bounded `inspect` queries for saved reports.
 
-`summary` includes frame time, FPS, available GPU timing, tracked allocations, draw pressure, structured warnings, and detailed recommendations. API counters describe observed operations, not measured pipeline stall duration. Declared allocation totals are not physical VRAM residency or proof of leaks. rAF timing measures browser frame cadence; GPU duration requires timing hooks. Confirm a recommendation against the workload before changing code.
-
-Use the smallest useful capture, change the suspected bottleneck, and repeat with identical settings. Report uncertainty, unsupported APIs, missing metrics, and visual differences alongside any claimed improvement.
-
-## MCP and API access
-
-`npx gpu-perf-agent mcp` starts the stdio JSON-RPC server with `profile_webgpu` and `compare_webgpu_reports`. MCP profiling retains three 500 ms samples and adaptive mode by default; override sampling arguments when comparing. Responses include text and the full report. Node exports include `runReport`, `FastCDPHarness`, `compareReports`, `generateHtmlReport`, and the detailed digest helpers under `gpu-perf-agent/agent`.
+Trace, deep-memory sampling, and forced GC are diagnostic tools with overhead; enable
+them only for a specific question and match settings across comparisons. Screenshots
+help check rendering but require inspection/comparison to establish visual correctness.
+Allocation totals estimate declared storage, not physical VRAM residency; operation
+counts do not measure pipeline stalls or prove a resource leak.

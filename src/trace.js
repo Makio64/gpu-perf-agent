@@ -80,103 +80,88 @@ export async function stopChromeTrace(session, { timeoutMs = 30000, maxBytes = 1
 
 export function summarizeTrace(trace) {
   const events = Array.isArray(trace?.traceEvents) ? trace.traceEvents : [];
-  const completeEvents = events.filter((event) => event.ph === "X" && typeof event.dur === "number");
-  const gpuEvents = events.filter((event) => /(^|,|\.)gpu|webgpu|dawn|webgl|gl_/i.test(`${event.cat || ""} ${event.name || ""}`));
-  const frameEvents = events.filter((event) => /DrawFrame|BeginFrame|FramePresented|CompositeLayers/i.test(event.name || ""));
-  const memoryEvents = events.filter((event) => {
+  const frameNames = new Map();
+  const gpuNames = new Map();
+  const gpuDurations = [];
+  const topComplete = [];
+  const topGPU = [];
+  const memoryPaths = new Map();
+  let minTimestamp = Infinity;
+  let maxTimestamp = -Infinity;
+  let frameCount = 0;
+  let gpuCount = 0;
+  let memoryCount = 0;
+
+  // Classify once without retaining several additional arrays of trace events.
+  // Exact GPU percentiles still require durations, but never the event objects.
+  for (const event of events) {
+    if (typeof event.ts === "number") {
+      if (event.ts < minTimestamp) minTimestamp = event.ts;
+      if (event.ts > maxTimestamp) maxTimestamp = event.ts;
+    }
+    if (event.ph === "X") addTopCompleteEvent(topComplete, event, 15);
+
+    const name = event.name || "(unnamed)";
     const text = `${event.cat || ""} ${event.name || ""}`;
-    return event.ph === "v" || /memory|dump/i.test(text);
-  });
+    if (/(^|,|\.)gpu|webgpu|dawn|webgl|gl_/i.test(text)) {
+      gpuCount += 1;
+      gpuNames.set(name, (gpuNames.get(name) || 0) + 1);
+      if (Number.isFinite(event.dur)) gpuDurations.push(event.dur / 1000);
+      addTopCompleteEvent(topGPU, event, 12);
+    }
+    if (/DrawFrame|BeginFrame|FramePresented|CompositeLayers/i.test(event.name || "")) {
+      frameCount += 1;
+      frameNames.set(name, (frameNames.get(name) || 0) + 1);
+    }
+    if (event.ph === "v" || /memory|dump/i.test(text)) {
+      memoryCount += 1;
+      collectMemoryNumbers(event.args, "", (path, value) => {
+        const normalizedPath = path.replace(/^dumps\./, "");
+        const previous = memoryPaths.get(normalizedPath);
+        if (previous) {
+          previous.maxBytes = Math.max(previous.maxBytes, value);
+          previous.samples += 1;
+        } else memoryPaths.set(normalizedPath, { maxBytes: Math.max(0, value), path: normalizedPath, samples: 1 });
+      });
+    }
+  }
 
   return {
-    durationMs: traceDurationMs(events),
+    durationMs: minTimestamp === Infinity || maxTimestamp === -Infinity ? null : (maxTimestamp - minTimestamp) / 1000,
     eventCount: events.length,
     frames: {
-      eventCount: frameEvents.length,
-      topNames: topNames(frameEvents, 12)
+      eventCount: frameCount,
+      topNames: topNames(frameNames, 12)
     },
     gpu: {
-      completeDurationMs: numericStats(gpuEvents.filter((event) => typeof event.dur === "number").map((event) => event.dur / 1000)),
-      eventCount: gpuEvents.length,
-      topCompleteEvents: topCompleteEvents(gpuEvents, 12),
-      topNames: topNames(gpuEvents, 15)
+      completeDurationMs: numericStats(gpuDurations),
+      eventCount: gpuCount,
+      topCompleteEvents: topGPU,
+      topNames: topNames(gpuNames, 15)
     },
-    memory: summarizeMemoryEvents(memoryEvents),
-    topCompleteEvents: topCompleteEvents(completeEvents, 15)
+    memory: {
+      eventCount: memoryCount,
+      topBytePaths: [...memoryPaths.values()].filter((item) => item.maxBytes > 0)
+        .sort((a, b) => b.maxBytes - a.maxBytes).slice(0, 20)
+    },
+    topCompleteEvents: topComplete
   };
 }
 
-function traceDurationMs(events) {
-  let min = Infinity;
-  let max = -Infinity;
-  for (const event of events) {
-    if (typeof event.ts !== "number") {
-      continue;
-    }
-    if (event.ts < min) {
-      min = event.ts;
-    }
-    if (event.ts > max) {
-      max = event.ts;
-    }
-  }
-  if (min === Infinity || max === -Infinity) {
-    return null;
-  }
-  return (max - min) / 1000;
-}
-
-function topNames(events, limit) {
-  const counts = new Map();
-  for (const event of events) {
-    const key = event.name || "(unnamed)";
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-
+function topNames(counts, limit) {
   return Array.from(counts, ([name, count]) => ({ count, name }))
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
 }
 
-function topCompleteEvents(events, limit) {
-  const top = [];
-  for (const event of events) {
-    if (!Number.isFinite(event.dur)) continue;
-    const durationMs = event.dur / 1000;
-    if (top.length === limit && durationMs <= top[top.length - 1].durationMs) continue;
-    const entry = { cat: event.cat || null, durationMs, name: event.name || "(unnamed)" };
-    const index = top.findIndex(item => item.durationMs < durationMs);
-    top.splice(index < 0 ? top.length : index, 0, entry);
-    if (top.length > limit) top.pop();
-  }
-  return top;
-}
-
-function summarizeMemoryEvents(memoryEvents) {
-  const pathMax = new Map();
-  const pathSamples = new Map();
-
-  for (const event of memoryEvents) {
-    collectMemoryNumbers(event.args, "", (path, value) => {
-      const normalizedPath = path.replace(/^dumps\./, "");
-      pathMax.set(normalizedPath, Math.max(pathMax.get(normalizedPath) || 0, value));
-      pathSamples.set(normalizedPath, (pathSamples.get(normalizedPath) || 0) + 1);
-    });
-  }
-
-  const topPaths = Array.from(pathMax, ([path, maxBytes]) => ({
-    maxBytes,
-    path,
-    samples: pathSamples.get(path) || 0
-  }))
-    .filter((item) => item.maxBytes > 0)
-    .sort((a, b) => b.maxBytes - a.maxBytes)
-    .slice(0, 20);
-
-  return {
-    eventCount: memoryEvents.length,
-    topBytePaths: topPaths
-  };
+function addTopCompleteEvent(top, event, limit) {
+  if (!Number.isFinite(event.dur)) return;
+  const durationMs = event.dur / 1000;
+  if (top.length === limit && durationMs <= top[top.length - 1].durationMs) return;
+  const entry = { cat: event.cat || null, durationMs, name: event.name || "(unnamed)" };
+  const index = top.findIndex(item => item.durationMs < durationMs);
+  top.splice(index < 0 ? top.length : index, 0, entry);
+  if (top.length > limit) top.pop();
 }
 
 function collectMemoryNumbers(value, path, onNumber, seen = new WeakSet(), depth = 0) {

@@ -45,6 +45,12 @@ export function normalizeOptions(input = {}, { requireTarget = true } = {}) {
   for (const key of ['autoInstrument', 'gc', 'headful', 'trace', 'deepMemory', 'waitForHook', 'adaptive', 'minimalTrace', 'screenshot', 'visualValidation']) {
     if (options[key] != null && typeof options[key] !== 'boolean') throw new TypeError(`${key} must be a boolean.`);
   }
+  options.samplingMode ??= 'frames';
+  if (!['frames', 'hook'].includes(options.samplingMode)) throw new TypeError('samplingMode must be frames or hook.');
+  if (options.samplingMode === 'hook') {
+    if (options.adaptive) throw new TypeError('adaptive requires frames samplingMode; hook mode does not observe frame pacing.');
+    if (options.waitForHook === undefined) options.waitForHook = true;
+  }
   options.cdpUrl ??= options.cdp ?? options.webSocketUrl;
   if (options.cdpUrl != null && (typeof options.cdpUrl !== "string" || !options.cdpUrl.trim())) throw new TypeError("cdpUrl must be a port or browser HTTP/WebSocket URL.");
   if (options.cdpUrl && (options.angle || options.channel || options.executablePath || options.headful || options.chromiumArgs?.length)) throw new TypeError("Browser launch flags cannot be changed when attaching over CDP.");

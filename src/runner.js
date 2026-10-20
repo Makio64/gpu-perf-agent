@@ -6,6 +6,7 @@ import { finalizeReport } from "./analysis.js";
 import { installAutoInstrumentation } from "./browser/auto-instrument.js";
 import { collectInPage } from "./injected.js";
 import { createFileTarget } from "./static-server.js";
+import { capturePlaywrightPageEvents, withCaptureDiagnostics } from "./page-events.js";
 import { DEFAULT_TRACE_CATEGORIES, MINIMAL_TRACE_CATEGORIES, startChromeTrace, stopChromeTrace, summarizeTrace } from "./trace.js";
 
 export async function runReport(options = {}) {
@@ -36,6 +37,7 @@ export async function runReport(options = {}) {
   let trace = null;
   let traceSummary = null;
   let traceError = null;
+  let pageEvents;
 
   try {
     const context = await browser.newContext({
@@ -46,7 +48,7 @@ export async function runReport(options = {}) {
       await context.addInitScript(installAutoInstrumentation, options.autoInstrumentOptions || {});
     }
     const page = await context.newPage();
-    const pageEvents = capturePageEvents(page);
+    pageEvents = capturePlaywrightPageEvents(page);
     const session = await context.newCDPSession(page);
     const browserSession = typeof browser.newBrowserCDPSession === "function"
       ? await browser.newBrowserCDPSession()
@@ -69,9 +71,11 @@ export async function runReport(options = {}) {
       waitUntil: options.waitUntil || "networkidle"
     });
 
-    if (options.waitCondition) await page.waitForFunction(options.waitCondition, undefined, {timeout: options.waitConditionTimeoutMs});
+    // Hook-only workloads need no animation loop, including during readiness.
+    const readinessPolling = options.samplingMode === "hook" ? { polling: 50 } : {};
+    if (options.waitCondition) await page.waitForFunction(options.waitCondition, undefined, {timeout: options.waitConditionTimeoutMs, ...readinessPolling});
     if (options.waitForHook) {
-      await page.waitForFunction(name => typeof globalThis[name] === "function", options.hookName || "__gpuReportBench", { timeout: options.timeoutMs });
+      await page.waitForFunction(name => typeof globalThis[name] === "function", options.hookName || "__gpuReportBench", { timeout: options.timeoutMs, ...readinessPolling });
     }
     const cdpBefore = await cdpSnapshot(session, options);
     let evaluationTimer;
@@ -83,6 +87,7 @@ export async function runReport(options = {}) {
       deepMemory: Boolean(options.deepMemory),
       hookName: options.hookName,
       samples: Number(options.samples ?? 5),
+      samplingMode: options.samplingMode,
       slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
       warmup: Number(options.warmup ?? 1)
     });
@@ -134,7 +139,7 @@ export async function runReport(options = {}) {
       host: hostInfo(),
       inPage,
       options: reportOptions(options, launchArgs),
-      pageEvents,
+      ...pageEvents.snapshot(),
       schemaVersion: 2,
       target: {
         file: target.file || null,
@@ -149,6 +154,8 @@ export async function runReport(options = {}) {
         summary: traceSummary
       }
     }, options);
+  } catch (error) {
+    throw withCaptureDiagnostics(error, pageEvents);
   } finally {
     try { await browser.close(); }
     finally { await target.close?.(); }
@@ -191,31 +198,6 @@ function chromiumArgs(options) {
   }
 
   return args;
-}
-
-function capturePageEvents(page) {
-  const events = [];
-  page.on("console", (message) => {
-    events.push({
-      location: message.location(),
-      text: message.text(),
-      type: `console.${message.type()}`
-    });
-  });
-  page.on("pageerror", (error) => {
-    events.push({
-      error: plainError(error),
-      type: "pageerror"
-    });
-  });
-  page.on("requestfailed", (request) => {
-    events.push({
-      failure: request.failure()?.errorText || null,
-      type: "requestfailed",
-      url: request.url()
-    });
-  });
-  return events;
 }
 
 async function cdpSnapshot(session, options) {
@@ -271,7 +253,8 @@ function reportOptions(options, launchArgs) {
     browserChannel: options.channel || null,
     chromiumArgs: launchArgs,
     contextMode: options.contextMode,
-    frameObservation: "wall-clock",
+    samplingMode: options.samplingMode,
+    frameObservation: options.samplingMode === "hook" ? "disabled" : "wall-clock",
     adaptive: Boolean(options.adaptive),
     minimalTrace: Boolean(options.minimalTrace),
     waitCondition: options.waitCondition ?? null,

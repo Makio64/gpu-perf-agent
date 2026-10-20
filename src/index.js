@@ -9,6 +9,7 @@ export { macOSProfilerStatus, recordMacOSXctrace } from "./native/macos-xctrace.
 export { autoInstrumentationSource, installAutoInstrumentation } from "./browser/auto-instrument.js";
 export { normalizeOptions, PROFILING_PRESETS } from "./options.js";
 export { compactReport, comparisonExitCode, formatAgentReport, formatAgentComparison } from "./output.js";
+export { inspectReport, validateInspectOptions } from "./inspect.js";
 
 export { summarizeReport, formatDiagnostics } from "./diagnostics.js";
 export { generateHtmlReport } from "./html-report.js";

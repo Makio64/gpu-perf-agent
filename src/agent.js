@@ -5,6 +5,12 @@
 
 import { analyzeReport, summarizeReport } from "./diagnostics.js";
 import { compareReports } from "./compare.js";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { normalizeOptions, numberOption } from "./options.js";
+import { comparisonExitCode, formatAgentComparison, formatAgentReport, formatGpuTimingSignal } from "./output.js";
+import { reportValidity } from "./validity.js";
 
 /**
  * Generates an ultra-dense, high-signal Markdown digest for LLM context windows.
@@ -19,11 +25,11 @@ export function generateAgentDigest(report) {
   const fps = summary.fps != null ? summary.fps.toFixed(1) : "--";
   const cadence = summary.cadence
     ? `${summary.cadence.hz} Hz${summary.cadence.hitRate != null ? ` (${(summary.cadence.hitRate * 100).toFixed(1)}% hits)` : ""}`
-    : "uncapped";
+    : "unavailable";
   const frameMs = summary.frameTimeMsMean != null ? summary.frameTimeMsMean.toFixed(2) : "--";
   const p95 = summary.frameTimeMsP95 != null ? summary.frameTimeMsP95.toFixed(1) : "--";
   const gpuMs = summary.gpuFrameMsMean != null ? summary.gpuFrameMsMean.toFixed(2) : null;
-  const vram = summary.trackedVram?.totalMiB ?? 0;
+  const vram = summary.trackedVram?.totalMiB;
   const texCount = summary.trackedVram?.textureCount ?? 0;
   const bufCount = summary.trackedVram?.bufferCount ?? 0;
   const leaks = summary.trackedVram?.leakedResources ?? 0;
@@ -43,8 +49,9 @@ export function generateAgentDigest(report) {
     `# WebGPU Profiling Digest`,
     `- **Verdict**: ${verdict} | **FPS**: ${fps} (Cadence: ${cadence})`,
     `- **Frame Time**: ${frameMs}ms (p95: ${p95}ms)${gpuMs != null ? ` | **GPU Time**: ${gpuMs}ms` : ""}`,
-    `- **VRAM**: ${vram.toFixed(1)} MiB (${bufCount} buffers, ${texCount} textures)${leaks > 0 ? ` | ⚠️ Leaked: ${leaks}` : ""}`,
-    `- **Pipelines**: ${syncCount} sync stalls, ${asyncCount} async, ${shaderModules} modules`,
+    analysis.signal?.gpuTiming ? `- ${formatGpuTimingSignal(analysis.signal.gpuTiming)}` : null,
+    `- **VRAM**: ${Number.isFinite(vram) ? vram.toFixed(1) : "--"} MiB (${bufCount} buffers, ${texCount} textures)${leaks > 0 ? ` | ⚠️ Leaked: ${leaks}` : ""}`,
+    `- **Pipelines**: ${syncCount} sync creations, ${asyncCount} async, ${shaderModules} modules`,
     `- **WebGPU Ops**: ${draws} draws/frame, ${dispatches} dispatches | ${newBg} bind groups created`,
     warmup ? `- **Warmup**: ${warmup.durationMs}ms${warmup.lagSpikeMs ? ` (lag spike: ${warmup.lagSpikeMs}ms)` : ""}` : null,
     "",
@@ -142,20 +149,52 @@ export function getMcpToolDefinitions() {
   return [
     {
       name: "profile_webgpu",
-      description: "Profile a WebGPU or WebGL2 web application to capture frame rates, GPU pass duration, VRAM memory footprints, pipeline stalls, and bind group churn.",
+      description: "Profile WebGPU/WebGL with a reused browser and isolated contexts. Returns a bounded digest and saved report path; use that path for comparisons or selective inspection. Quick defaults: 6 fixed 250ms samples and 2 warmups. GPU timings require workload instrumentation.",
       inputSchema: {
         type: "object",
         properties: {
           url: { type: "string", description: "Target URL to profile" },
           file: { type: "string", description: "Local HTML file path to serve and profile" },
-          samples: { type: "number", description: "Number of samples (default: 3 for fast agent turnaround)", default: 3 },
-          durationMs: { type: "number", description: "Duration in milliseconds per sample (default: 500)", default: 500 },
-          adaptive: { type: "boolean", description: "Enable early stopping when frame rate stabilizes (default: true)", default: true },
+          fileRoot: { type: "string", description: "Root directory for serving local HTML and its imports" },
+          preset: { type: "string", enum: ["quick", "confirm", "profile", "default"], default: "quick" },
+          samples: { type: "integer", minimum: 1, maximum: 10000, description: "Override preset sample count (quick: 6)" },
+          durationMs: { type: "number", minimum: 1, maximum: 3600000, description: "Override milliseconds per sample (quick: 250)" },
+          warmup: { type: "integer", minimum: 0, maximum: 10000, description: "Override warmup count (quick: 2)" },
+          samplingMode: { type: "string", enum: ["frames", "hook"], default: "frames", description: "Frames observes frame pacing. Hook requires a benchmark hook and samples its returned metrics without frame observation; adaptive sampling is unavailable." },
+          adaptive: { type: "boolean", description: "Early-stop exploratory runs only; fixed samples support comparisons", default: false },
           autoInstrument: { type: "boolean", description: "Hook WebGPU/WebGL2 APIs to track VRAM and pipelines (default: true)", default: true },
-          trace: { type: "boolean", description: "Include Chrome DevTools trace summary", default: false },
-          screenshot: { type: "boolean", description: "Capture a canvas screenshot for visual validation", default: false }
+          api: { type: "string", enum: ["auto", "webgpu", "webgl", "webgl2"], default: "auto" },
+          viewport: { type: "string", description: "WIDTHxHEIGHT; keep identical across comparisons", default: "1280x720" },
+          deviceScaleFactor: { type: "number", minimum: 0.1, maximum: 8, default: 1, description: "Device pixel ratio; keep identical across comparisons" },
+          hookName: { type: "string", description: "Benchmark function name (default: __gpuReportBench)" },
+          waitForHook: { type: "boolean", description: "Wait for the benchmark hook before sampling; defaults to true in hook mode, false in frames mode" },
+          waitCondition: { type: "string", description: "JavaScript readiness expression evaluated before sampling" },
+          waitConditionTimeoutMs: { type: "number", minimum: 1 },
+          waitUntil: { type: "string", enum: ["load", "domcontentloaded", "networkidle", "commit"] },
+          timeoutMs: { type: "number", minimum: 1 },
+          trace: { type: "boolean", description: "Include Chrome trace summary (profile preset enables this)" },
+          screenshot: { type: "boolean", description: "Save a screenshot artifact and return its path", default: false },
+          includeReport: { type: "boolean", description: "Also return full raw report inline; expensive context opt-in", default: false }
         },
+        additionalProperties: false,
         oneOf: [{ required: ["url"] }, { required: ["file"] }]
+      }
+    },
+    {
+      name: "inspect_webgpu_report",
+      description: "Inspect bounded evidence from a saved capture, comparison, or A/B artifact without launching a browser. Request one section or exact metric instead of loading the full report. Artifact paths refer to this server's filesystem; omitted data stays in the file.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          reportPath: { type: "string", description: "Saved report or comparison JSON path on this server" },
+          section: { type: "string", enum: ["overview", "metrics", "samples", "errors", "environment", "instrumentation", "trace"], default: "overview" },
+          metric: { type: "string", description: "Exact comparison metric key; requires section metrics" },
+          offset: { type: "integer", minimum: 0, description: "Zero-based page offset", default: 0 },
+          limit: { type: "integer", minimum: 1, maximum: 10, description: "Maximum selected records", default: 3 },
+          runIndex: { type: "integer", minimum: 0, description: "Zero-based run in an A/B artifact" }
+        },
+        additionalProperties: false,
+        required: ["reportPath"]
       }
     },
     {
@@ -166,8 +205,11 @@ export function getMcpToolDefinitions() {
         properties: {
           baseReportPath: { type: "string", description: "File path to base report JSON" },
           candidateReportPath: { type: "string", description: "File path to candidate report JSON" },
-          thresholdPercent: { type: "number", description: "Maximum allowed regression percentage (default: 5)", default: 5 }
+          primaryMetric: { type: "string", description: "Metric key to include in the digest, even if passing. Display focus only; all metrics are still evaluated." },
+          thresholdPercent: { type: "number", minimum: 0, description: "Maximum allowed regression percentage (default: 5)", default: 5 },
+          paired: { type: "boolean", description: "Use only for genuinely matched samples", default: false }
         },
+        additionalProperties: false,
         required: ["baseReportPath", "candidateReportPath"]
       }
     }
@@ -180,105 +222,194 @@ export function getMcpToolDefinitions() {
 export async function runMcpServer(options = {}) {
   const input = options.input || process.stdin;
   const output = options.output || process.stdout;
-  const readline = (await import("node:readline")).createInterface({
-    input,
-    output: null,
-    terminal: false
-  });
-
+  const reportDirectory = path.resolve(options.reportDirectory || "reports/mcp");
+  const maxQueue = numberOption(options.maxQueue ?? 8, "maxQueue", { min: 1, max: 1000, integer: true });
+  const readline = (await import("node:readline")).createInterface({ input, terminal: false });
   const tools = getMcpToolDefinitions();
+  // A factory also allows deterministic lifecycle tests without starting a browser.
+  const createHarness = options.createHarness || (async () => {
+    const { FastCDPHarness } = await import("./fast-cdp-runner.js");
+    return FastCDPHarness.launch();
+  });
+  const pending = new Set();
+  let harnessPromise = null;
+  let profileQueue = Promise.resolve();
+  let profileCount = 0;
+  let closing = null;
+  let accepting = true;
 
   function sendResponse(id, result, error = null) {
-    const res = { jsonrpc: "2.0", id };
-    if (error) {
-      res.error = error;
-    } else {
-      res.result = result;
+    if (!output.destroyed && !output.writableEnded) {
+      output.write(JSON.stringify({ jsonrpc: "2.0", id, ...(error ? { error } : { result }) }) + "\n");
     }
-    output.write(JSON.stringify(res) + "\n");
   }
 
-  readline.on("line", async (line) => {
-    if (!line.trim()) return;
-    try {
-      const msg = JSON.parse(line);
-      const { id, method, params } = msg;
-
-      if (method === "tools/list") {
-        sendResponse(id, { tools });
-        return;
-      }
-
-      if (method === "tools/call") {
-        const { name, arguments: args = {} } = params || {};
-        try {
-          if (name === "profile_webgpu") {
-            const { runFastReport: runReport } = await import("./fast-cdp-runner.js");
-            const report = await runReport({
-              url: args.url,
-              file: args.file,
-              samples: Number(args.samples ?? 3),
-              durationMs: Number(args.durationMs ?? 500),
-              adaptive: args.adaptive ?? true,
-              autoInstrument: args.autoInstrument ?? true,
-              trace: Boolean(args.trace),
-              screenshot: Boolean(args.screenshot)
-            });
-            const digest = generateAgentDigest(report);
-            sendResponse(id, {
-              content: [{ type: "text", text: digest }],
-              isError: report.diagnostics?.validity?.valid === false,
-              report
-            });
-            return;
-          }
-
-          if (name === "compare_webgpu_reports") {
-            const { loadReport } = await import("./compare.js");
-            const base = await loadReport(args.baseReportPath);
-            const cand = await loadReport(args.candidateReportPath);
-            const digest = generateAgentCompareDigest(base, cand, {thresholdPercent: args.thresholdPercent});
-            sendResponse(id, {
-              content: [{ type: "text", text: digest }]
-            });
-            return;
-          }
-
-          sendResponse(id, null, { code: -32601, message: `Tool not found: ${name}` });
-          return;
-        } catch (toolErr) {
-          sendResponse(id, {
-            content: [{ type: "text", text: `Error executing ${name}: ${toolErr?.message || String(toolErr)}` }],
-            isError: true
-          });
-          return;
-        }
-      }
-
-      if (method === "initialize") {
-        sendResponse(id, {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: {} },
-          serverInfo: { name: "gpu-perf-agent", version: "2.1.1" }
-        });
-        return;
-      }
-
-      // Default ping / notification handler
-      if (id != null) {
-        sendResponse(id, {});
-      }
-    } catch (err) {
-      // JSON parse error or malformed input
-      if (typeof output?.write === "function") {
-        output.write(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }) + "\n");
-      }
-    }
-  });
-
-  return {
-    close() {
+  function close() {
+    accepting = false;
+    if (!closing) closing = Promise.resolve().then(async () => {
       readline.close();
+      try {
+        await Promise.allSettled([...pending]);
+        if (harnessPromise) await (await harnessPromise).close();
+      } finally {
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+        input.off("error", onInputError);
+        output.off("error", onInputError);
+      }
+    });
+    return closing;
+  }
+  function onSignal() { void close().catch(() => { process.exitCode = 1; }); }
+  function onInputError() { void close().catch(() => {}); }
+  if (input === process.stdin) {
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+  }
+  input.on("error", onInputError);
+  readline.on("error", onInputError);
+  output.on("error", onInputError);
+  readline.once("close", onInputError);
+
+  async function profile(args) {
+    const { includeReport, ...requested } = args;
+    // Validate before creating artifacts or starting Chrome; do not coerce booleans.
+    const runOptions = normalizeOptions({ preset: "quick", autoInstrument: true, adaptive: false, ...requested });
+    if (profileCount >= maxQueue) throw new Error("Profiler queue is full; retry after a pending profile completes.");
+    profileCount += 1;
+    const job = profileQueue.then(async () => {
+      const stem = path.join(reportDirectory, `profile-${randomUUID()}`);
+      const reportPath = `${stem}.json`;
+      if (runOptions.screenshot) runOptions.screenshotPath = `${stem}.png`;
+      await mkdir(reportDirectory, { recursive: true });
+      let report;
+      try {
+        harnessPromise ??= Promise.resolve().then(createHarness).catch(error => { harnessPromise = null; throw error; });
+        report = await (await harnessPromise).run(runOptions);
+      } catch (error) {
+        const message = String(error?.message || error);
+        report = {
+          schemaVersion: 2, createdAt: new Date().toISOString(), options: runOptions,
+          runError: { message, ...(error.code ? { code: error.code } : {}) },
+          ...(error.captureDiagnostics ? {
+            pageEvents: error.captureDiagnostics.pageEvents,
+            pageEventSummary: error.captureDiagnostics.pageEventSummary
+          } : {}),
+          diagnostics: { validity: { valid: false, issues: [{ code: "run-failed", message }] } }
+        };
+      }
+      // Invalid captures and runner failures remain available for diagnosis too.
+      await writeFile(reportPath, JSON.stringify(report), { flag: "wx" });
+      const validity = report.diagnostics?.validity || reportValidity(report);
+      const recommendations = report.diagnostics?.recommendations || report.summary?.recommendations || [];
+      const digest = formatAgentReport(report);
+      const actions = recommendations.slice(0, 3).map(item => `- ${brief(item.title)}: ${brief(item.evidence)} Action: ${brief(item.action)}`);
+      if (recommendations.length > 3) actions.push(`+${recommendations.length - 3} more recommendations in report.`);
+      return {
+        content: [{ type: "text", text: [digest, ...actions, `Report: ${reportPath}`, ...(report.artifacts?.screenshotPath ? [`Screenshot: ${report.artifacts.screenshotPath}`] : [])].join("\n") }],
+        structuredContent: {
+          ok: validity.valid,
+          reportPath,
+          verdict: report.summary?.verdict || null,
+          validity: { valid: validity.valid, issueCount: validity.issues.length, issues: validity.issues.slice(0, 5).map(issue => ({ code: brief(issue.code), message: brief(issue.message) })) },
+          recommendationCount: recommendations.length,
+          ...(report.pageEventSummary ? { pageEventSummary: report.pageEventSummary } : {}),
+          ...(report.artifacts?.screenshotPath ? { screenshotPath: report.artifacts.screenshotPath } : {})
+        },
+        isError: !validity.valid,
+        ...(includeReport ? { report } : {})
+      };
+    });
+    profileQueue = job.catch(() => {});
+    try { return await job; } finally { profileCount -= 1; }
+  }
+
+  async function handle(msg) {
+    const { id, method, params } = msg;
+    if (method === "initialize") {
+      sendResponse(id, {
+        protocolVersion: ["2024-11-05", "2025-03-26", "2025-06-18"].includes(params?.protocolVersion) ? params.protocolVersion : "2025-06-18",
+        capabilities: { tools: {} }, serverInfo: { name: "gpu-perf-agent", version: "2.1.1" }
+      });
+    } else if (method === "tools/list") sendResponse(id, { tools });
+    else if (method === "ping") sendResponse(id, {});
+    else if (method === "tools/call") {
+      const { name, arguments: args = {} } = params || {};
+      const tool = tools.find(tool => tool.name === name);
+      if (!tool) return sendResponse(id, null, { code: -32601, message: `Tool not found: ${name}` });
+      try {
+        validateToolArguments(args, tool.inputSchema);
+        if (name === "profile_webgpu") return sendResponse(id, await profile(args));
+        if (name === "inspect_webgpu_report") {
+          const { inspectReport, validateInspectOptions } = await import("./inspect.js");
+          const { reportPath, ...requested } = args;
+          const inspectOptions = validateInspectOptions(requested);
+          const fullPath = path.resolve(reportPath);
+          const report = JSON.parse(await readFile(fullPath, "utf8"));
+          const inspection = { reportPath: fullPath, ...inspectReport(report, inspectOptions) };
+          return sendResponse(id, {
+            content: [{ type: "text", text: JSON.stringify(inspection) }],
+            structuredContent: inspection,
+            isError: false
+          });
+        }
+        const { loadReport } = await import("./compare.js");
+        const [base, candidate] = await Promise.all([loadReport(args.baseReportPath), loadReport(args.candidateReportPath)]);
+        const result = compareReports(base, candidate, { thresholdPercent: args.thresholdPercent, paired: args.paired });
+        const exitCode = comparisonExitCode(result);
+        const status = exitCode === 2 ? "INVALID" : exitCode === 1 ? "REGRESSION" : result.summary.inconclusive ? "INCONCLUSIVE" : result.summary.improved ? "IMPROVED" : "PASSED";
+        const comparisonPath = path.join(reportDirectory, `comparison-${randomUUID()}.json`);
+        await mkdir(reportDirectory, { recursive: true });
+        await writeFile(comparisonPath, JSON.stringify({ ...result, baseReportPath: path.resolve(args.baseReportPath), candidateReportPath: path.resolve(args.candidateReportPath) }), { flag: "wx" });
+        const priority = { regression: 0, missing: 1, inconclusive: 2, improved: 3 };
+        const changedRows = result.rows.filter(row => row.status !== "pass").sort((a, b) => (priority[a.status] ?? 4) - (priority[b.status] ?? 4));
+        const compactRow = row => ({ key: brief(row.key), status: row.status, base: row.base, candidate: row.candidate, deltaPercent: row.deltaPercent, evidence: row.evidence, confidence95: row.confidence95 });
+        const primary = args.primaryMetric ? result.rows.find(row => row.key === args.primaryMetric) : null;
+        sendResponse(id, {
+          content: [{ type: "text", text: `Status: ${status}\n${formatAgentComparison(result, { primaryMetric: args.primaryMetric }).slice(0, 6000)}\nComparison: ${comparisonPath}` }],
+          structuredContent: {
+            ok: exitCode === 0, status, exitCode, comparisonPath, summary: result.summary,
+            changedRowCount: changedRows.length,
+            changedRows: changedRows.slice(0, 5).map(compactRow),
+            ...(args.primaryMetric ? { primaryMetric: primary ? compactRow(primary) : { key: brief(args.primaryMetric), status: "not-measured" } } : {})
+          },
+          isError: exitCode === 2
+        });
+      } catch (error) {
+        sendResponse(id, { content: [{ type: "text", text: `Error executing ${name}: ${brief(error?.message || error)}` }], isError: true });
+      }
+    } else sendResponse(id, null, { code: -32601, message: `Method not found: ${method}` });
+  }
+
+  readline.on("line", line => {
+    if (!accepting || !line.trim()) return;
+    let msg;
+    try { msg = JSON.parse(line); }
+    catch { return sendResponse(null, null, { code: -32700, message: "Parse error" }); }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string"
+        || (Object.hasOwn(msg, "id") && msg.id !== null && !["string", "number"].includes(typeof msg.id))) {
+      return sendResponse(null, null, { code: -32600, message: "Invalid Request" });
     }
-  };
+    // Notifications never receive a response or initiate profiling work.
+    if (!Object.hasOwn(msg, "id")) return;
+    const job = handle(msg).catch(error => sendResponse(msg.id, null, { code: -32603, message: brief(error?.message || error) }));
+    pending.add(job);
+    void job.finally(() => pending.delete(job));
+  });
+  return { close };
+}
+
+const brief = value => String(value ?? "").replace(/[\r\n]+/g, " ").slice(0, 280);
+
+function validateToolArguments(args, schema) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw new TypeError("Tool arguments must be an object.");
+  for (const key of schema.required || []) if (!(key in args)) throw new TypeError(`${key} is required.`);
+  for (const [key, value] of Object.entries(args)) {
+    const rule = schema.properties[key];
+    if (!rule) throw new TypeError(`Unknown argument: ${key}.`);
+    if (rule.type === "integer" ? !Number.isInteger(value) : typeof value !== rule.type) throw new TypeError(`${key} must be ${rule.type}.`);
+    if (typeof value === "number" && (!Number.isFinite(value) || value < (rule.minimum ?? -Infinity) || value > (rule.maximum ?? Infinity))) throw new TypeError(`${key} is outside its allowed range.`);
+    if (typeof value === "string" && !value.trim()) throw new TypeError(`${key} must not be empty.`);
+    if (rule.enum && !rule.enum.includes(value)) throw new TypeError(`Invalid ${key}: ${value}.`);
+  }
 }

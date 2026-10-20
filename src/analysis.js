@@ -1,6 +1,7 @@
 import { numericStats } from "./stats.js";
 import { analyzeReport as detailedAnalysis, summarizeReport } from "./diagnostics.js";
-import { reportValidity } from "./validity.js";
+import { reportValidity, pageErrorCounts } from "./validity.js";
+import { collectGpuTimingEvidence, gpuTimingMetadata, gpuTimingValidityIssues } from "./gpu-timing.js";
 
 const MIB = 1024 * 1024;
 
@@ -22,12 +23,17 @@ export function finalizeReport(report, options = {}) {
 export function analyzeReport(report, options = {}) {
   const inPage = report?.inPage || {};
   const source = inPage.summary || {};
+  const samplingMode = report?.options?.samplingMode ?? inPage.config?.samplingMode ?? "frames";
   const frameTimeMsMean = number(source.frameTimeMsMean?.mean);
   const frameTimeMsP95 = number(source.frameTimeMsP95?.p95 ?? source.frameTimeMsP95?.mean);
   const frameTimeMsMax = number(source.frameTimeMsMax?.max);
   const fps = number(source.fps?.mean);
-  const gpuTimes = collectGpuFrameTimes(inPage.samples || []);
+  const gpuTiming = collectGpuTimingEvidence(report);
+  const gpuTimes = gpuTiming.status === "single-scope" ? gpuTiming.values.filter(Number.isFinite) : [];
   const gpuFrameStats = numericStats(gpuTimes);
+  const validity = reportValidity(report);
+  validity.issues.push(...gpuTimingValidityIssues(gpuTiming));
+  validity.valid = validity.issues.length === 0;
   const trackedVram = trackedVramSummary(inPage);
   const elapsedSeconds = totalElapsedMs(inPage.samples || []) / 1000;
   const heapDelta = number(inPage.memory?.delta?.performanceMemory?.usedJSHeapSize)
@@ -41,6 +47,7 @@ export function analyzeReport(report, options = {}) {
   const drawCalls = sumMatchingCounters(counters, /(^|\.)(drawCalls)$/i);
   const drawCallsPerFrame = observedFrameCount > 0 ? drawCalls / observedFrameCount : null;
   const pageErrors = (report?.pageEvents || []).filter((event) => event.type === "pageerror" || event.type === "requestfailed");
+  const pageErrorCount = pageErrorCounts(report).total;
   const sampleErrors = (inPage.samples || []).filter(sample => sample.error).map(sample => ({ index: sample.index, ...sample.error }));
   const warnings = buildWarnings({
     autoInstrument: Boolean(report?.options?.autoInstrument),
@@ -49,10 +56,12 @@ export function analyzeReport(report, options = {}) {
     frameTimeMsMean,
     frameTimeMsP95,
     gpuFrameMsMean: gpuFrameStats?.mean ?? null,
+    gpuTiming,
     hookFound: Boolean(inPage.hook?.found),
     jsHeapGrowthMBPerSec,
     observedFrameCount,
-    pageErrors: [...pageErrors, ...sampleErrors],
+    pageErrorCount: pageErrorCount + sampleErrors.length,
+    samplingMode,
     slowFrameCount,
     trackedVram,
     thresholds: thresholdOptions(report, options)
@@ -81,17 +90,20 @@ export function analyzeReport(report, options = {}) {
 
   return {
     diagnostics: {
-      validity: reportValidity(report),
+      validity,
       instrumentation: {
         enabled: Boolean(inPage.instrumentation?.after),
         errors: inPage.instrumentation?.after?.errors || []
       },
       pageErrors,
+      pageErrorCount,
       sampleErrors,
       signal: {
         gpuTimingSamples: gpuTimes.length,
+        gpuTiming: gpuTimingMetadata(gpuTiming),
         hookFound: Boolean(inPage.hook?.found),
         observedFrameCount,
+        samplingMode,
         sampleCount: number(source.sampleCount) || inPage.samples?.length || 0
       },
       warningCount: warnings.length,
@@ -111,14 +123,25 @@ function buildWarnings(metrics) {
     warnings.push({ code, message, metric, recommendation, severity, threshold, value });
   };
 
-  if (metrics.pageErrors.length > 0) {
+  if (metrics.gpuTiming.status === "ambiguous" || metrics.gpuTiming.status === "invalid") {
+    add(
+      metrics.gpuTiming.status === "invalid" ? "invalid-gpu-timing" : "ambiguous-gpu-timing",
+      "low",
+      metrics.gpuTiming.status === "invalid" ? "Negative GPU durations prevent a valid health GPU timing summary."
+        : "Multiple or changing GPU timing scopes prevent a single health GPU timing summary.",
+      "Inspect the exact custom timing metrics for each scope; compare the same workload scope across captures.",
+      "gpuTiming", metrics.gpuTiming.timingCount, null
+    );
+  }
+
+  if (metrics.pageErrorCount > 0) {
     add(
       "page-errors",
       "high",
-      `${metrics.pageErrors.length} page or network error(s) occurred during profiling.`,
+      `${metrics.pageErrorCount} page, network or benchmark error(s) occurred during profiling.`,
       "Fix runtime and failed-request errors before trusting performance measurements.",
       "pageErrors",
-      metrics.pageErrors.length,
+      metrics.pageErrorCount,
       0
     );
   }
@@ -133,7 +156,7 @@ function buildWarnings(metrics) {
       2
     );
   }
-  if (metrics.hookFound && (metrics.observedFrameCount < 2 || (metrics.fps == null && metrics.frameTimeMsMean == null))) {
+  if (metrics.samplingMode !== "hook" && metrics.hookFound && (metrics.observedFrameCount < 2 || (metrics.fps == null && metrics.frameTimeMsMean == null))) {
     add(
       "limited-frame-signal",
       "medium",
@@ -294,35 +317,6 @@ function trackedVramSummary(inPage) {
     textureMiB: (number(textures.bytes) || 0) / MIB,
     totalMiB: after.totalBytes / MIB
   };
-}
-
-function collectGpuFrameTimes(samples) {
-  const values = [];
-  for (const sample of samples) {
-    collectGpuNumbers(sample?.measurement, "", values);
-  }
-  return values;
-}
-
-function collectGpuNumbers(value, path, out, depth = 0) {
-  if (depth > 8 || value == null) {
-    return;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const key = path.split(".").at(-1) || "";
-    if (/^(gpuMs|gpuFrameMs|gpuTimeMs|gpuDurationMs)$/i.test(key)) {
-      out.push(value);
-    } else if (/^(gpuNs|gpuTimeNs|gpuDurationNs)$/i.test(key)) {
-      out.push(value / 1e6);
-    }
-    return;
-  }
-  if (typeof value !== "object") {
-    return;
-  }
-  for (const [key, item] of Object.entries(value)) {
-    collectGpuNumbers(item, path ? `${path}.${key}` : key, out, depth + 1);
-  }
 }
 
 function thresholdOptions(report, options) {

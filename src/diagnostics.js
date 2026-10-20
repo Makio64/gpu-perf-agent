@@ -29,43 +29,32 @@ export function analyzeReport(report) {
   const frameTime = summary.frameTimeMsMean?.mean;
   const jsHeapDelta = summary.jsHeapDeltaBytes?.mean;
 
-  // 0. Visual Validation
+  // 0. Screenshot capture is an artifact, not a visual correctness test.
   if (report.screenshotError != null) {
     addRecommendation({
       id: "visual-validation-error",
       category: "rendering",
-      severity: "critical",
-      title: "Visual Validation Error",
+      severity: "warning",
+      title: "Screenshot Capture Error",
       evidence: String(report.screenshotError),
-      action: "Check page console logs or WebGPU canvas configuration.",
-      warningText: `Visual Validation Error: ${report.screenshotError}`,
-      agentPrompt: "Verify that the WebGPU canvas element exists and webgpu context is successfully created without device loss."
+      action: "Resolve the capture error, then inspect the image against the expected scene.",
+      warningText: `Screenshot capture failed: ${report.screenshotError}. Visual correctness remains unchecked.`,
+      agentPrompt: "Inspect the screenshot capture error and page diagnostics; retry capture and compare the image with the expected rendering."
     });
   } else if (report.screenshotSize != null) {
     if (report.screenshotSize === 0) {
       addRecommendation({
         id: "visual-validation-empty",
         category: "rendering",
-        severity: "critical",
-        title: "Visual Validation Failed",
-        evidence: "Captured screenshot is completely empty/0 bytes",
-        action: "Ensure canvas is rendering before screenshot capture.",
-        warningText: "Visual Validation Failed: Captured screenshot is completely empty/0 bytes.",
-        agentPrompt: "Ensure requestAnimationFrame is running and at least one render pass submits before benchmarking."
-      });
-    } else if (report.screenshotSize < 5000) {
-      addRecommendation({
-        id: "visual-validation-blank",
-        category: "rendering",
         severity: "warning",
-        title: "Visual Validation Warning",
-        evidence: `Captured screenshot is extremely small (${report.screenshotSize} bytes)`,
-        action: "The canvas might be rendering a blank/clear-color screen. Verify scene assets and draw calls.",
-        warningText: `Visual Validation Failed: Captured screenshot is extremely small (${report.screenshotSize} bytes). The canvas might be rendering a blank/clear-color screen.`,
-        agentPrompt: "Check if geometry or camera positions are properly set so meshes are within the frustum."
+        title: "Empty Screenshot Artifact",
+        evidence: "Screenshot capture returned a zero-byte artifact",
+        action: "Inspect capture diagnostics and retry; an empty artifact cannot establish what the page rendered.",
+        warningText: "Screenshot capture returned 0 bytes. Visual correctness remains unchecked.",
+        agentPrompt: "Resolve the empty screenshot artifact, then inspect a decodable image against the expected rendering."
       });
-    } else {
-      highlights.push(`Visual Validation Passed: Canvas/page rendered content successfully (${(report.screenshotSize / 1024).toFixed(1)} KiB screenshot).`);
+    } else if (Number.isFinite(report.screenshotSize) && report.screenshotSize > 0) {
+      highlights.push(`Screenshot captured (${(report.screenshotSize / 1024).toFixed(1)} KiB); visual correctness has not been checked.`);
     }
   }
 
@@ -122,21 +111,21 @@ export function analyzeReport(report) {
   }
 
   // Frame time variance (stuttering)
-  const elapsedMs = summary.elapsedMs;
-  if (elapsedMs && elapsedMs.p95 && elapsedMs.mean) {
-    const variance = elapsedMs.p95 - elapsedMs.mean;
-    if (variance > 8) {
+  const frameP95 = summary.frameTimeMsP95?.mean;
+  if (Number.isFinite(frameP95) && Number.isFinite(frameTime)) {
+    const tailGap = frameP95 - frameTime;
+    if (tailGap > 8) {
       addRecommendation({
         id: "frame-time-variance",
         category: "rendering",
         severity: "warning",
-        title: "High Frame Time Variance",
-        evidence: `p95: ${elapsedMs.p95.toFixed(1)}ms vs mean: ${elapsedMs.mean.toFixed(1)}ms (variance ${variance.toFixed(1)}ms)`,
-        action: "Investigate micro-stuttering, sporadic GC pauses, or periodic shader/compute dispatch spikes.",
-        value: variance,
+        title: "Wide Frame Time Tail",
+        evidence: `Mean per-sample frame p95: ${frameP95.toFixed(1)}ms vs mean frame time: ${frameTime.toFixed(1)}ms (gap ${tailGap.toFixed(1)}ms)`,
+        action: "Correlate the slow frames with CPU tasks, GC events and GPU timings to identify the cause.",
+        value: tailGap,
         threshold: 8,
         unit: "ms",
-        warningText: `High frame time variance (p95: ${elapsedMs.p95.toFixed(1)}ms vs mean: ${elapsedMs.mean.toFixed(1)}ms). This indicates micro-stuttering or garbage collection pauses.`,
+        warningText: `Wide frame time tail (mean per-sample p95: ${frameP95.toFixed(1)}ms vs mean frame time: ${frameTime.toFixed(1)}ms). Investigate the corresponding slow frames.`,
         agentPrompt: "Investigate frame spikes: look for synchronous pipeline compilation, large texture uploads, or JS memory garbage collection during rendering."
       });
     }
@@ -230,12 +219,12 @@ export function analyzeReport(report) {
       severity: "critical",
       title: "High VRAM Footprint",
       evidence: `${(totalVramMB).toFixed(1)} MiB of GPU resources allocated`,
-      action: "Optimize textures (mipmaps, compression) and release unused buffers to prevent OOM on mobile/low-end devices.",
+      action: "Identify unused or duplicated allocations and release resources whose lifetime has ended; measure memory against the target device budget.",
       value: totalVramMB,
       threshold: 500,
       unit: "MiB",
       warningText: `High VRAM footprint: ${(totalVramMB).toFixed(1)} MiB of GPU resources allocated. This may cause page crashes on mobile or low-end devices.`,
-      agentPrompt: "Compress large textures, generate mipmaps, downscale over-resolution maps, and destroy inactive buffers."
+      agentPrompt: "Inspect live GPU allocations and resource lifetimes. Remove unused or duplicated resources, then verify identical rendering and measure the memory change."
     });
   }
 
@@ -248,13 +237,13 @@ export function analyzeReport(report) {
         severity: "warning",
         title: "High Texture Memory",
         evidence: `${texMB.toFixed(1)} MiB across ${textureCount} textures`,
-        action: "Recommend using compressed textures (KTX2, Basis Universal) and ensuring unused textures are disposed.",
+        action: "Dispose unused textures; evaluate supported compressed formats against the required image quality and measured allocation savings.",
         value: texMB,
         threshold: 100,
         unit: "MiB",
-        warningText: `Texture memory is high: ${texMB.toFixed(1)} MiB across ${textureCount} textures. Recommend using compressed textures (KTX2, Basis Universal) and ensuring unused textures are disposed.`,
+        warningText: `Texture memory is high: ${texMB.toFixed(1)} MiB across ${textureCount} textures. Inspect resource lifetimes and evaluate compression with visual verification.`,
         codeHint: "// Use KTX2 compressed textures:\nimport { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';\n// Or 'mini3/loaders/ktx2'",
-        agentPrompt: "Convert uncompressed PNG/JPEG textures to GPU-compressed KTX2/Basis format to cut VRAM by 70-80%."
+        agentPrompt: "Measure texture allocations, identify unused or duplicated textures, and compare candidate compression formats for byte savings and visual fidelity."
       });
     }
   }
@@ -266,13 +255,13 @@ export function analyzeReport(report) {
       severity: "warning",
       title: "Large Buffer Count",
       evidence: `${bufferCount} buffers allocated`,
-      action: "High draw call count or missing vertex/index buffer consolidation. Suggest merging geometries or using InstancedMesh.",
+      action: "Check buffer lifetimes and draw submission measurements; consolidate compatible buffers only where repeated allocation or submission overhead is measured.",
       value: bufferCount,
       threshold: 200,
       unit: "buffers",
-      warningText: `Large buffer count: ${bufferCount} buffers allocated. High draw call count or missing vertex/index buffer consolidation. Suggest merging geometries or using InstancedMesh.`,
+      warningText: `Large buffer count: ${bufferCount} buffers allocated. The count alone does not establish draw-call pressure or a resource leak.`,
       codeHint: "// Consolidate geometry buffers:\nimport { InstancedMesh } from 'three'; // or 'mini3/instancing'",
-      agentPrompt: "Combine geometries into an InstancedMesh or BatchedMesh to consolidate buffer allocations."
+      agentPrompt: "Inspect buffer lifetimes and CPU submission timings. If consolidation addresses measured overhead, batch compatible geometries while preserving materials, draw order and rendered output."
     });
   }
 
@@ -295,7 +284,7 @@ export function analyzeReport(report) {
   }
 
   // 4. GPU Timing / Execution Duration
-  const gpuTimes = report.inPage?.samples?.map((s) => s.measurement?.gpuTimeNs || s.gpuTimeNs).filter((t) => t != null && t > 0) || [];
+  const gpuTimes = reportedTimings(report, "gpuTimeNs", true);
   if (gpuTimes.length > 0) {
     const sumGpuTime = gpuTimes.reduce((a, b) => a + b, 0);
     const meanGpuMs = (sumGpuTime / gpuTimes.length) / 1000000;
@@ -305,22 +294,22 @@ export function analyzeReport(report) {
         category: "gpu-execution",
         severity: "warning",
         title: "High GPU Execution Time",
-        evidence: `Average ${meanGpuMs.toFixed(2)} ms per frame`,
-        action: "The GPU is heavily loaded. Optimize shaders, simplify geometry, or reduce lights/shadows.",
+        evidence: `Average reported GPU duration: ${meanGpuMs.toFixed(2)} ms; timing scope is defined by the workload`,
+        action: "Identify the expensive timed passes and optimize redundant work or memory access while preserving the workload and rendered output.",
         value: meanGpuMs,
         threshold: 13,
         unit: "ms",
-        warningText: `High GPU execution time: average ${meanGpuMs.toFixed(2)} ms per frame. The GPU is heavily loaded. Optimize shaders, simplify geometry, or reduce lights/shadows.`,
-        agentPrompt: "GPU time exceeds 13ms. Profile fragment shader complexity, lower shadow map resolutions, or implement LOD/culling."
+        warningText: `High reported GPU duration: average ${meanGpuMs.toFixed(2)} ms. Confirm the timing scope and investigate the expensive passes.`,
+        agentPrompt: "Inspect GPU timestamps for the reported scope. Benchmark optimizations that preserve scene complexity, resolution, lighting, and output; verify the result visually."
       });
     } else {
-      highlights.push(`GPU frame execution time is healthy: average ${meanGpuMs.toFixed(2)} ms.`);
+      highlights.push(`Reported GPU execution duration: average ${meanGpuMs.toFixed(2)} ms.`);
     }
   }
 
   // Compute vs Render pass balance
-  const computeTimes = report.inPage?.samples?.map(s => s.measurement?.computeTimeNs).filter(t => t != null && t > 0) || [];
-  const renderTimes = report.inPage?.samples?.map(s => s.measurement?.renderTimeNs).filter(t => t != null && t > 0) || [];
+  const computeTimes = reportedTimings(report, "computeTimeNs");
+  const renderTimes = reportedTimings(report, "renderTimeNs");
   if (computeTimes.length > 0 && renderTimes.length > 0) {
     const meanComputeMs = (computeTimes.reduce((a, b) => a + b, 0) / computeTimes.length) / 1e6;
     const meanRenderMs = (renderTimes.reduce((a, b) => a + b, 0) / renderTimes.length) / 1e6;
@@ -329,14 +318,13 @@ export function analyzeReport(report) {
         id: "compute-bound",
         category: "gpu-execution",
         severity: "warning",
-        title: "Compute Bound Execution",
+        title: "Compute Timing Exceeds Render Timing",
         evidence: `Compute passes take ${meanComputeMs.toFixed(2)} ms vs render passes ${meanRenderMs.toFixed(2)} ms`,
-        action: "Tune compute workgroup sizes, optimize memory access patterns, or reduce dispatch grid dimensions.",
+        action: "Confirm these timings cover comparable work, then benchmark workgroup sizes and memory access changes while preserving the dispatch workload and results.",
         value: meanComputeMs,
         threshold: 10,
         unit: "ms",
-        codeHint: "@workgroup_size(64, 1, 1)\nvar<workgroup> sharedTile: array<f32, 64>;",
-        agentPrompt: "Optimize compute kernels: leverage workgroup shared memory to avoid global storage buffer lookups, and align workgroups to 32 or 64 threads."
+        agentPrompt: "Profile the dominant compute passes. Benchmark workgroup and memory-access variants on the target GPU, retaining the same dispatch coverage and checking numerical correctness."
       });
     }
   }
@@ -349,16 +337,16 @@ export function analyzeReport(report) {
     addRecommendation({
       id: "pipeline-sync-stall",
       category: "pipeline",
-      severity: "critical",
-      title: "Synchronous Pipeline Compilation",
-      evidence: `${syncPipelines} synchronous pipeline compilation(s) detected`,
-      action: "Switch to device.createRenderPipelineAsync() or device.createComputePipelineAsync() to avoid main thread jank.",
+      severity: "warning",
+      title: "Synchronous Pipeline Creation",
+      evidence: `${syncPipelines} synchronous pipeline creation call(s) recorded; call duration and frame impact were not measured`,
+      action: "Locate these calls and measure their timing. Cache repeated pipelines or create them asynchronously during warmup if they affect the critical path.",
       value: syncPipelines,
       threshold: 0,
       unit: "pipelines",
-      warningText: `Synchronous pipeline creation detected (${syncPipelines} sync pipeline${syncPipelines > 1 ? "s" : ""}). Switch to createRenderPipelineAsync() to avoid main thread jank.`,
+      warningText: `Synchronous pipeline creation detected (${syncPipelines} sync pipeline${syncPipelines > 1 ? "s" : ""}). Measure call duration and placement before attributing frame stalls.`,
       codeHint: "// Use async pipeline creation:\nconst pipeline = await device.createRenderPipelineAsync(descriptor);",
-      agentPrompt: "Search codebase for device.createRenderPipeline or device.createComputePipeline and replace with createRenderPipelineAsync or pre-compile during warmup."
+      agentPrompt: "Locate device.createRenderPipeline/createComputePipeline calls and correlate their execution with frame or startup timings. Cache repeated pipelines or evaluate async creation in warmup while preserving readiness and rendering."
     });
   }
 
@@ -370,15 +358,15 @@ export function analyzeReport(report) {
       id: "bind-group-churn",
       category: "bindgroup",
       severity: "warning",
-      title: "High Bind Group Churn",
-      evidence: `${bindGroupsCreated} bind groups created during profiling`,
-      action: "Pool and reuse GPUBindGroup instances across frames rather than allocating them each frame.",
+      title: "High Recorded Bind Group Count",
+      evidence: `${bindGroupsCreated} creations recorded in the tracked snapshot; the total can include setup and warmup`,
+      action: "Check per-sample creation deltas; cache compatible bind groups if repeated render-loop allocation is confirmed.",
       value: bindGroupsCreated,
       threshold: 20,
       unit: "bind groups",
-      warningText: `High bind group churn (${bindGroupsCreated} bind groups created). Pool and reuse GPUBindGroup instances across frames.`,
+      warningText: `High recorded bind group count (${bindGroupsCreated} creations). Check per-sample deltas before attributing this to render-loop churn.`,
       codeHint: "// Cache and reuse bind groups across frames:\nconst bg = bindGroupPool.get(device, layout, entries);",
-      agentPrompt: "Find where device.createBindGroup is called inside the render loop and implement a BindGroupPool or cache."
+      agentPrompt: "Inspect device.createBindGroup call sites and per-sample deltas. If repeated creation is measured, cache groups whose device, layout, resources and offsets are unchanged."
     });
   }
 
@@ -409,12 +397,12 @@ export function analyzeReport(report) {
       severity: "warning",
       title: "High Compute Dispatch Count",
       evidence: `Average ${Math.round(dispatchCalls)} compute dispatches per frame`,
-      action: "Consolidate compute passes or increase workgroup dimensions to reduce kernel launch overhead.",
+      action: "Measure CPU dispatch overhead; evaluate pass fusion only where resource dependencies and numerical results can be preserved.",
       value: Math.round(dispatchCalls),
       threshold: 100,
       unit: "dispatches",
-      warningText: `High compute dispatch count: average ${Math.round(dispatchCalls)} dispatches per frame. Consolidate compute passes.`,
-      agentPrompt: "Merge smaller compute dispatches into unified multi-element passes or increase workgroup size."
+      warningText: `High compute dispatch count: average ${Math.round(dispatchCalls)} dispatches per frame. Measure dispatch overhead before changing pass structure.`,
+      agentPrompt: "Inspect CPU dispatch overhead and inter-pass dependencies. Benchmark fusion of compatible passes with identical dispatch coverage and verified numerical results."
     });
   }
 
@@ -428,12 +416,12 @@ export function analyzeReport(report) {
         severity: "warning",
         title: "Long Chrome GPU Thread Tasks",
         evidence: `Chrome GPU thread trace shows long tasks: average ${traceGpuMean.toFixed(2)} ms`,
-        action: "Look for heavy GPU pipeline compiles, large buffer transfers, or complex fragment shaders.",
+        action: "Inspect the named trace events and correlate them with GPU timestamps; GPU-thread task duration can include CPU work or waiting.",
         value: traceGpuMean,
         threshold: 13,
         unit: "ms",
         warningText: `Chrome GPU thread trace shows long tasks: average ${traceGpuMean.toFixed(2)} ms. Look for heavy GPU pipeline compiles or draw calls.`,
-        agentPrompt: "Chrome GPU thread is stalled. Look for shader compilation stalls, excessive GPU readbacks (mapAsync), or large staging buffer copies."
+        agentPrompt: "Inspect the long Chrome GPU-thread events and correlate them with pipeline creation, uploads, readbacks and GPU timestamp scopes before identifying the bottleneck."
       });
     }
   }
@@ -473,9 +461,7 @@ export function summarizeReport(report, diagnostics = null) {
     ? null
     : (jsHeapDelta / 1024 / 1024) / (elapsedMsVal / 1000);
 
-  const gpuTimes = report.inPage?.samples
-    ?.map((sample) => sample.measurement?.gpuTimeNs || sample.gpuTimeNs)
-    .filter((t) => Number.isFinite(t) && t > 0) || [];
+  const gpuTimes = reportedTimings(report, "gpuTimeNs", true);
   const gpuFrameMsMean = gpuTimes.length > 0
     ? (gpuTimes.reduce((a, b) => a + b, 0) / gpuTimes.length) / 1e6
     : null;
@@ -563,6 +549,12 @@ function computeVerdict(summary, analysis = null) {
 
 function finite(value) {
   return Number.isFinite(value) ? value : null;
+}
+
+function reportedTimings(report, key, legacy = false) {
+  return (report.inPage?.samples || [])
+    .map(sample => sample.measurement?.[key] ?? (legacy ? sample[key] : undefined))
+    .filter(value => Number.isFinite(value) && value >= 0);
 }
 
 function round2(value) {

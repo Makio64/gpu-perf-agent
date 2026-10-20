@@ -25,6 +25,52 @@ test("numericStats handles empty and zero-mean inputs", () => {
   assert.equal(numericStats([-1, 1]).coefficientOfVariation, null);
 });
 
+function sortedDeviationMedian(values) {
+  const numbers = values.filter(value => typeof value === "number" && Number.isFinite(value)).sort((a, b) => a - b);
+  if (!numbers.length) return null;
+  const median = percentile(numbers, 0.5);
+  return percentile(numbers.map(value => Math.abs(value - median)).sort((a, b) => a - b), 0.5);
+}
+
+test("MAD preserves subnormal rounding, overflowing deviations, signed zero and typed-array behavior", () => {
+  const fixtures = [
+    [], [NaN, Infinity, -Infinity, null, "1"], [7], [-0], [-0, 0], [0, -0, 0, -0],
+    [Number.MIN_VALUE, Number.MIN_VALUE], [-Number.MIN_VALUE, -Number.MIN_VALUE],
+    [3 * Number.MIN_VALUE, 3 * Number.MIN_VALUE], [-3 * Number.MIN_VALUE, -3 * Number.MIN_VALUE],
+    [-Number.MIN_VALUE, Number.MIN_VALUE], [Number.MIN_VALUE, Number.MIN_VALUE * 2],
+    [-Number.MAX_VALUE, Number.MAX_VALUE],
+    [-Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE],
+    [-Number.MAX_VALUE, -Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE],
+    [1, 1, 1, 1, 100], [1, 2, 3, 4, 1e100], [NaN, 1, null, 2, Infinity, 9],
+    new Int32Array([0, 1]), new Float32Array([0.1, 0.2, 0.3, 0.8]),
+    new Float64Array([Number.MIN_VALUE, Number.MIN_VALUE])
+  ];
+  for (const values of fixtures) {
+    const before = values.slice();
+    assert.deepEqual(numericStats(values)?.mad ?? null, sortedDeviationMedian(values));
+    assert.deepEqual(values, before, "statistics must not mutate their input");
+  }
+});
+
+test("MAD matches the sorted-deviation oracle across varied finite IEEE-754 values", () => {
+  let state = 0x71c89e2d;
+  const randomWord = () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+  const bits = new DataView(new ArrayBuffer(8));
+  for (let fixture = 0; fixture < 400; fixture += 1) {
+    const values = Array.from({ length: fixture % 131 + 1 }, () => {
+      bits.setUint32(0, randomWord());
+      bits.setUint32(4, randomWord());
+      return bits.getFloat64(0);
+    });
+    assert.deepEqual(numericStats(values)?.mad ?? null, sortedDeviationMedian(values), `fixture ${fixture}`);
+  }
+});
+
 test("percentile interpolates and handles boundaries", () => {
   assert.equal(percentile([], 0.5), null);
   assert.equal(percentile([7], 0.95), 7);

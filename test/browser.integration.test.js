@@ -59,7 +59,9 @@ test('persistent Chrome survives failed jobs, tracing and concurrent callers wit
     assert.equal(listenerCount(), initial);
     await assert.rejects(harness.run({ url, waitUntil: 'load', timeoutMs: 200 }), /Timed out/);
     assert.equal(listenerCount(), initial);
-    await assert.rejects(harness.run({ url: `${url}/hang`, waitUntil: 'load', trace: true, timeoutMs: 200 }), /timed out|timeout|terminated/i);
+    // Chrome can reject a timed-out evaluation as "Internal error". The contract
+    // here is rejection and clean recovery, which the following captures verify.
+    await assert.rejects(harness.run({ url: `${url}/hang`, waitUntil: 'load', trace: true, timeoutMs: 200 }), /timed out|timeout|terminated|Runtime\.evaluate: Internal error/i);
     assert.equal(listenerCount(), initial);
     const options = { file: path.resolve('fixtures/sibling-project/index.html'), fileRoot: path.resolve('fixtures/sibling-project'), waitUntil: 'load', timeoutMs: 3000 };
     const [first, second] = await Promise.all([harness.run({ ...options, trace: true }), harness.run(options)]);
@@ -239,16 +241,68 @@ test('CLI emits clean JSON with HTML artifacts and MCP profiles through the fast
     assert.equal(compact.ok,true);
     assert.match(await readFile(compact.htmlPath,'utf8'),/<!doctype html>/i);
     assert.equal(JSON.parse(await readFile(out,'utf8')).inPage.samples.length,3);
-    server = await runMcpServer({input,output});
-    const response = new Promise((resolve,reject) => {
-      const timer = setTimeout(() => reject(new Error('MCP profile timed out')),10000);
-      output.once('data',chunk => {clearTimeout(timer);resolve(JSON.parse(chunk.toString()));});
-    });
-    input.write(JSON.stringify({jsonrpc:'2.0',id:7,method:'tools/call',params:{name:'profile_webgpu',arguments:{file,samples:1,durationMs:40,autoInstrument:true}}})+'\n');
-    const message = await response;
+    server = await runMcpServer({input,output,reportDirectory:path.join(directory,'mcp')});
+    const call = (id, args) => {
+      const response = new Promise((resolve,reject) => {
+        const timer = setTimeout(() => reject(new Error('MCP profile timed out')),10000);
+        output.once('data',chunk => {clearTimeout(timer);resolve(JSON.parse(chunk.toString()));});
+      });
+      input.write(JSON.stringify({jsonrpc:'2.0',id,method:'tools/call',params:{name:'profile_webgpu',arguments:{file,samples:1,durationMs:40,warmup:0,waitUntil:'load',autoInstrument:true,...args}}})+'\n');
+      return response;
+    };
+    const message = await call(7, {screenshot:true});
     assert.equal(message.id,7);
     assert.equal(message.result.isError,false,JSON.stringify(message));
-    assert.equal(message.result.report.options.runner,'fast-cdp');
-    assert.equal(message.result.report.diagnostics.validity.valid,true);
-  } finally { server?.close(); input.destroy(); output.destroy(); await rm(directory,{recursive:true,force:true}); }
+    assert.equal(message.result.report,undefined);
+    const saved = JSON.parse(await readFile(message.result.structuredContent.reportPath,'utf8'));
+    assert.equal(saved.options.runner,'fast-cdp');
+    assert.equal(saved.diagnostics.validity.valid,true);
+    assert.ok((await readFile(message.result.structuredContent.screenshotPath)).byteLength > 100);
+    const full = await call(8, {includeReport:true});
+    assert.equal(full.result.report.options.runner,'fast-cdp');
+    assert.equal(full.result.report.browser.pid,saved.browser.pid);
+    assert.notEqual(full.result.structuredContent.reportPath,message.result.structuredContent.reportPath);
+  } finally { await server?.close(); input.destroy(); output.destroy(); await rm(directory,{recursive:true,force:true}); }
+});
+
+test('A/B CLI waits for async scene readiness and custom hooks with compact evidence', {skip: !enabled, timeout: 20000}, async () => {
+  const { writeFile, readFile } = await import('node:fs/promises');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'gpu-ab-ready-'));
+  const file = path.join(directory, 'scene.html');
+  const out = path.join(directory, 'ab.json');
+  try {
+    // Synthetic hook values test CLI readiness/transport, not GPU performance.
+    await writeFile(file, `<script>window.sceneReady = false; setTimeout(() => {
+      window.sceneReady = true;
+      window.measureScene = () => ({gpuTimeNs: 1000000, ready: window.sceneReady, density: devicePixelRatio});
+    }, 100);</script>`);
+    const result = await promisify(execFile)(process.execPath, [path.resolve('src/cli.js'), 'ab',
+      '--base-file', file, '--candidate-file', file, '--rounds', '3', '--samples', '1',
+      '--duration-ms', '60', '--warmup', '0', '--wait-until', 'domcontentloaded',
+      '--wait-condition', 'window.sceneReady === true', '--wait-condition-timeout', '3000',
+      '--wait-for-hook', '--hook', 'measureScene', '--timeout', '5000',
+      '--device-scale-factor', '2', '--out', out, '--agent'], {timeout:15000}).catch(error => {
+        if (error.code === 1 && error.stdout?.includes('Compare:')) return error;
+        throw error;
+      });
+    assert.match(result.stdout, /Compare:/);
+    assert.match(result.stdout, /Report:/);
+    assert.ok(result.stdout.length < 5000);
+    const report = JSON.parse(await readFile(out, 'utf8'));
+    assert.equal(report.comparison.validity.valid, true, JSON.stringify(report.comparison.validity));
+    assert.equal(report.comparison.compatibility.compatible, true, JSON.stringify(report.comparison.compatibility));
+    assert.equal(report.runs.length, 6);
+    for (const {report: run} of report.runs) {
+      assert.equal(run.options.waitUntil, 'domcontentloaded');
+      assert.equal(run.options.hookName, 'measureScene');
+      assert.equal(run.inPage.samples[0].measurement.ready, true);
+      assert.equal(run.inPage.samples[0].measurement.density, 2);
+    }
+    const gpu = report.comparison.rows.find(row => row.key === 'gpu.durationNs.mean');
+    assert.equal(gpu.evidence, 'paired-samples');
+    assert.equal(gpu.confidence95.low, 0);
+    assert.equal(gpu.confidence95.high, 0);
+  } finally { await rm(directory, {recursive:true, force:true}); }
 });

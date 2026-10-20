@@ -31,6 +31,8 @@ node src/cli.js agent --base reports/base.json --candidate reports/candidate.jso
 
 `agent` enables auto-instrumentation and the `quick` preset (6 × 250 ms, 2 warmups). Explicit sampling flags override these defaults. Its digest includes frame/GPU timing, memory, signal counts, and up to three actionable warnings. Missing measurements are shown as `n/a`. Use `--json` instead for structured output, or `run --agent` / `compare --agent` for the same concise format with your own defaults. Sampling stays fixed by default for reproducible comparisons. Opt into `--adaptive` to stop after at least three samples when FPS CV is below 1.5%; this checks FPS stability only, not GPU timing convergence.
 
+`doctor --quick --json` checks the local runtime and native profiler location without launching Chrome or enumerating Instruments templates. `xctrace.templatesProbed: false` means the template list was intentionally not queried. Full `doctor --json` retains browser capability probing and template enumeration.
+
 For repeated edits, keep Chrome running and connect the CLI to it:
 
 ```bash
@@ -54,7 +56,13 @@ npx gpu-perf-agent mcp
 
 Use `--wait-condition 'window.ready === true'` for custom readiness, with `--wait-condition-timeout` in milliseconds. `--minimal-trace` captures GPU categories only. `--visual-validation` saves a screenshot like `--screenshot`; it does not automatically compare images.
 
-The zero-dependency stdio MCP server exposes `profile_webgpu` and `compare_webgpu_reports`. MCP retains three 500 ms samples and adaptive mode by default; explicit arguments override these. The Node API also exports `generateHtmlReport`, `generateAgentDigest`, `generateAgentCompareDigest`, and `runMcpServer`. Detailed digest helpers are available through `gpu-perf-agent/agent`; unlike the bounded CLI digest, their size depends on the recommendations.
+The zero-dependency stdio MCP server exposes `profile_webgpu`, `compare_webgpu_reports`, and `inspect_webgpu_report`. Profiling lazily starts one Chrome process, reuses it across serialized jobs, and retains isolated contexts. Defaults match `agent`: six fixed 250 ms samples and two warmups. `preset`, explicit sampling options, `api`, and readiness arguments customize capture; use `tools/list` for the schema. Closing stdin or stopping the server drains accepted work and closes its browser.
+
+MCP saves full capture evidence under `reports/mcp` and returns a bounded digest with `structuredContent.reportPath`, validity, and artifact paths. Use those report paths for comparison. Invalid captures and execution failures also retain diagnostic JSON. `screenshot: true` saves a PNG; `includeReport: true` opts into the larger legacy inline `report` field. Earlier releases returned full reports by default and used three adaptive 500 ms samples, so clients depending on that behavior should send explicit sampling and output arguments. Artifact paths belong to the service machine.
+
+The Node API also exports `generateHtmlReport`, `generateAgentDigest`, `generateAgentCompareDigest`, and `runMcpServer`. Detailed digest helpers are available through `gpu-perf-agent/agent`; unlike the bounded CLI/MCP digest, their size depends on the recommendations.
+
+MCP comparisons save complete results at `structuredContent.comparisonPath` and return up to five changed rows with confidence intervals and evidence methods, prioritizing regressions. Set `primaryMetric` to include the selected row even when it passes or would otherwise be omitted. This focuses display only; all metrics are still evaluated. A requested absent metric reports `not-measured`. `status: "INCONCLUSIVE"` can accompany `ok: true`; this is a passing regression gate, not a confirmed gain. Invalid evidence sets `isError: true`.
 
 See [CHANGELOG.md](../CHANGELOG.md) for version 2 migration details and [skill/SKILL.md](../skill/SKILL.md) for the bundled agent workflow.
 
@@ -148,7 +156,18 @@ Verdicts are `excellent`, `good`, `needs-work`, or `poor`. Warnings contain stab
 
 `diagnostics.validity` describes whether the measurements can be trusted, separately from the performance verdict. Failed hooks, uncaught runtime errors, incomplete sampling, missing numeric evidence, and failures of explicitly requested API/instrumentation/trace capture invalidate a run. `run` still saves its full evidence, prints `ok: false` with `--json` (or `INVALID` in the agent digest), and exits `2`. Network request failures remain warnings because optional telemetry can fail without invalidating the workload.
 
-The full report also contains per-sample data, operation counters, API capabilities, browser metadata, console/runtime errors, CDP memory metrics, and optional trace summaries.
+The full report also contains per-sample data, operation counters, API capabilities, browser metadata, retained console/runtime errors, CDP memory metrics, and optional trace summaries.
+
+Both runners bound page diagnostics during capture: at most 200 routine console/log
+events, plus 50 each for uncaught exceptions, failed requests, console errors/assertions,
+and browser log errors. Payloads are bounded too (2,048 characters per string and 8,192
+text characters per event). `pageEvents` contains representative retained records;
+`pageEventSummary` exposes total, retained, dropped and shortened-event counts, category
+counts, retained category counts and limits. Error totals include dropped events, so a
+log flood cannot hide an invalid capture. Network failures remain warnings rather than
+automatically invalidating measurements. Old reports without counters use retained events.
+Thrown runner errors attach this evidence as `captureDiagnostics`; MCP saves it in its
+failed-report artifact when navigation or readiness fails.
 
 ## Standardized presets
 
@@ -162,6 +181,35 @@ Presets keep measurements comparable between agents:
 | default | 1 | 5 | 1000 ms | General profiling |
 
 Explicit `--samples`, `--duration-ms`, and `--warmup` values override a preset.
+
+### Fixed-work hook sampling
+
+For a compute benchmark that already awaits GPU timestamps or completed work, opt into
+`--sampling-mode hook` (`samplingMode: "hook"` in Node, HTTP and MCP). The profiler awaits
+each hook without running its rAF observer, initial frame settling, or GC frame settling.
+It still executes the configured warmups and samples and retains memory/instrumentation
+snapshots. This removes idle observation between fixed batches; it does not make the GPU
+workload itself faster. Natural rendering and frame pacing use the default `frames` mode.
+
+```bash
+npx gpu-perf-agent agent --url http://127.0.0.1:5173 --api webgpu \
+  --sampling-mode hook --wait-until domcontentloaded --out reports/compute.json
+```
+
+Hook mode requires the named benchmark hook. Readiness defaults to `waitForHook: true`;
+API callers can explicitly set false to fail immediately if it is absent at sampling.
+`durationMs` is passed to the hook but does not impose a minimum wait; the hook defines
+the amount of completed work. FPS-based adaptive stopping is incompatible. Missing
+observer FPS and frame percentiles are expected; hook-supplied metrics remain available.
+Reports record `options.samplingMode`, `options.frameObservation: "disabled"` and
+`inPage.sampling.mode`. Warmup frame settling and absent lag spikes are `null`.
+
+Do not time `queue.submit()` alone: the hook must await actual completion/readback.
+Reacquire baseline and candidate in the same mode with identical work and sampling
+settings. Comparisons reject different modes and aggregation rejects changed capture
+settings within a variant. Removing idle intervals changes scheduling and can affect GPU
+clocks/thermals, so timing across modes is not a valid application speedup comparison.
+Check installed help for this option when using a published version older than this source.
 
 Frame observation uses a wall-clock window of `durationMs`, even when animation callbacks stop in a hidden page. With fewer than two callbacks, FPS and frame-time statistics are unavailable (`null`), while successful hook timings remain usable. `observedFrames.observationWindowMs` records the actual observation duration; `durationMs` within that object is the span between observed frame timestamps. Hooks may take longer than the observation window, and a blocked page still depends on the overall capture timeout. Frame settling also has a bounded wait. `options.frameObservation: "wall-clock"` records this sampling method for compatibility checks with older reports. Reports flag insufficient frame signal instead of inventing a zero FPS measurement.
 
@@ -196,7 +244,46 @@ Use `--context shared` (Node/HTTP: `contextMode: "shared"`) when retaining stora
 
 The API accepts the same presets and validation as the runners. Invalid options return HTTP 400 before browser work; request bodies are limited to 64 KiB. Use `POST /run?format=compact` for a summary response without per-sample data. Full responses remain the default. A completed capture with invalid workload evidence returns HTTP 200 with `diagnostics.validity.valid: false` (and `ok: false` in compact mode), preserving its measurements for inspection. The health counter `failed` includes invalid captures; `completed` counts returned reports. HTTP errors use `{ "ok": false, "error": { "code": "...", "message": "..." } }`.
 
-`run --json` avoids repeating warnings in both summary and diagnostics. Full error details stay in the saved report. Reports from the fast runner also include `timings.navigationMs`, `samplingMs`, and `totalMs` (excluding browser launch and cleanup).
+`run --json` avoids repeating warnings in both summary and diagnostics. Bulky guidance, error lists, and nested text are bounded with total/omitted counts and a `truncation` object when applicable. Full details, including code hints, remain in the saved report. Reports from the fast runner also include `timings.navigationMs`, `samplingMs`, and `totalMs` (excluding browser launch and cleanup).
+
+## Selective saved-report inspection
+
+Use `inspect` when the compact capture digest does not expose the evidence you need:
+
+```bash
+npx gpu-perf-agent inspect --report reports/base.json --section metrics --metric health.gpuFrameMs.mean
+npx gpu-perf-agent inspect --report reports/base.json --section samples --offset 3 --limit 3
+npx gpu-perf-agent inspect --report reports/ab.json --run 0 --section errors
+```
+
+The command emits bounded JSON and never launches Chrome. It accepts captures, saved
+comparisons and A/B artifacts. Sections are `overview` (default), `metrics`, `samples`,
+`errors`, `environment`, `instrumentation` and `trace`. `--metric` selects an exact key
+from comparison metrics; use it with `--section metrics`. `--offset` and `--limit` page
+records (default limit 3, maximum 10). `--run` selects a zero-based A/B run before
+inspection. Select a run for A/B sample/error/instrumentation/trace details.
+
+Responses identify selected source indices, available totals, validity and omissions.
+Comparison selections also retain compatibility status and counts of differing or
+unverified fields; a selected metric alone does not establish a compatible comparison.
+Missing metrics remain distinct from measured zero. Error totals retain dropped-event
+counts from the saved capture. A successful inspection exits 0 even when its captured
+measurements are invalid; the returned validity describes that evidence. Files are
+still read and parsed in full on the tool host; the output bound reduces transferred
+context and never alters the original artifact.
+
+Capture validity is checked with current rules while preserving saved invalidity and
+run failures; disagreements with a saved validity flag are disclosed. Exact error totals
+stay unknown when counters are incomplete, with retained counts reported separately.
+The core selection is capped at 16 KiB; CLI adds the file path and MCP wraps and mirrors
+the selection in structured data and text. Check omissions before treating a page as
+complete evidence, and extract omitted details from the source when needed.
+
+Node callers can use `inspectReport(report, { section, metric, offset, limit, runIndex })`
+and `validateInspectOptions(options)` before file access. MCP exposes the same selection
+through `inspect_webgpu_report` with `reportPath`. Its bounded result is in
+`structuredContent` and JSON text for clients that only expose text content. Paths belong to the server, so
+inspection can retrieve selected evidence from a remote server's saved artifact.
 
 ## Interleaved A/B measurements
 
@@ -215,6 +302,20 @@ npx gpu-perf-agent ab \
 ```
 
 The output includes run order and duration, aggregate metrics, paired Student-t confidence intervals between matched rounds, regressions, improvements, and `inconclusive` changes. Failed rounds and metrics missing in any round invalidate the comparison, even if other rounds succeeded. Treat an inconclusive result as a request for more rounds rather than an improvement.
+
+GPU health means require one consistent timing scope. Capture metadata at
+`diagnostics.signal.gpuTiming` records that scope and unavailable/ambiguous/invalid
+reasons; aggregates preserve it at `gpuTiming`. Multiple GPU timing fields in a sample,
+scope changes, or negative durations cannot produce an aggregate GPU mean or confidence
+interval. Exact custom metrics remain available for deliberately selected pass timings.
+Keep one recognized `gpuMs`/`gpuTimeNs` field for the claimed aggregate and label extra
+pass details `durationMs`/`durationNs`. Scope mismatch or drift invalidates health
+comparisons rather than becoming a threshold-only improvement. Older raw captures are
+checked from their sample evidence; scope-less aggregates cannot prove health timing
+comparability. Saved comparison inspection displays original calculations, so use a
+fresh comparison of the original captures to apply current checks.
+
+For asynchronous scenes, `ab` accepts `--wait-until domcontentloaded`, `--wait-condition 'window.ready === true'`, `--wait-condition-timeout`, `--wait-for-hook`, `--hook`, `--timeout`, and `--device-scale-factor`. Both variants use the same readiness contract before every round. Use `--agent --metric health.gpuFrameMs.mean` instead of `--json` for a bounded digest focused on GPU timing. Full rounds and comparisons remain in `--out`; `--metric` does not exclude other regressions. Sampling still uses explicit `--samples`, `--duration-ms`, and `--warmup`; `ab` does not accept `--preset`.
 
 ## Baseline and candidate reports
 
@@ -237,7 +338,9 @@ The compare output includes:
 
 Independent report captures use [Welch unequal-variance intervals](https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm). `--paired` (Node API: `{ paired: true }`) is available for genuinely matched observations; A/B runs select it automatically. Incomplete pairs invalidate an explicitly paired comparison. The implementation uses conservative Student-t table values, including rounding fractional Welch degrees of freedom down.
 
-With at least three observations on each side (or three pairs), a mean change beyond the threshold must also have its entire 95% interval beyond that threshold to count as a confirmed regression or improvement. Otherwise it is `inconclusive`. Rows without enough observations, and raw maxima/percentiles, have `evidence: "threshold-only"`. A/B uses one metric value per round and can therefore estimate uncertainty for the mean of repeated per-round maxima or percentiles. Intervals assume independent observations or pairs; consecutive frames can be correlated. Use repeated rounds to confirm important changes.
+Comparisons also check available browser/version, host, GPU adapter/driver/backend, and meaningful Chromium launch settings. Temporary profiles, debug ports, process IDs, and target URLs are excluded from environment identity. Changed known fields make a comparison incompatible; old/redacted reports expose `compatibility.environment.unverifiedKeys` instead of inventing a match. A/B aggregation retains each round's environment and invalidates detected drift. Capability probes identify the environment, not necessarily the adapter selected by application code. Scene, input and output equivalence still require explicit verification.
+
+With at least three observations on each side (or three pairs), a mean change beyond the threshold must also have its entire 95% interval beyond that threshold to count as a confirmed regression or improvement. Otherwise it is `inconclusive`. Rows without enough observations, and raw maxima/percentiles, have `evidence: "threshold-only"`. GPU/compute/render means use the corresponding repeated hook measurements. The health GPU mean gets an interval only when each capture contains a single consistent GPU timing scope; mixed pass/frame scopes retain threshold-only evidence. A/B uses one metric value per round and can therefore estimate uncertainty for the mean of repeated per-round maxima or percentiles. Intervals assume independent observations or pairs; consecutive frames can be correlated. Use repeated rounds to confirm important changes.
 
 Exit code `1` means a regression or breached absolute budget (or a command error). Exit code `2` means invalid measurement evidence, lost candidate metrics, missing budget metrics, or differing profiling options such as viewport, tracing, readiness, and warmup. Empty reports always fail. `--allow-mismatch` permits deliberate option differences but cannot override invalid evidence. Inconclusive changes do not fail the default gate; automation should inspect `summary.inconclusive` when uncertainty requires more measurements. A passing comparison is not proof of equivalence.
 
@@ -283,7 +386,7 @@ globalThis.__gpuReportBench = async ({ phase, sampleIndex, durationMs, api }) =>
 
 For apps that create their benchmark hook after asynchronous initialization, add `--wait-for-hook` (`waitForHook: true` in the API). It waits for the named hook after navigation, bounded by `--timeout`, before detecting capabilities and warming up. This also lets you use `--wait-until domcontentloaded` on applications with persistent network requests. Without explicit readiness, a hook registered later may be missed.
 
-The runner observes `requestAnimationFrame` concurrently with the hook, so it retains independent frame-time and slow-frame measurements. Without a hook, it samples the page’s natural animation loop.
+In default `frames` mode the runner observes `requestAnimationFrame` concurrently with the hook, so it retains independent frame-time and slow-frame measurements. Without a hook, it samples the page’s natural animation loop. Explicit `hook` mode requires the hook and skips that observer.
 
 ## Precise GPU timestamps
 

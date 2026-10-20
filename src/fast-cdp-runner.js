@@ -9,6 +9,7 @@ import { finalizeReport } from "./analysis.js";
 import { autoInstrumentationSource } from "./browser/auto-instrument.js";
 import { collectInPage } from "./injected.js";
 import { createFileTarget } from "./static-server.js";
+import { captureCdpPageEvents, createPageEventCollector, withCaptureDiagnostics } from "./page-events.js";
 import { DEFAULT_TRACE_CATEGORIES, MINIMAL_TRACE_CATEGORIES, startChromeTrace, stopChromeTrace, summarizeTrace } from "./trace.js";
 
 export async function runFastReport(options = {}) {
@@ -130,6 +131,7 @@ export class FastCDPHarness {
         deepMemory: Boolean(options.deepMemory),
         hookName: options.hookName,
         samples: Number(options.samples ?? 5),
+        samplingMode: options.samplingMode,
         slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
         warmup: Number(options.warmup ?? 1)
       }, Number(options.timeoutMs ?? 60000));
@@ -181,7 +183,7 @@ export class FastCDPHarness {
         host: hostInfo(),
         inPage,
         options: reportOptions(options, this.launch.args),
-        pageEvents: page.events,
+        ...page.events.snapshot(),
         schemaVersion: 2,
         target: {
           file: target.file || null,
@@ -198,13 +200,13 @@ export class FastCDPHarness {
       }, options);
     } catch (error) {
       if (error.code === "CAPTURE_CLEANUP_FAILED") this.cleanupError = error;
-      throw error;
+      throw withCaptureDiagnostics(error, page?.events);
     } finally {
       try {
         if (tracing) await stopChromeTrace(this.browserSession, { timeoutMs: 5000 }).catch(() => {});
         if (page) await page.close();
       } catch (error) {
-        this.cleanupError = captureCleanupError(error);
+        this.cleanupError = withCaptureDiagnostics(captureCleanupError(error), page?.events);
         throw this.cleanupError;
       } finally {
         await target.close?.();
@@ -345,7 +347,7 @@ async function launchChromeForCDP(options, viewport) {
 }
 
 async function createPage(browserSession, url, viewport, options, sharedContextId) {
-  const events = [];
+  const events = createPageEventCollector();
   let target;
   let browserContextId;
   let session;
@@ -381,7 +383,7 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
     });
     session = browserSession.session(attached.sessionId);
 
-    capturePageEvents(session, events);
+    captureCdpPageEvents(session, events);
     await Promise.all([
       session.send("Page.enable"),
       session.send("Runtime.enable"),
@@ -446,8 +448,8 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
     };
   } catch (error) {
     try { await close(); }
-    catch (cleanupError) { throw captureCleanupError(new AggregateError([error, cleanupError])); }
-    throw error;
+    catch (cleanupError) { throw withCaptureDiagnostics(captureCleanupError(new AggregateError([error, cleanupError])), events); }
+    throw withCaptureDiagnostics(error, events);
   }
 }
 
@@ -565,40 +567,6 @@ async function evaluateInPage(session, options, timeoutMs) {
   }
 
   return result.result?.value;
-}
-
-function capturePageEvents(session, events) {
-  session.on("Runtime.consoleAPICalled", (event) => {
-    events.push({
-      args: (event.args || []).map(remoteObjectValue),
-      text: (event.args || []).map(remoteObjectValue).join(" "),
-      type: `console.${event.type || "log"}`
-    });
-  });
-  session.on("Runtime.exceptionThrown", (event) => {
-    events.push({
-      error: {
-        message: event.exceptionDetails?.text || remoteObjectValue(event.exceptionDetails?.exception),
-        stack: event.exceptionDetails?.stackTrace || null
-      },
-      type: "pageerror"
-    });
-  });
-  session.on("Log.entryAdded", (event) => {
-    events.push({
-      level: event.entry?.level || null,
-      source: event.entry?.source || null,
-      text: event.entry?.text || null,
-      type: "log.entry"
-    });
-  });
-  session.on("Network.loadingFailed", (event) => {
-    events.push({
-      failure: event.errorText || null,
-      type: "requestfailed",
-      url: event.requestId
-    });
-  });
 }
 
 async function cdpSnapshot(session, options) {
@@ -797,19 +765,6 @@ function waitForExit(child, timeoutMs) {
   });
 }
 
-function remoteObjectValue(object) {
-  if (!object) {
-    return "";
-  }
-  if ("value" in object) {
-    return object.value;
-  }
-  if (object.unserializableValue) {
-    return object.unserializableValue;
-  }
-  return object.description || object.type || "";
-}
-
 function formatExceptionDetails(details) {
   const message = details.exception?.description || details.text || "Runtime.evaluate failed";
   const callFrames = details.stackTrace?.callFrames || [];
@@ -848,7 +803,8 @@ function reportOptions(options, launchArgs) {
     browserChannel: options.channel || null,
     chromiumArgs: launchArgs,
     contextMode: options.contextMode,
-    frameObservation: "wall-clock",
+    samplingMode: options.samplingMode,
+    frameObservation: options.samplingMode === "hook" ? "disabled" : "wall-clock",
     adaptive: Boolean(options.adaptive),
     minimalTrace: Boolean(options.minimalTrace),
     cdpAttached: Boolean(options.cdpUrl),

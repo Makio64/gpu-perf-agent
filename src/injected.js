@@ -6,10 +6,17 @@ export async function collectInPage(options = {}) {
     gc: Boolean(options.gc),
     deepMemory: Boolean(options.deepMemory),
     hookName: options.hookName || "__gpuReportBench",
+    samplingMode: options.samplingMode ?? "frames",
     samples: Number(options.samples ?? 5),
     slowFrameThresholdMs: Number(options.slowFrameThresholdMs ?? 20),
     warmup: Number(options.warmup ?? 1)
   };
+  if (!["frames", "hook"].includes(config.samplingMode)) {
+    throw new TypeError('samplingMode must be "frames" or "hook".');
+  }
+  if (config.samplingMode === "hook" && config.adaptive) {
+    throw new TypeError('samplingMode "hook" does not support adaptive FPS sampling.');
+  }
 
   function finiteNumber(value) {
     return typeof value === "number" && Number.isFinite(value);
@@ -447,6 +454,7 @@ export async function collectInPage(options = {}) {
   async function runHook(phase, sampleIndex) {
     const hook = globalThis[config.hookName];
     if (typeof hook !== "function") {
+      if (config.samplingMode === "hook") throw new Error(`samplingMode hook requires benchmark hook ${config.hookName}.`);
       return null;
     }
 
@@ -556,23 +564,26 @@ export async function collectInPage(options = {}) {
   }
 
   const hookFound = typeof globalThis[config.hookName] === "function";
+  if (config.samplingMode === "hook" && !hookFound) {
+    throw new Error(`samplingMode hook requires benchmark hook ${config.hookName}.`);
+  }
   const slowFrames = [];
-  const sampling = { adaptive: config.adaptive, stoppedEarly: false, requestedSamples: config.samples, coefficientOfVariation: null };
+  const sampling = { mode: config.samplingMode, adaptive: config.adaptive, stoppedEarly: false, requestedSamples: config.samples, coefficientOfVariation: null };
   const warnings = [];
   if (!hookFound) {
     warnings.push(`No ${config.hookName} hook found; report uses requestAnimationFrame sampling only.`);
   }
 
   const apiSupport = await detectApis();
-  await settleFrames(2);
+  if (config.samplingMode === "frames") await settleFrames(2);
 
   const warmupStartedAt = performance.now();
-  let lagSpikeMs = 0;
+  let lagSpikeMs = config.samplingMode === "hook" ? null : 0;
   for (let index = 0; index < config.warmup; index += 1) {
     const measurement = hookFound ? await runHook("warmup", index) : await sampleFrames(Math.min(250, config.durationMs));
-    if (finiteNumber(measurement?.frameTimeMs?.max)) lagSpikeMs = Math.max(lagSpikeMs, measurement.frameTimeMs.max);
+    if (finiteNumber(measurement?.frameTimeMs?.max)) lagSpikeMs = Math.max(lagSpikeMs ?? 0, measurement.frameTimeMs.max);
   }
-  const warmup = { durationMs: performance.now() - warmupStartedAt, lagSpikeMs, settled: !warnings.some(w => w.startsWith("Frame settling")) };
+  const warmup = { durationMs: performance.now() - warmupStartedAt, lagSpikeMs, settled: config.samplingMode === "frames" ? !warnings.some(w => w.startsWith("Frame settling")) : null };
   slowFrames.length = 0;
 
   const globalBefore = await memorySnapshot();
@@ -582,7 +593,7 @@ export async function collectInPage(options = {}) {
   for (let index = 0; index < config.samples; index += 1) {
     if (config.gc && typeof globalThis.gc === "function") {
       globalThis.gc();
-      await settleFrames(1);
+      if (config.samplingMode === "frames") await settleFrames(1);
     }
 
     const before = await memorySnapshot();
@@ -592,7 +603,11 @@ export async function collectInPage(options = {}) {
     let error = null;
 
     try {
-      if (hookFound) {
+      if (config.samplingMode === "hook") {
+        const hookMeasurement = await runHook("sample", index);
+        measurement = hookMeasurement && typeof hookMeasurement === "object" && !Array.isArray(hookMeasurement)
+          ? hookMeasurement : { value: hookMeasurement };
+      } else if (hookFound) {
         const [hookResult, frameResult] = await Promise.allSettled([
           runHook("sample", index),
           sampleFrames(config.durationMs)

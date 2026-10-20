@@ -7,7 +7,7 @@ import { compactReport, comparisonExitCode, formatAgentReport, formatAgentCompar
 import { reportValidity } from "./validity.js";
 
 const command = process.argv[2] || "help";
-const wantsJson = process.argv.includes("--json");
+const wantsJson = process.argv.includes("--json") || command === "inspect";
 
 try {
   if (process.argv.slice(3).some(arg => arg === "--help" || arg === "-h")) {
@@ -22,6 +22,8 @@ try {
     await abCommand(process.argv.slice(3));
   } else if (command === "compare") {
     await compareCommand(process.argv.slice(3));
+  } else if (command === "inspect") {
+    await inspectCommand(process.argv.slice(3));
   } else if (command === "doctor") {
     await doctorCommand(process.argv.slice(3));
   } else if (command === "mcp") {
@@ -57,6 +59,7 @@ async function abCommand(args) {
     allowPositionals: false,
     args,
     options: {
+      agent: { type: "boolean" },
       api: { default: "auto", type: "string" },
       "auto-instrument": { type: "boolean" },
       "base-file": { type: "string" },
@@ -67,20 +70,30 @@ async function abCommand(args) {
       channel: { type: "string" },
       context: { type: "string" },
       "chromium-arg": { multiple: true, type: "string" },
+      "device-scale-factor": { type: "string" },
       "duration-ms": { default: "250", type: "string" },
       "executable-path": { type: "string" },
       "file-root": { type: "string" },
       headful: { type: "boolean" },
+      hook: { type: "string" },
       json: { type: "boolean" },
+      metric: { type: "string" },
       out: { type: "string" },
       rounds: { default: "4", type: "string" },
       samples: { default: "1", type: "string" },
+      "sampling-mode": { type: "string" },
       "slow-frame-threshold": { default: "20", type: "string" },
       threshold: { default: "5", type: "string" },
+      timeout: { type: "string" },
       viewport: { default: "1280x720", type: "string" },
-      warmup: { default: "1", type: "string" }
+      warmup: { default: "1", type: "string" },
+      "wait-condition": { type: "string" },
+      "wait-condition-timeout": { type: "string" },
+      "wait-for-hook": { type: "boolean" },
+      "wait-until": { type: "string" }
     }
   });
+  if (values.json && values.agent) throw new Error('Choose --json or --agent.');
   const base = targetOption(values["base-url"], values["base-file"], values["file-root"]);
   const candidate = targetOption(values["candidate-url"], values["candidate-file"], values["file-root"]);
   const budget = values.budget ? JSON.parse(await readFile(values.budget, "utf8")) : null;
@@ -93,15 +106,23 @@ async function abCommand(args) {
     channel: values.channel,
     contextMode: values.context,
     chromiumArgs: values["chromium-arg"] || [],
+    deviceScaleFactor: values["device-scale-factor"],
     durationMs: Number(values["duration-ms"]),
     executablePath: values["executable-path"],
     headful: Boolean(values.headful),
+    hookName: values.hook,
     rounds: Number(values.rounds),
     samples: Number(values.samples),
+    samplingMode: values["sampling-mode"],
     slowFrameThresholdMs: Number(values["slow-frame-threshold"]),
     thresholdPercent: Number(values.threshold),
+    timeoutMs: values.timeout,
     viewport: values.viewport,
-    warmup: Number(values.warmup)
+    warmup: Number(values.warmup),
+    waitCondition: values["wait-condition"],
+    waitConditionTimeoutMs: values["wait-condition-timeout"],
+    waitForHook: values["wait-for-hook"],
+    waitUntil: values["wait-until"]
   });
   const out = path.resolve(values.out || path.join("reports", `ab-${timestamp()}.json`));
   await mkdir(path.dirname(out), { recursive: true });
@@ -116,6 +137,9 @@ async function abCommand(args) {
       order: result.order,
       out
     }, null, 2));
+  } else if (values.agent) {
+    console.log(formatAgentComparison(result.comparison, { primaryMetric: values.metric }));
+    console.log(`Report: ${out}`);
   } else {
     console.log(`A/B report written: ${out}`);
     console.log(formatCompareTable(result.comparison));
@@ -160,6 +184,7 @@ async function runCommand(args) {
       runner: { default: "fast", type: "string" },
       server: { type: "string" },
       samples: { type: "string" },
+      "sampling-mode": { type: "string" },
       screenshot: { type: "boolean" },
       "screenshot-out": { type: "string" },
       "slow-frame-threshold": { type: "string" },
@@ -225,6 +250,7 @@ async function runCommand(args) {
     hookName: values.hook,
     rawTracePath,
     samples: numberOption(values.samples, preset.samples),
+    samplingMode: values["sampling-mode"],
     screenshotPath,
     slowFrameThresholdMs: numberOption(values["slow-frame-threshold"], 20),
     timeoutMs: Number(values.timeout),
@@ -233,7 +259,7 @@ async function runCommand(args) {
     viewport: values.viewport,
     warmup: numberOption(values.warmup, preset.warmup),
     waitUntil: values["wait-until"],
-    waitForHook: Boolean(values["wait-for-hook"])
+    waitForHook: values["wait-for-hook"]
   });
 
   await mkdir(path.dirname(out), { recursive: true });
@@ -274,6 +300,7 @@ async function compareCommand(args) {
       budget: { type: "string" },
       candidate: { type: "string" },
       json: { type: "boolean" },
+      metric: { type: "string" },
       paired: { type: "boolean" },
       threshold: { default: "5", type: "string" }
     }
@@ -295,12 +322,29 @@ async function compareCommand(args) {
   if (values.json) {
     console.log(JSON.stringify({ ok: process.exitCode === 0, ...result }));
   } else if (values.agent) {
-    console.log(formatAgentComparison(result));
+    console.log(formatAgentComparison(result, { primaryMetric: values.metric }));
   } else {
     console.log(formatCompareTable(result));
   }
 
 
+}
+
+async function inspectCommand(args) {
+  const { inspectReport, validateInspectOptions } = await import("./inspect.js");
+  const { values } = parseArgs({ allowPositionals: false, args, options: {
+    report: { type: "string" }, section: { type: "string" }, metric: { type: "string" },
+    offset: { type: "string" }, limit: { type: "string" }, run: { type: "string" }, json: { type: "boolean" }
+  } });
+  if (!values.report?.trim()) throw new Error("inspect requires --report FILE.");
+  const number = value => value === undefined ? undefined : value.trim() ? Number(value) : NaN;
+  const options = validateInspectOptions({
+    section: values.section, metric: values.metric,
+    offset: number(values.offset), limit: number(values.limit), runIndex: number(values.run)
+  });
+  const reportPath = path.resolve(values.report);
+  const report = JSON.parse(await readFile(reportPath, "utf8"));
+  console.log(JSON.stringify({ reportPath, ...inspectReport(report, options) }));
 }
 
 async function doctorCommand(args) {
@@ -321,7 +365,7 @@ async function doctorCommand(args) {
   const status = {
     node: process.version,
     platform: `${process.platform} ${process.arch}`,
-    xctrace: await macOSProfilerStatus()
+    xctrace: await macOSProfilerStatus({ includeTemplates: !values.quick })
   };
 
   if (!values.quick) {
@@ -350,8 +394,10 @@ async function doctorCommand(args) {
   console.log(`Platform: ${status.platform}`);
   if (status.xctrace.available) {
     console.log(`xctrace: ${status.xctrace.xctracePath}`);
-    const metalTemplate = status.xctrace.templates.find((template) => /Metal System Trace/i.test(template));
-    console.log(`Metal template: ${metalTemplate || "not listed"}`);
+    if (status.xctrace.templatesProbed) {
+      const metalTemplate = status.xctrace.templates.find((template) => /Metal System Trace/i.test(template));
+      console.log(`Metal template: ${metalTemplate || "not listed"}`);
+    }
   } else {
     console.log(`xctrace: unavailable (${status.xctrace.reason || status.xctrace.xctraceError || "not found"})`);
   }
@@ -484,11 +530,13 @@ Usage:
   gpu-perf-agent run --file examples/webgpu-clear.html --preset quick --screenshot
   gpu-perf-agent serve --port 9099 --auto-instrument
   gpu-perf-agent compare --base reports/base.json --candidate reports/candidate.json --json
+  gpu-perf-agent inspect --report reports/base.json --section metrics --metric health.gpuFrameMs.mean
   gpu-perf-agent xctrace --url http://localhost:5173 --time-limit 15s
 
 Agent-oriented run options:
   --api auto|webgpu|webgl|webgl2   Select capability probes; auto checks WebGPU and WebGL2.
   --preset quick|confirm|profile  Standardized sampling shapes for iteration and confirmation.
+  --sampling-mode frames|hook   Frames by default; hook requires a benchmark hook and skips frame observation.
   --auto-instrument              Track WebGPU/WebGL buffers, textures, draws, dispatches, and uploads.
   --server URL                   Reuse a running profiler service (avoids Chrome startup).
   --context isolated|shared      Fresh job storage by default; shared opts into persistent state.
@@ -513,6 +561,24 @@ Comparison options:
   --allow-mismatch              Allow different capture options; invalid data still exits 2.
   --budget FILE                 Validate required metrics and absolute or relative limits.
   --threshold PERCENT           Allowed relative change (default 5).
+  --metric KEY                  Focus compare/ab agent output; every metric is still gated.
+
+A/B capture options:
+  --sampling-mode frames|hook   Choose frame pacing or hook-only workload samples for both variants.
+  --agent                       Bounded comparison digest; full rounds stay in --out JSON.
+  --wait-until STATE             load, domcontentloaded, networkidle (default), or commit.
+  --wait-condition EXPR          Require the same application readiness before every round.
+  --wait-condition-timeout MS    Bound readiness evaluation.
+  --wait-for-hook / --hook NAME  Wait for the workload hook; optional custom hook name.
+  --timeout MS                  Bound navigation and sampling.
+  --device-scale-factor NUMBER  Use identical pixel density across variants.
+
+Saved report inspection (bounded JSON; no browser launch):
+  --report FILE                 Read a capture, comparison, or A/B JSON artifact.
+  --section NAME                overview (default), metrics, samples, errors, environment, instrumentation, trace.
+  --metric KEY                  Select an exact comparison metric key in the metrics section.
+  --offset N / --limit N         Page selected records; default limit 3, maximum 10.
+  --run N                       Select a zero-based A/B run before inspecting it.
 
 Exit codes: 0 completed, 1 regression or command error, 2 invalid measurements/options mismatch.
 Inconclusive changes are reported separately and do not fail the default regression gate.

@@ -13,11 +13,10 @@ export function numericStats(values) {
   const variance = numbers.reduce((total, value) => total + ((value - mean) ** 2), 0) / numbers.length;
   const stddev = Math.sqrt(variance);
   const median = percentile(numbers, 0.5);
-  const absoluteDeviations = numbers.map((value) => Math.abs(value - median)).sort((a, b) => a - b);
   return {
     coefficientOfVariation: mean === 0 ? null : stddev / Math.abs(mean),
     count: numbers.length,
-    mad: percentile(absoluteDeviations, 0.5),
+    mad: medianAbsoluteDeviation(numbers, median),
     min: numbers[0],
     max: numbers[numbers.length - 1],
     mean,
@@ -30,8 +29,50 @@ export function numericStats(values) {
   };
 }
 
+function medianAbsoluteDeviation(numbers, median) {
+  // Typed-array map operations can round or truncate deviations; retain that behavior.
+  if (!Array.isArray(numbers)) {
+    return percentile(numbers.map(value => Math.abs(value - median)).sort((a, b) => a - b), 0.5);
+  }
+
+  // Distances increase in both directions away from the median. Merge only as far
+  // as their middle values instead of allocating and sorting every deviation.
+  // Search by value: interpolating subnormal numbers can round outside the two
+  // central values, so their indices alone do not always locate this split.
+  let start = 0;
+  let end = numbers.length;
+  while (start < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (numbers[middle] < median) start = middle + 1;
+    else end = middle;
+  }
+  let left = start - 1;
+  let right = start;
+  let leftDistance = left >= 0 ? Math.abs(numbers[left] - median) : Infinity;
+  let rightDistance = right < numbers.length ? Math.abs(numbers[right] - median) : Infinity;
+  let previous = 0;
+  let current = 0;
+  const middle = Math.floor(numbers.length / 2);
+  for (let index = 0; index <= middle; index += 1) {
+    previous = current;
+    if (left >= 0 && (right >= numbers.length || leftDistance <= rightDistance)) {
+      current = leftDistance;
+      left -= 1;
+      leftDistance = left >= 0 ? Math.abs(numbers[left] - median) : Infinity;
+    } else {
+      current = rightDistance;
+      right += 1;
+      rightDistance = right < numbers.length ? Math.abs(numbers[right] - median) : Infinity;
+    }
+  }
+  return numbers.length % 2 ? current : previous * 0.5 + current * 0.5;
+}
+
 export function confidenceInterval95(values) {
-  const stats = numericStats(values);
+  return confidenceInterval95FromStats(numericStats(values));
+}
+
+function confidenceInterval95FromStats(stats) {
   if (!stats) {
     return null;
   }
@@ -66,17 +107,21 @@ export function pairedDifferenceStats(baseValues, candidateValues) {
   if (differences.length === 0) {
     return null;
   }
+  const stats = numericStats(differences);
   return {
-    confidence95: confidenceInterval95(differences),
+    confidence95: confidenceInterval95FromStats(stats),
     differences,
-    stats: numericStats(differences)
+    stats
   };
 }
 
 /** Independent captures have no natural pairing. Use unequal-variance Welch intervals. */
 export function independentDifferenceStats(baseValues, candidateValues) {
-  const base = numericStats(baseValues);
-  const candidate = numericStats(candidateValues);
+  return independentDifferenceStatsFromStats(numericStats(baseValues), numericStats(candidateValues));
+}
+
+/** Reuse already calculated summaries when comparing many report metrics. */
+export function independentDifferenceStatsFromStats(base, candidate) {
   if (!base || !candidate) return null;
   const mean = candidate.mean - base.mean;
   if (base.count < 2 || candidate.count < 2) return { confidence95: null, mean };

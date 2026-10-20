@@ -16,6 +16,7 @@ for (const invalid of [
   { warmup: -1 }, { warmup: Infinity }, { timeoutMs: 0 }, { timeoutMs: 2 ** 32 },
   { viewport: '0x720' }, { viewport: '400x0' }, { viewport: 'bad' },
   { deviceScaleFactor: 0 }, { api: 'metal' }, { waitUntil: 'typo' },
+  { samplingMode: 'typo' }, { samplingMode: 'hook', adaptive: true },
   { chromiumArgs: 'oops' }, { autoInstrument: 'false' }, { preset: 'constructor' },
   { file: 'test.html' }, { url: 'file:///tmp/test.html' }
 ]) {
@@ -32,4 +33,17 @@ test('capture context isolation defaults to isolated and shared mode is explicit
   assert.equal(normalizeOptions(target).contextMode, 'isolated');
   assert.equal(normalizeOptions({...target, contextMode:'shared'}).contextMode, 'shared');
   assert.throws(() => normalizeOptions({...target, contextMode:'typo'}), /contextMode/);
+});
+
+test('hook sampling is explicit and defaults only an omitted hook readiness option', () => {
+  const frames = normalizeOptions(target);
+  assert.equal(frames.samplingMode, 'frames');
+  assert.equal(frames.waitForHook, undefined);
+  assert.equal(normalizeOptions({ ...target, samplingMode: 'frames', adaptive: true }).adaptive, true);
+  const hook = normalizeOptions({ ...target, samplingMode: 'hook', waitForHook: undefined });
+  assert.equal(hook.samplingMode, 'hook');
+  assert.equal(hook.waitForHook, true);
+  assert.equal(normalizeOptions(hook).waitForHook, true);
+  assert.equal(normalizeOptions({ ...target, samplingMode: 'hook', waitForHook: false }).waitForHook, false);
+  assert.equal(normalizeOptions({ ...target, samplingMode: 'frames', waitForHook: true }).waitForHook, true);
 });

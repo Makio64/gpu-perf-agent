@@ -18,12 +18,13 @@ export function reportValidity(report) {
   const inPage = report.inPage || {};
   const samples = inPage.samples || [];
   const diagnostics = report.diagnostics || {};
+  const hookMode = (report.options?.samplingMode ?? inPage.config?.samplingMode) === "hook";
   const sampleErrors = samples.filter(sample => sample.error).length || diagnostics.sampleErrors?.length || 0;
   if (sampleErrors) add("sample-errors", `${sampleErrors} benchmark sample(s) failed.`, { count: sampleErrors });
-  const pageErrors = (report.pageEvents || diagnostics.pageErrors || []).filter(event => event.type === "pageerror").length;
+  const pageErrors = pageErrorCounts(report).runtime;
   if (pageErrors) add("runtime-errors", `${pageErrors} uncaught page error(s) occurred.`, { count: pageErrors });
   // Network errors remain warnings: optional telemetry requests need not invalidate rendering.
-  const adaptiveComplete = report.options?.adaptive === true && inPage.sampling?.stoppedEarly === true
+  const adaptiveComplete = !hookMode && report.options?.adaptive === true && inPage.sampling?.stoppedEarly === true
     && inPage.sampling.reason === "fps-converged" && samples.length >= 3 && samples.length < report.options.samples
     && Number.isFinite(inPage.sampling.coefficientOfVariation) && inPage.sampling.coefficientOfVariation >= 0
     && inPage.sampling.coefficientOfVariation < 0.015;
@@ -35,7 +36,12 @@ export function reportValidity(report) {
     || Number.isFinite(inPage.summary?.frameTimeMsMean?.mean)
     || Object.values(report.aggregateMetrics || {}).some(Number.isFinite);
   if (!hasSignal) add("no-measurements", "No numeric workload or frame measurements were captured.");
-  if (report.options?.waitForHook && inPage.hook?.found === false) add("missing-hook", "The requested benchmark hook was not found.");
+  if ((hookMode && inPage.hook?.found !== true) || (report.options?.waitForHook && inPage.hook?.found === false)) {
+    add("missing-hook", "The requested benchmark hook was not found.");
+  }
+  if (hookMode && (report.options?.adaptive === true || inPage.sampling?.adaptive === true)) {
+    add("incompatible-sampling", "Hook sampling cannot use FPS-based adaptive stopping.");
+  }
 
   const api = report.options?.api === "webgl" && !inPage.apiSupport?.webgl ? "webgl2" : report.options?.api;
   const support = inPage.apiSupport?.[api];
@@ -47,6 +53,21 @@ export function reportValidity(report) {
   if (instrumentationErrors.length) add("instrumentation-errors", `${instrumentationErrors.length} instrumentation error(s) occurred.`);
   if (report.options?.trace && (report.trace?.captured === false || report.trace?.error)) add("trace-failed", "Requested Chrome trace was not captured successfully.");
   return { valid: issues.length === 0, issues };
+}
+
+/** Retained diagnostics are representative; counters include dropped events. */
+export function pageErrorCounts(report) {
+  const events = report?.pageEvents || report?.diagnostics?.pageErrors || [];
+  let runtime = 0, network = 0;
+  for (const event of events) {
+    if (event.type === "pageerror") runtime++;
+    else if (event.type === "requestfailed") network++;
+  }
+  const counts = report?.pageEventSummary?.counts;
+  const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  runtime = Math.max(runtime, count(counts?.pageerror));
+  network = Math.max(network, count(counts?.requestfailed));
+  return { runtime, network, total: runtime + network };
 }
 
 function hasNumericMeasurement(value, depth = 0) {

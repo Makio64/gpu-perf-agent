@@ -1,8 +1,9 @@
-import { compareReports, reportMetrics, validateBudget } from "./compare.js";
+import { compareReports, compareReportOptions, compareReportEnvironments, reportEnvironment, reportMetricsWithGpuEvidence, validateBudget } from "./compare.js";
 import { FastCDPHarness } from "./fast-cdp-runner.js";
 import { normalizeOptions, numberOption } from "./options.js";
 import { numericStats } from "./stats.js";
 import { reportValidity } from "./validity.js";
+import { aggregateGpuTimingEvidence, collectGpuTimingEvidence, gpuTimingValidityIssues } from "./gpu-timing.js";
 
 export async function runABComparison(options = {}) {
   const baseTarget = normalizeTarget(options.base, "base");
@@ -80,8 +81,41 @@ export function aggregateReports(reports) {
     throw new Error("Cannot aggregate an empty report list.");
   }
   const metricSamples = {};
-  const metrics = reports.map(reportMetrics);
+  const gpuEvidence = reports.map(collectGpuTimingEvidence);
+  const metrics = reports.map((report, index) => reportMetricsWithGpuEvidence(report, gpuEvidence[index]));
   const roundValidity = reports.map(reportValidity);
+  roundValidity.forEach((validity, round) => {
+    validity.issues.push(...gpuTimingValidityIssues(gpuEvidence[round]));
+    validity.valid = validity.issues.length === 0;
+  });
+  const firstGpuScope = gpuEvidence.find(item => item.status === 'single-scope')?.scope;
+  reports.forEach((report, round) => {
+    const differences = compareReportOptions(reports[0], report);
+    if (differences.length) {
+      roundValidity[round].valid = false;
+      roundValidity[round].issues.push({ code: 'capture-options-drift', message: `Capture settings changed in round ${round + 1}.`, differences });
+    }
+    if (gpuEvidence[round].status === 'single-scope' && gpuEvidence[round].scope !== firstGpuScope) {
+      roundValidity[round].valid = false;
+      roundValidity[round].issues.push({ code: 'gpu-timing-scope-drift', message: `GPU timing scope changed in round ${round + 1}.`,
+        baseScope: firstGpuScope, candidateScope: gpuEvidence[round].scope });
+    }
+  });
+  const roundEnvironments = reports.map(report => ({ schemaVersion: 1, values: reportEnvironment(report) }));
+  const environment = { schemaVersion: 1, values: {} };
+  roundEnvironments.forEach((current, round) => {
+    const { differences } = compareReportEnvironments({ environment }, { environment: current });
+    if (differences.length) {
+      roundValidity[round].valid = false;
+      roundValidity[round].issues.push({ code: 'environment-drift', message: `Profiling environment changed in round ${round + 1}.`, differences });
+    }
+    // Retain the first known value of every field, including fields absent in round 1.
+    for (const [key, value] of Object.entries(current.values)) {
+      if (!Object.hasOwn(environment.values, key)) environment.values[key] = value;
+    }
+  });
+  environment.unverifiedKeys = Object.keys(environment.values)
+    .filter(key => roundEnvironments.some(current => !Object.hasOwn(current.values, key)));
   for (const key of new Set(metrics.flatMap(Object.keys))) {
     metricSamples[key] = metrics.map(values => Number.isFinite(values[key]) ? values[key] : null);
     metricSamples[key].forEach((value, round) => {
@@ -102,11 +136,19 @@ export function aggregateReports(reports) {
     }
   }
   const first = reports[0];
+  const gpuTiming = aggregateGpuTimingEvidence(gpuEvidence);
+  if (gpuTiming.status !== 'single-scope') {
+    delete aggregateMetrics['health.gpuFrameMs.mean'];
+    delete metricSamples['health.gpuFrameMs.mean'];
+  }
   return {
     aggregateMetrics,
+    gpuTiming,
+    environment,
     inPage: { samples: [] },
     metricSamples,
-    options: first.options,
+    roundEnvironments,
+    options: { ...first.options, samplingMode: first.options?.samplingMode ?? first.inPage?.config?.samplingMode ?? "frames" },
     roundValidity,
     summary: {
       verdict: worstVerdict(reports.map((report) => report.summary?.verdict)),
@@ -118,6 +160,7 @@ export function aggregateReports(reports) {
 function aggregateSummary(report) {
   return {
     metrics: report.aggregateMetrics,
+    gpuTiming: report.gpuTiming,
     sampleCounts: Object.fromEntries(Object.entries(report.metricSamples).map(([key, values]) => [key, values.filter(Number.isFinite).length])),
     validity: reportValidity(report),
     verdict: report.summary.verdict,

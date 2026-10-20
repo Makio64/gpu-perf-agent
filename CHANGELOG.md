@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- GPU health summaries and comparisons retain timing-scope evidence through A/B aggregation. Mixed scopes and invalid durations cannot produce health means or confidence intervals; incompatible scopes invalidate comparison evidence. Exact custom metrics remain available. Digests and inspection explain unavailable GPU timing.
+- Bounded saved-report inspection is available through `inspect`, `inspectReport` and MCP `inspect_webgpu_report`, with exact metric selection, record paging, A/B run selection and explicit omissions. Inspection does not launch a browser or alter saved evidence.
+- Diagnostics use actual frame timing for frame-tail warnings, retain zero GPU timings, distinguish screenshot capture from visual correctness, and avoid attributing stalls or allocation churn from operation counts alone. Optimization guidance preserves the workload and output.
+- GPU timing extraction avoids constructing unused full property paths; exact-output whole-report benchmarks show the main CPU benefit on verbose hook telemetry.
+- Explicit `--sampling-mode hook` / `samplingMode: "hook"` removes idle frame observation for completed fixed-work benchmarks while retaining warmups, samples and diagnostics. Default frame sampling is unchanged; mismatched modes and within-variant capture setting drift invalidate comparisons.
+- Page diagnostic retention is bounded in both runners, with reserved error slots, exact totals and explicit drop/truncation counts. Dropped runtime errors still invalidate evidence; failed MCP captures preserve the retained diagnostics.
+- Comparison reuses sample distributions and statistics instead of repeating flattening and sorts. Exact-output CPU benchmarking is available in `scripts/benchmark-compare.mjs`.
+- The optimization skill has been exercised on a real WebGPU kernel fusion with exact CPU-oracle verification, and explains how fixed-work hooks avoid idle confirmation time.
+- Quick doctor checks skip optional Instruments template enumeration; full doctor retains it. Missing native tools return diagnostic data instead of an unhandled process error.
+- Agent comparisons expose confidence evidence, prioritize regressions, and support `--metric` / MCP `primaryMetric` display focus. Compact JSON bounds verbose guidance and errors with omission counts while full files retain the evidence.
+- A/B CLI captures support scene/hook readiness and compact agent output. Comparisons reject known environment changes and A/B environment drift while disclosing unavailable identity metadata.
+- Median absolute deviation reuses sorted values without a second array/sort, with exact-output benchmarks and numerical edge-case coverage.
+- MCP reuses one browser, serializes captures with a bounded queue, saves full reports and screenshots, and returns compact responses. Use `includeReport: true` for the previous inline capture payload. Defaults now match the CLI's fixed quick preset; clients can explicitly retain older sampling settings.
+- GPU comparison means now use repeated timing evidence where the scope is unambiguous, so noisy changes can remain inconclusive rather than appearing as threshold-only wins.
+- Trace summarization classifies events in one pass with identical statistics. A reproducible CPU benchmark is available through `npm run benchmark:trace`.
+- The bundled skill focuses on measured optimization and output verification, with optional timing and transport references. Display-capped FPS and health verdicts are explicitly separated from evidence of GPU speedups.
+
 ## 2.1.1
 
 - Lead the README and website with one shared skill-install command for Codex, Claude Code, Gemini CLI, and other supported agents, followed by a short usage prompt.

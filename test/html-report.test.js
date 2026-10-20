@@ -85,7 +85,7 @@ test("html-report: renders recommendation cards and slow frames table when prese
 
   assert(html.includes("VERDICT: POOR"));
   assert(html.includes("data-severity=\"critical\""));
-  assert(html.includes("Synchronous Pipeline Compilation"));
+  assert(html.includes("Synchronous Pipeline Creation"));
   assert(html.includes("Slow Frame Timeline"));
   assert(html.includes("42.5ms"));
 });
