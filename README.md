@@ -22,6 +22,22 @@ Use gpu-perf-agent to optimize the webgpu performance
 
 The skill runs the profiler through `npx`; no separate global profiler install is needed. Omit `-g` to install the skill only in the current project.
 
+<details>
+<summary><b>Manual install / where each agent looks</b></summary>
+
+Copy the whole `skill/` folder (SKILL.md plus `references/`) to a folder named `gpu-perf-agent` in the agent's global skills directory, then start a new agent session:
+
+| Agent | Global skills directory | Check |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/gpu-perf-agent/` | `/skills` |
+| Codex | `~/.agents/skills/gpu-perf-agent/` (also scans the legacy `~/.codex/skills/`; keep only one copy) | `/skills` |
+| Cursor | `~/.agents/skills/gpu-perf-agent/` or `~/.cursor/skills/gpu-perf-agent/` (also reads `~/.claude/skills` and `~/.codex/skills`) | `/skills` in `cursor-agent`, or Settings → Rules, Skills |
+| Antigravity (App and `agy`) | `~/.gemini/config/skills/gpu-perf-agent/` | `/skills` in `agy` |
+
+`npx skills add -a antigravity` writes to the legacy IDE folder `~/.gemini/antigravity/skills/`, which current Antigravity releases do not read; use the manual copy above. Do not put user skills in `~/.cursor/skills-cursor/`: Cursor manages that folder and removes folders it does not own.
+
+</details>
+
 **Requires Node.js 22+, Git, and Chrome/Chromium.**
 
 ## Prefer the terminal?
@@ -48,7 +64,7 @@ A short digest lands in your terminal. Full measurements are saved to JSON. No c
 Capture and screen the candidate against the baseline in one command, then confirm GPU deltas with interleaved A/B rounds:
 
 ```bash
-npx gpu-perf-agent agent --url http://localhost:5173 --base reports/base-1.json --label cand
+npx gpu-perf-agent agent --url http://localhost:5173 --base reports/base.json --out reports/cand.json
 npx gpu-perf-agent ab --base-url http://localhost:4173 --candidate-url http://localhost:5173
 ```
 
@@ -70,7 +86,7 @@ For the persistent server, add `--server http://127.0.0.1:9099` to your capture 
 
 ## Know what you’re measuring
 
-Frame timing observes browser cadence. GPU duration needs [timing hooks](https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md#precise-gpu-timestamps). Allocation tracking estimates declared storage, not physical VRAM residency. Compare the same scene and capture settings; use more samples when results are inconclusive.
+Frame timing observes browser cadence. `agent` and `ab` time WebGPU passes and WebGL2 frames automatically; use [timing hooks](https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md#precise-gpu-timestamps) for warm, fixed-work or custom-scope GPU measurements. Allocation tracking estimates declared storage, not physical VRAM residency. Compare the same scene and capture settings; use more samples when results are inconclusive.
 
 [Read the full reference →](https://github.com/Makio64/gpu-perf-agent/blob/master/docs/reference.md)
 

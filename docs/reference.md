@@ -63,7 +63,7 @@ npx gpu-perf-agent mcp
 
 Use `--wait-condition 'window.ready === true'` for custom readiness, with `--wait-condition-timeout` in milliseconds. `--minimal-trace` captures GPU categories only. `--visual-validation` saves a screenshot like `--screenshot`; it does not automatically compare images.
 
-The zero-dependency stdio MCP server exposes `profile_webgpu`, `compare_webgpu_reports`, and `inspect_webgpu_report`. Profiling lazily starts one Chrome process, reuses it across serialized jobs, and retains isolated contexts. Defaults match `agent`: six fixed 250 ms samples and two warmups. `preset`, explicit sampling options, `api`, and readiness arguments customize capture; use `tools/list` for the schema. Closing stdin or stopping the server drains accepted work and closes its browser.
+The zero-dependency stdio MCP server exposes `profile_webgpu`, `compare_webgpu_reports`, `ab_compare_webgpu`, `inspect_webgpu_report`, and `doctor_webgpu`. Profiling lazily starts one Chrome process, reuses it across serialized jobs, and retains isolated contexts. Defaults match `agent`: six fixed 250 ms samples and two warmups. `preset`, explicit sampling options, `api`, and readiness arguments customize capture; use `tools/list` for the schema. Closing stdin or stopping the server drains accepted work and closes its browser.
 
 MCP saves full capture evidence under `reports/mcp` and returns a bounded digest with `structuredContent.reportPath`, validity, and artifact paths. Use those report paths for comparison. Invalid captures and execution failures also retain diagnostic JSON. `screenshot: true` saves a PNG; `includeReport: true` opts into the larger legacy inline `report` field. Earlier releases returned full reports by default and used three adaptive 500 ms samples, so clients depending on that behavior should send explicit sampling and output arguments. Artifact paths belong to the service machine.
 
@@ -265,7 +265,8 @@ npx gpu-perf-agent inspect --report reports/ab.json --run 0 --section errors
 
 The command emits bounded JSON and never launches Chrome. It accepts captures, saved
 comparisons and A/B artifacts. Sections are `overview` (default), `metrics`, `samples`,
-`errors`, `environment`, `instrumentation` and `trace`. `--metric` selects an exact key
+`errors`, `environment`, `instrumentation`, `trace`, `gpu` (per-pass GPU breakdown) and
+`cpu` (CPU-profile hotspots and callers). `--metric` selects an exact key
 from comparison metrics; use it with `--section metrics`. `--offset` and `--limit` page
 records (default limit 3, maximum 10). `--run` selects a zero-based A/B run before
 inspection. Select a run for A/B sample/error/instrumentation/trace details.
@@ -322,7 +323,7 @@ checked from their sample evidence; scope-less aggregates cannot prove health ti
 comparability. Saved comparison inspection displays original calculations, so use a
 fresh comparison of the original captures to apply current checks.
 
-For asynchronous scenes, `ab` accepts `--wait-until domcontentloaded`, `--wait-condition 'window.ready === true'`, `--wait-condition-timeout`, `--wait-for-hook`, `--hook`, `--timeout`, and `--device-scale-factor`. Both variants use the same readiness contract before every round. Use `--agent --metric health.gpuFrameMs.mean` instead of `--json` for a bounded digest focused on GPU timing. Full rounds and comparisons remain in `--out`; `--metric` does not exclude other regressions. Sampling still uses explicit `--samples`, `--duration-ms`, and `--warmup`; `ab` does not accept `--preset`.
+For asynchronous scenes, `ab` accepts `--wait-until domcontentloaded`, `--wait-condition 'window.ready === true'`, `--wait-condition-timeout`, `--wait-for-hook`, `--hook`, `--timeout`, and `--device-scale-factor`. Both variants use the same readiness contract before every round. Use `--agent --metric health.gpuFrameMs.mean` instead of `--json` for a bounded digest focused on GPU timing. Full rounds and comparisons remain in `--out`; `--metric` does not exclude other regressions. `ab` accepts `--preset`; explicit `--samples`, `--duration-ms`, and `--warmup` override it.
 
 ## Baseline and candidate reports
 
@@ -349,7 +350,7 @@ Comparisons also check available browser/version, host, GPU adapter/driver/backe
 
 With at least three observations on each side (or three pairs), a mean change beyond the threshold must also have its entire 95% interval beyond that threshold to count as a confirmed regression or improvement. Otherwise it is `inconclusive`. Rows without enough observations, and raw maxima/percentiles, have `evidence: "threshold-only"`. GPU/compute/render means use the corresponding repeated hook measurements. The health GPU mean gets an interval only when each capture contains a single consistent GPU timing scope; mixed pass/frame scopes retain threshold-only evidence. A/B uses one metric value per round and can therefore estimate uncertainty for the mean of repeated per-round maxima or percentiles. Intervals assume independent observations or pairs; consecutive frames can be correlated. Use repeated rounds to confirm important changes.
 
-Exit code `1` means a regression or breached absolute budget (or a command error). Exit code `2` means invalid measurement evidence, lost candidate metrics, missing budget metrics, or differing profiling options such as viewport, tracing, readiness, and warmup. Empty reports always fail. `--allow-mismatch` permits deliberate option differences but cannot override invalid evidence. Inconclusive changes do not fail the default gate; automation should inspect `summary.inconclusive` when uncertainty requires more measurements. A passing comparison is not proof of equivalence.
+Exit code `1` means a confirmed regression or breached budget; exit code `3` is a CLI or runner error. Exit code `2` means invalid measurement evidence, lost candidate metrics, missing budget metrics, or differing profiling options such as viewport, tracing, readiness, and warmup. Empty reports always fail. `--allow-mismatch` permits deliberate option differences but cannot override invalid evidence. Inconclusive changes do not fail the default gate; automation should inspect `summary.inconclusive` when uncertainty requires more measurements. A passing comparison is not proof of equivalence.
 
 Use `--budget budget.json` to enforce required metrics and absolute bounds:
 
@@ -382,14 +383,18 @@ Measured auto-instrumentation overhead: on a 100,000 WebGPU `draw` + `setBindGro
 Auto-instrumentation can profile any continuously rendering page. For reproducible workloads, expose a hook:
 
 ```js
+import { requestTimedWebGPUDevice } from "gpu-perf-agent/browser/timing";
+
+const { device, timer } = await requestTimedWebGPUDevice(adapter); // timer is null without timestamp-query
+
 globalThis.__gpuReportBench = async ({ phase, sampleIndex, durationMs, api }) => {
-  // Exercise one deterministic scene/workload for approximately durationMs.
-  return {
-    api,
-    fps: 60,
-    gpuMs: 4.2,
-    scene: "100k-instanced-cubes"
-  };
+  // Exercise one deterministic, idempotent workload and return measured values only.
+  const { gpuTimeNs, gpuTiming } = await timer.measureWarm((encoder, { beginRenderPass }) => {
+    const pass = beginRenderPass(encoder, descriptor);
+    drawScene(pass);
+    pass.end();
+  });
+  return { api, gpuTimeNs, gpuTiming, scene: "100k-instanced-cubes" };
 };
 ```
 
