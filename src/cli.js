@@ -46,7 +46,7 @@ const RUN_OPTIONS = {
   "duration-ms": { type: "string", desc: "Per-sample duration in milliseconds." },
   samples: { type: "string", desc: "Number of measured samples." },
   warmup: { type: "string", desc: "Number of warmup samples before measurement." },
-  adaptive: { type: "boolean", desc: "Stop early after >=3 samples when GPU p50 CV < 3% (or FPS CV < 1.5% without GPU data)." },
+  adaptive: { type: "boolean", desc: "Stop after >=3 samples when FPS CV < 1.5%." },
   gc: { type: "boolean", desc: "Force GC around sampling for retained heap bracket." },
   "deep-memory": { type: "boolean", desc: "Opt in to user-agent specific memory measurements." },
   "cpu-profile": { type: "string", desc: "auto|true|false CDP CPU profiler control." },
@@ -342,7 +342,7 @@ async function runCommand(args, { isAgent = false } = {}) {
       explicit,
       base: baseReport,
       preset: presetName,
-      defaults: { autoInstrument: isAgent, ...(isAgent ? { gpuTiming: true } : {}) }
+      defaults: { autoInstrument: isAgent }
     });
     for (const key of BASE_INHERITED_OPTION_KEYS) {
       if (explicit[key] === undefined && baseReport?.options?.[key] != null && baseReport.options[key] !== defaultOpts[key]) {
@@ -357,7 +357,6 @@ async function runCommand(args, { isAgent = false } = {}) {
     }
     effectiveInput = {
       ...mergedOptions,
-      preset: presetName,
       url: values.url,
       file: values.file,
       fileArg: values.file,
@@ -370,15 +369,8 @@ async function runCommand(args, { isAgent = false } = {}) {
     };
   } else {
     const presetName = values.preset || (isAgent ? "quick" : "default");
-    const mergedOptions = (isAgent || values.preset)
-      ? applyOptionPrecedence({
-          explicit,
-          preset: presetName,
-          defaults: isAgent ? { autoInstrument: true, gpuTiming: true } : {}
-        })
-      : explicit;
     effectiveInput = {
-      ...mergedOptions,
+      ...explicit,
       preset: presetName,
       autoInstrument: explicit.autoInstrument !== undefined ? explicit.autoInstrument : isAgent,
       url: values.url,
@@ -435,10 +427,7 @@ async function runCommand(args, { isAgent = false } = {}) {
   let report;
   try {
     if (values.server) {
-      report = await runRemote(
-        values.server,
-        buildServerPayload(explicit, validated, (isAgent || baseReport || values.preset) ? effectiveInput : null)
-      );
+      report = await runRemote(values.server, buildServerPayload(explicit, validated));
     } else if (runnerName === "playwright") {
       const { runReport } = await import("./runner.js");
       report = await runReport(validated);
@@ -883,20 +872,14 @@ function buildExplicitRunOptions(values) {
   return explicit;
 }
 
-function buildServerPayload(explicit, validated, mergedOptions = null) {
-  const payload = { ...(mergedOptions || explicit) };
-  for (const key of ["cdpUrl", "channel", "executablePath", "chromiumArgs", "fileArg"]) {
-    delete payload[key];
-  }
-  for (const [key, value] of Object.entries(payload)) {
-    if (value === undefined) delete payload[key];
-  }
+function buildServerPayload(explicit, validated) {
+  const payload = { ...explicit };
   if (validated.url) payload.url = validated.url;
   if (validated.file) payload.file = validated.file;
   if (validated.fileRoot) payload.fileRoot = validated.fileRoot;
   if (validated.rawTracePath) payload.rawTracePath = validated.rawTracePath;
   if (validated.screenshotPath) payload.screenshotPath = validated.screenshotPath;
-  payload.samplingMode = payload.samplingMode ?? "frames";
+  payload.samplingMode = explicit.samplingMode ?? "frames";
   if (payload.samplingMode === "hook" && payload.waitForHook === undefined) {
     payload.waitForHook = true;
   }
@@ -922,11 +905,8 @@ async function runWithOptionalDaemon(validated, values) {
         });
         if (res) return res;
       }
-    } catch (error) {
-      if (error?.fromDaemon && error?.code !== "server-unreachable") {
-        throw error;
-      }
-      // Fall back to direct fast-cdp runner when daemon could not be started or reached.
+    } catch {
+      // Fall back to direct fast-cdp runner when daemon is unavailable.
     }
   }
   const { runFastReport } = await import("./fast-cdp-runner.js");

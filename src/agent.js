@@ -606,13 +606,11 @@ export async function runMcpServer(options = {}) {
       webgpu: {
         available: Boolean(probed.webgpu?.available),
         adapter: probed.webgpu?.adapter ?? null,
-        timestampQuery: Boolean(probed.webgpu?.timestampQuery),
-        ...(probed.webgpu?.error ? { error: probed.webgpu.error } : {})
+        timestampQuery: Boolean(probed.webgpu?.timestampQuery)
       },
       webgl2: {
         available: Boolean(probed.webgl2?.available),
-        renderer: probed.webgl2?.renderer ?? null,
-        ...(probed.webgl2?.error ? { error: probed.webgl2.error } : {})
+        renderer: probed.webgl2?.renderer ?? null
       },
       reportDir: {
         path: displayPath(reportDirectory),

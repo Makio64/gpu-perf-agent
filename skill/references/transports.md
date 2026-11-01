@@ -15,22 +15,23 @@ names distinct and keep the original baseline.
 
 `agent` and `run` (2.2+) start and reuse a background Chrome daemon automatically. A change
 of tool version, source files or launch flags starts a new daemon; each one exits after 10
-idle minutes. Use `--no-daemon` or `GPU_PERF_AGENT_NO_DAEMON=1` to run in-process. If the
-daemon cannot be reached or its browser dies before sampling, the CLI falls back to an
-in-process run automatically; target and readiness errors fail immediately.
+idle minutes. Use `--no-daemon` or `GPU_PERF_AGENT_NO_DAEMON=1` to run in-process. Any
+failure on the daemon path is retried once in-process, so a failing or timed-out capture
+can take about twice `--timeout`.
 
 To share one browser explicitly across shells or machines:
 
 ```bash
 npx gpu-perf-agent serve --port 9099 --auto-instrument
 npx gpu-perf-agent agent --server http://127.0.0.1:9099 --url http://localhost:5173 \
-  --out reports/base.json
+  --samples 6 --duration-ms 250 --warmup 2 --out reports/base.json
 ```
 
-`agent --server` forwards the `agent` defaults (`quick` 6 x 250 ms, auto-instrumentation and
-GPU timing), `--preset` and options inherited through `--base`. Do not mix `--server`
-captures with daemon captures in one comparison, and configure browser launch flags on
-`serve`, not on its clients.
+`agent --server` forwards only the flags you type: the `agent` defaults, `--preset` and
+options inherited through `--base` are not sent, and the service applies its own defaults
+(5 x 1000 ms). Pass the sampling flags explicitly and identically for every capture, and do
+not mix `--server` captures with daemon captures in one comparison. Configure launch flags
+on `serve`, not on its clients.
 
 The service serializes jobs and gives each a fresh browser context (cookies, storage and
 page caches isolated; browser-process caches and hardware state persist). Use
@@ -70,9 +71,9 @@ same subset of options as `agent --base`), and accepts `screenshot: "none" | "fi
 `cpuProfile` and `label`. It returns a `resource_link` to the saved report JSON. Check
 `isError` and the structured status/validity of every result, not only that the call
 returned. `ab_compare_webgpu` cannot set readiness flags, hook mode, `--api`, viewport or
-budgets (see measurement.md); use the CLI `ab` for those. `doctor_webgpu` probes WebGPU
-(`timestamp-query`) and WebGL2 (`EXT_disjoint_timer_query_webgl2`) on a local
-`http://127.0.0.1` page and reports any adapter/device error in `webgpu.error`.
+budgets (see measurement.md); use the CLI `ab` for those. If `doctor_webgpu` reports WebGPU
+unavailable on a machine where captures work, trust CLI `doctor --json` instead: the MCP
+probe runs on a page where `navigator.gpu` is not exposed.
 
 ## Inspect saved reports
 

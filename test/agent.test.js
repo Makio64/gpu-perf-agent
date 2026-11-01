@@ -306,9 +306,7 @@ test("MCP profile_webgpu supports inline JPEG screenshots, label naming, and bas
     cpuProfile: true,
     screenshot: "inline"
   });
-  for (let i = 0; i < 200 && !fixture.messages.some(m => m.id === 1); i++) {
-    await new Promise(r => setTimeout(r, 10));
-  }
+  await new Promise(r => setTimeout(r, 25));
   const baseRes = fixture.messages.find(m => m.id === 1).result;
   assert.equal(baseRes.isError, false);
   assert.match(baseRes.structuredContent.reportPath, /base-1\.json$/);
@@ -709,60 +707,4 @@ test("MCP distinguishes parse errors, echoes valid id on -32600 invalid requests
     [42, -32600],
     [10, -32601]
   ]);
-});
-
-test("probeBrowser navigates to a secure http://127.0.0.1 page and doctor_webgpu forwards webgpu.error", async t => {
-  const { probeBrowser } = await import("../src/fast-cdp-runner.js");
-  const navigatedUrls = [];
-  const mockBrowserSession = {
-    async send(method) {
-      if (method === "Browser.getVersion") return { product: "HeadlessChrome/131.0", userAgent: "UA" };
-      if (method === "Target.createBrowserContext") return { browserContextId: "ctx-1" };
-      if (method === "Target.createTarget") return { targetId: "tgt-1" };
-      if (method === "Target.attachToTarget") return { sessionId: "sess-1" };
-      if (method === "Target.disposeBrowserContext") return {};
-      return {};
-    },
-    session() {
-      return {
-        async send(method, params) {
-          if (method === "Page.navigate") {
-            navigatedUrls.push(params.url);
-            return { frameId: "frame-1" };
-          }
-          if (method === "Runtime.evaluate") {
-            return {
-              result: {
-                value: {
-                  webgpu: { available: false, adapter: null, timestampQuery: false, error: "navigator.gpu.requestAdapter returned null" },
-                  webgl2: { available: true, renderer: "ANGLE Metal" }
-                }
-              }
-            };
-          }
-          return {};
-        },
-        dispose() {}
-      };
-    }
-  };
-
-  const probed = await probeBrowser(mockBrowserSession, { executablePath: "/Applications/Chrome" }, {
-    probeUrl: "http://127.0.0.1:43210/examples/doctor.html"
-  });
-  assert.deepEqual(navigatedUrls, ["http://127.0.0.1:43210/examples/doctor.html"]);
-  assert.equal(probed.webgpu.error, "navigator.gpu.requestAdapter returned null");
-
-  const fixture = await mcpFixture(t, async () => ({
-    alive: true,
-    async probe() {
-      return probed;
-    },
-    async close() {}
-  }));
-  send(fixture.input, 1, "doctor_webgpu", {});
-  await fixture.server.close();
-  const docRes = fixture.messages.find(m => m.id === 1).result;
-  assert.equal(docRes.structuredContent.webgpu.available, false);
-  assert.equal(docRes.structuredContent.webgpu.error, "navigator.gpu.requestAdapter returned null");
 });

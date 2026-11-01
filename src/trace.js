@@ -36,10 +36,7 @@ export async function startChromeTrace(session, categories = DEFAULT_TRACE_CATEG
 
   try {
     await session.send("Tracing.start", params);
-  } catch (error) {
-    if (/already been started/i.test(error?.message || "")) {
-      await stopChromeTrace(session, { timeoutMs: 5000 }).catch(() => {});
-    }
+  } catch {
     const fallback = { ...params };
     delete fallback.memoryDumpConfig;
     await session.send("Tracing.start", fallback);

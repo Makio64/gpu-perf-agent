@@ -175,7 +175,6 @@ test("CLI run and agent forward only explicit flags through --server, support ag
       options: { ...options, autoInstrument: options.autoInstrument ?? false, api: options.api ?? "auto", samplingMode: options.samplingMode ?? "frames", viewport: "1280x720", deviceScaleFactor: 1 },
       inPage: {
         hook: { found: true },
-        ...(options.autoInstrument ? { instrumentation: { after: { counters: {} } } } : {}),
         samples: [{ index: 0, elapsedMs: 100, measurement: { gpuMs: 1.5, observedFrames: { count: 6, fps: 60, frameTimeMs: { count: 6, mean: 16.67, p95: 16.7 } } } }],
         summary: { fps: { mean: 60 }, frameTimeMsMean: { mean: 16.67 }, frameTimeMsP95: { mean: 16.7 }, observedFrameCount: 6, sampleCount: 1 }
       }
@@ -204,14 +203,9 @@ test("CLI run and agent forward only explicit flags through --server, support ag
   assert.equal(requests[1].waitForHook, true);
   assert.equal(requests[2].samplingMode, "hook");
   assert.equal(requests[2].waitForHook, true);
-  assert.equal(requests[2].preset, "quick");
-  assert.equal(requests[2].durationMs, 250);
-  assert.equal(requests[2].warmup, 2);
-  assert.equal(requests[2].autoInstrument, true);
-  assert.equal(requests[2].gpuTiming, true);
 
-  const runAsync = async (cliArgs, cwdDir = root, customEnv = process.env) => {
-    const child = spawn(process.execPath, [cli, ...cliArgs], { cwd: cwdDir, env: customEnv });
+  const runAsync = async (cliArgs, cwdDir = root) => {
+    const child = spawn(process.execPath, [cli, ...cliArgs], { cwd: cwdDir });
     let stdout = "", stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -227,10 +221,6 @@ test("CLI run and agent forward only explicit flags through --server, support ag
   assert.equal(combined.status, 0, combined.stderr || combined.stdout);
   assert.match(combined.stdout, /Matched baseline: .*autoInstrument=false/);
   assert.match(combined.stdout, /Saved: reports\/iter-1\.json, reports\/iter-1\.compare\.json/);
-  // Verify agent --server --base forwarded baseline-inherited options in the server payload
-  assert.equal(requests[3].samples, 1);
-  assert.equal(requests[3].autoInstrument, false);
-  assert.equal(requests[3].viewport, "1280x720");
 
   // Test runtime failure writes failure report and exits 3
   shouldFail = true;
@@ -244,55 +234,6 @@ test("CLI run and agent forward only explicit flags through --server, support ag
   const savedFail = JSON.parse(await readFile(failOut, "utf8"));
   assert.equal(savedFail.runError.code, "navigation-failed");
   assert.equal(savedFail.diagnostics.validity.valid, false);
-
-  // Verify warm daemon page-level failure does not fall back to a second in-process run or print "using warm profiler"
-  const { daemonKey } = await import("../src/daemon.js");
-  const stateDir = path.join(directory, "daemon-state");
-  await (await import("node:fs/promises")).mkdir(stateDir, { recursive: true, mode: 0o700 });
-  let daemonRuns = 0;
-  const daemonServer = createServer((req, res) => {
-    if (req.method === "GET" && req.url === "/health") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, alive: true, pid: process.pid }));
-      return;
-    }
-    if (req.method === "POST" && req.url === "/run") {
-      daemonRuns += 1;
-      req.resume();
-      req.on("end", () => {
-        res.writeHead(500, { "content-type": "application/json" });
-        res.end(JSON.stringify({
-          ok: false,
-          error: {
-            code: "hook-timeout",
-            message: "Timed out after 10000 ms waiting for benchmark hook __gpuReportBench.",
-            samplingStarted: false
-          }
-        }));
-      });
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  await new Promise((resolve) => daemonServer.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => daemonServer.close(resolve)));
-  const key = await daemonKey({ executablePath: "/definitely/missing-chrome-binary" });
-  await writeFile(path.join(stateDir, `${key}.json`), JSON.stringify({
-    port: daemonServer.address().port,
-    pid: process.pid,
-    startedAt: new Date(Date.now() - 30000).toISOString(),
-    key
-  }), { mode: 0o600 });
-
-  const daemonFailOut = path.join(directory, "daemon-fail.json");
-  const daemonFailed = await runAsync([
-    "agent", "--url", "http://localhost:1234", "--executable-path", "/definitely/missing-chrome-binary", "--out", daemonFailOut
-  ], directory, { ...process.env, GPU_PERF_AGENT_STATE_DIR: stateDir, GPU_PERF_AGENT_NO_DAEMON: "0" });
-  assert.equal(daemonFailed.status, 3);
-  assert.equal(daemonRuns, 1);
-  assert.match(daemonFailed.stderr, /error\[hook-timeout\]: Timed out after 10000 ms waiting for benchmark hook __gpuReportBench/);
-  assert.doesNotMatch(daemonFailed.stderr, /using warm profiler pid/);
 });
 
 test("quick doctor locates xctrace without enumerating templates and handles missing tools", { skip: process.platform !== "darwin" }, async () => {

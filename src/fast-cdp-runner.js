@@ -4,7 +4,6 @@ import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { CDPConnection } from "./cdp.js";
 import { requestJson } from "./http-client.js";
 import { acquireMeasurementLock, processAlive } from "./measure-lock.js";
@@ -276,7 +275,6 @@ export class FastCDPHarness {
         });
         const requested = options.cpuProfile === true;
         const autoTrigger = options.cpuProfile === "auto"
-          && !inPage?.hook?.found
           && (rawBottleneck.class === "cpu-bound"
             || (rawBottleneck.class === "mixed" && Number.isFinite(rawBottleneck.mainThreadBusy) && rawBottleneck.mainThreadBusy >= 0.6));
         if (requested || autoTrigger) {
@@ -439,6 +437,7 @@ export class FastCDPHarness {
       if (this.activeJob === job) this.activeJob = null;
       try {
         await lock?.release();
+        if (tracing) await stopChromeTrace(this.browserSession, { timeoutMs: 5000 }).catch(() => {});
         if (page) await page.close();
       } catch (error) {
         if (!this.aborted && !job.aborted && !this.connectionClosed) {
@@ -446,7 +445,6 @@ export class FastCDPHarness {
           throw this.cleanupError;
         }
       } finally {
-        if (tracing) await stopChromeTrace(this.browserSession, { timeoutMs: 5000 }).catch(() => {});
         await target?.close?.();
       }
     }
@@ -762,12 +760,12 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
       // Also closes popups and terminates workers owned by this job.
       const id = browserContextId;
       browserContextId = null;
-      await browserSession.send("Target.disposeBrowserContext", { browserContextId: id }, 10000);
+      await browserSession.send("Target.disposeBrowserContext", { browserContextId: id }, 5000);
     } else if (browserContextId) {
       // Shared mode retains storage and service workers, but never leaves popup pages running.
       const pagesOf = async () => (await browserSession.send("Target.getTargets")).targetInfos
         .filter(info => info.browserContextId === browserContextId && info.type === "page");
-      await Promise.all((await pagesOf()).map(info => browserSession.send("Target.closeTarget", { targetId: info.targetId }, 10000)));
+      await Promise.all((await pagesOf()).map(info => browserSession.send("Target.closeTarget", { targetId: info.targetId }, 5000)));
       // closeTarget answers before the page is gone; wait (bounded) so the next job starts clean.
       for (let tries = 0; tries < 50 && (await pagesOf()).length > 0; tries++) await new Promise(resolve => setTimeout(resolve, 20));
     } else if (target) {
@@ -880,10 +878,9 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
 
     if (options.waitForHook) {
       const hookName = options.hookName || "__gpuReportBench";
-      const hookTimeoutMs = Number(options.hookTimeoutMs ?? (options.timeoutMs !== 60000 ? options.timeoutMs : 10000));
       const ready = await session.send("Runtime.evaluate", {
         expression: `(async () => {
-          const deadline = performance.now() + ${hookTimeoutMs};
+          const deadline = performance.now() + ${options.timeoutMs};
           while (typeof globalThis[${JSON.stringify(hookName)}] !== "function") {
             if (performance.now() >= deadline) return "timeout";
             await new Promise(resolve => setTimeout(resolve, 25));
@@ -892,10 +889,10 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
         })()`,
         awaitPromise: true,
         returnByValue: true
-      }, hookTimeoutMs + 1000);
+      }, options.timeoutMs + 1000);
       if (ready.exceptionDetails) throw new Error(formatExceptionDetails(ready.exceptionDetails));
       if (ready.result?.value === "timeout") {
-        throw Object.assign(new Error(`Timed out after ${hookTimeoutMs} ms waiting for benchmark hook ${hookName}.`), {
+        throw Object.assign(new Error(`Timed out waiting for benchmark hook ${hookName}.`), {
           code: "hook-timeout",
           hint: `Define globalThis.${hookName}, pass --hook NAME, or drop --wait-for-hook.`
         });
@@ -1205,47 +1202,26 @@ function createProgressRelay(session, emit, { onFirstSampleStart } = {}) {
   };
 }
 
-export async function probeBrowser(browserSession, launch, { probeUrl: explicitProbeUrl } = {}) {
+async function probeBrowser(browserSession, launch) {
   const version = await browserSession.send("Browser.getVersion", undefined, 5000);
   const { browserContextId } = await browserSession.send("Target.createBrowserContext", { disposeOnDetach: true }, 5000);
-  let fileTarget = null;
   let session;
   try {
-    if (!explicitProbeUrl) {
-      try {
-        fileTarget = await createFileTarget(fileURLToPath(new URL("../examples/doctor.html", import.meta.url)));
-      } catch {
-        // Fall back to about:blank only if loopback bind is disallowed by a sandbox.
-      }
-    }
-    const probeUrl = explicitProbeUrl || fileTarget?.url || "about:blank";
     const target = await browserSession.send("Target.createTarget", { browserContextId, url: "about:blank" }, 5000);
     const attached = await browserSession.send("Target.attachToTarget", { flatten: true, targetId: target.targetId }, 5000);
     session = browserSession.session(attached.sessionId);
-    if (probeUrl !== "about:blank") {
-      await session.send("Page.navigate", { url: probeUrl }, 5000);
-    }
     const result = await session.send("Runtime.evaluate", {
       awaitPromise: true,
       returnByValue: true,
       expression: `(async () => {
-        if (document.readyState === "loading") {
-          await new Promise(resolve => addEventListener("DOMContentLoaded", resolve, { once: true }));
-        }
         const webgpu = { available: false, adapter: null, timestampQuery: false };
         try {
-          if (!navigator.gpu) {
-            webgpu.error = window.isSecureContext === false ? "WebGPU requires a secure context." : "navigator.gpu is unavailable.";
-          } else {
-            const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-            if (adapter) {
-              const info = adapter.info || (typeof adapter.requestAdapterInfo === "function" ? await adapter.requestAdapterInfo() : {});
-              webgpu.available = true;
-              webgpu.adapter = { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "" };
-              webgpu.timestampQuery = adapter.features.has("timestamp-query");
-            } else {
-              webgpu.error = "navigator.gpu.requestAdapter returned null";
-            }
+          const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+          if (adapter) {
+            const info = adapter.info || {};
+            webgpu.available = true;
+            webgpu.adapter = { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "" };
+            webgpu.timestampQuery = adapter.features.has("timestamp-query");
           }
         } catch (error) { webgpu.error = String(error && error.message || error); }
         const webgl2 = { available: false, renderer: null };
@@ -1269,7 +1245,6 @@ export async function probeBrowser(browserSession, launch, { probeUrl: explicitP
   } finally {
     session?.dispose();
     await safeSend(browserSession, "Target.disposeBrowserContext", { browserContextId }, 5000);
-    await fileTarget?.close?.().catch(() => {});
   }
 }
 
