@@ -158,12 +158,16 @@ test("connectOrStartDaemon and runViaDaemon reuse a healthy daemon and replace a
 
   // Test runViaDaemon with progress notifications
   const progressEvents = [];
+  let reuseCount = 0;
   const report = await runViaDaemon(
     { url: "http://127.0.0.1:8080", warmup: 1, samples: 2 },
     {
       launchOptions,
       stateDir,
+      env: {},
+      argv: [],
       onProgress: ev => progressEvents.push(ev),
+      onReuse: () => { reuseCount += 1; },
       onDaemonUsed: info => assert.equal(info.pid, process.pid)
     }
   );
@@ -171,6 +175,7 @@ test("connectOrStartDaemon and runViaDaemon reuse a healthy daemon and replace a
   assert.equal(report.summary.verdict, "excellent");
   assert.equal(requests, 1);
   assert.equal(progressEvents.length, 3);
+  assert.equal(reuseCount, 1);
 
   // If state file has a dead PID, connectOrStartDaemon spawns a fresh daemon
   await writeFile(stateFile, JSON.stringify({
@@ -200,6 +205,80 @@ test("connectOrStartDaemon and runViaDaemon reuse a healthy daemon and replace a
   assert.ok(reconnected);
   assert.equal(reconnected.reused, false);
   assert.equal(reconnected.pid, process.pid);
+});
+
+test("runViaDaemon rethrows page-level daemon errors without calling onReuse, and returns null only on harness/browser death", { skip: !networkEnabled }, async t => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gpu-daemon-err-"));
+  await chmod(stateDir, 0o700);
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+
+  let nextError = null;
+  const server = createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, alive: true, pid: process.pid }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/run") {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: nextError }));
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const { port } = server.address();
+
+  const launchOptions = { angle: "metal" };
+  const key = await daemonKey(launchOptions);
+  const stateFile = path.join(stateDir, `${key}.json`);
+  await writeFile(stateFile, JSON.stringify({
+    port,
+    pid: process.pid,
+    startedAt: new Date(Date.now() - 60000).toISOString(),
+    key
+  }), { mode: 0o600 });
+
+  let reused = 0;
+  for (const errPayload of [
+    { code: "hook-timeout", message: "Timed out after 10000 ms waiting for benchmark hook __gpuReportBench.", samplingStarted: false },
+    { code: "condition-timeout", message: "Timed out after 1500 ms waiting for page condition", samplingStarted: false },
+    { code: "navigation-failed", message: "Navigation failed: net::ERR_CONNECTION_REFUSED", samplingStarted: false }
+  ]) {
+    nextError = errPayload;
+    await assert.rejects(
+      runViaDaemon({ url: "http://127.0.0.1:8080" }, {
+        launchOptions,
+        stateDir,
+        env: {},
+        argv: [],
+        onReuse: () => { reused += 1; }
+      }),
+      err => {
+        assert.equal(err.code, errPayload.code);
+        assert.equal(err.fromDaemon, true);
+        return true;
+      }
+    );
+  }
+  assert.equal(reused, 0, "onReuse must not be called when daemon run fails");
+
+  // Harness/browser death before sampling returns null so caller can fall back
+  nextError = { code: "aborted", message: "The profiler is shutting down.", samplingStarted: false };
+  const fallback = await runViaDaemon({ url: "http://127.0.0.1:8080" }, {
+    launchOptions,
+    stateDir,
+    env: {},
+    argv: [],
+    onReuse: () => { reused += 1; }
+  });
+  assert.equal(fallback, null);
+  assert.equal(reused, 0);
 });
 
 test("browser: second consecutive agent --file examples/webgpu-clear.html is >= 0.3 s faster and prints warm pid", {

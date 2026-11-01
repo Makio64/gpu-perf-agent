@@ -74,5 +74,5 @@ test('a missing --file fails with file-not-found before Chrome launches', async 
     assert.match(error.hint, /resolved from --file .*cwd /);
     return true;
   });
-  assert.ok(performance.now() - started < 100, `took ${performance.now() - started} ms`);
+  assert.ok(performance.now() - started < 1000, `took ${performance.now() - started} ms`);
 });

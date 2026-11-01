@@ -199,13 +199,17 @@ export function formatAgentReport(report, { out, cwd = process.cwd() } = {}) {
     const subtype = b.subtype ? ` (${b.subtype})` : "";
     const hz = Math.round(b.hz ?? b.refreshHz ?? s.cadence?.hz ?? 60);
     const budgetMs = b.budgetMs ?? (hz > 0 ? 1000 / hz : 16.67);
-    const gpuMs = b.gpuMs ?? gpu.frameMsP50 ?? s.gpuFrameMsMean;
+    const hasBottleneckGpuMs = Object.hasOwn(b, "gpuMs");
+    const gpuMs = hasBottleneckGpuMs ? b.gpuMs : (gpu.frameMsP50 ?? s.gpuFrameMsMean);
+    const rawGpuMs = gpu.frameMsP50 ?? s.gpuFrameMsMean;
     let gpuPart;
     if (b.gpuSaturated) {
       gpuPart = "GPU ≥ budget (saturated)";
     } else if (Number.isFinite(gpuMs)) {
       const sharePct = Number.isFinite(b.gpuShare) ? Math.round(b.gpuShare * 100) : Math.round((gpuMs / budgetMs) * 100);
       gpuPart = `GPU ${fmtSmart(gpuMs, 2)} ms (${sharePct}% of ${fmtSmart(budgetMs, 2)} ms)`;
+    } else if (hasBottleneckGpuMs && Number.isFinite(rawGpuMs)) {
+      gpuPart = "GPU untrusted";
     } else {
       gpuPart = "GPU n/a";
     }
@@ -372,9 +376,23 @@ const OPTION_TO_FLAG = {
   hookName: (v) => `--hook-name ${v}`
 };
 
-function copiedAbFlags(baseOptions = {}) {
+function copiedAbFlags(baseOptions = {}, cwd = process.cwd()) {
   if (!baseOptions || typeof baseOptions !== "object") return "";
   const flags = [];
+  if (baseOptions.fileRoot) flags.push(`--file-root ${relPath(baseOptions.fileRoot, cwd) || "."}`);
+  if (baseOptions.samplingMode && baseOptions.samplingMode !== "frames") flags.push(`--sampling-mode ${baseOptions.samplingMode}`);
+  if (baseOptions.waitUntil && baseOptions.waitUntil !== "networkidle") flags.push(`--wait-until ${baseOptions.waitUntil}`);
+  if (baseOptions.waitForHook && baseOptions.samplingMode !== "hook") flags.push("--wait-for-hook");
+  if (baseOptions.waitCondition) flags.push(`--wait-condition ${JSON.stringify(baseOptions.waitCondition)}`);
+  if (baseOptions.viewport) {
+    const vp = baseOptions.viewport.width && baseOptions.viewport.height
+      ? `${baseOptions.viewport.width}x${baseOptions.viewport.height}`
+      : String(baseOptions.viewport);
+    if (vp !== "1280x720") flags.push(`--viewport ${vp}`);
+  }
+  if (baseOptions.deviceScaleFactor != null && Number(baseOptions.deviceScaleFactor) !== 1) {
+    flags.push(`--device-scale-factor ${baseOptions.deviceScaleFactor}`);
+  }
   if (baseOptions.autoInstrument === false) flags.push("--no-auto-instrument");
   if (baseOptions.gpuTiming === false) flags.push("--no-gpu-timing");
   if (baseOptions.api && baseOptions.api !== "auto") flags.push(`--api ${baseOptions.api}`);
@@ -414,7 +432,9 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
       ? `, 95% CI ${fmtSigned(pRow.confidence95.low)}..${fmtSigned(pRow.confidence95.high)}${unit}`
       : "";
     let modeDetail = "";
-    if (mode === "paired") {
+    if (cs.status === "invalid" && cs.reasons?.[0]) {
+      modeDetail = `, ${cs.reasons[0]}`;
+    } else if (mode === "paired") {
       const rounds = pRow.baseStats?.count ?? pRow.candidateStats?.count ?? result?.rounds ?? null;
       if (rounds) modeDetail = `, ${rounds} rounds`;
     } else if (pRow.status === "unverified" || cs.status === "unverified") {
@@ -437,7 +457,7 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
   }
 
   // Line 2: Decision rows: <shortKey> <status>[ (<reason|screen <s>>)] | …
-  const rank = { regression: 0, unverified: 1, inconclusive: 2, improved: 3, unchanged: 4, pass: 4 };
+  const rank = { missing: -1, regression: 0, unverified: 1, inconclusive: 2, improved: 3, unchanged: 4, pass: 4 };
   const decisionCandidates = rows
     .filter((r) => (r.gated || r.budgeted) && r.key !== pKey)
     .sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5))
@@ -486,11 +506,44 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
   const trustItems = [
     `base ${baseValid ? "valid" : `invalid: ${baseCode}`}, cand ${candValid ? "valid" : `invalid: ${candCode}`}`
   ];
+  const compIssues = (cmp.validity?.issues || []).filter(
+    (i) => i.code !== "invalid-base" && i.code !== "invalid-candidate"
+  );
+  for (const issue of compIssues.slice(0, 2)) {
+    trustItems.push(`invalid: ${issue.message || issue.code}`);
+  }
   const autoB = cmp.gpuTiming?.auto?.base;
   const autoC = cmp.gpuTiming?.auto?.candidate;
-  if (mode === "paired") {
-    const unstable = autoB?.stability?.status === "unstable" || autoC?.stability?.status === "unstable";
-    trustItems.push(unstable ? "GPU unstable" : "GPU stable both sides");
+  const hookB = cmp.gpuTiming?.base;
+  const hookC = cmp.gpuTiming?.candidate;
+  const stabB = autoB?.stability?.status || hookB?.stability?.status || null;
+  const stabC = autoC?.stability?.status || hookC?.stability?.status || null;
+  const clockB = autoB?.clockSensitive;
+  const clockC = autoC?.clockSensitive;
+  if (stabB === "unstable" || stabC === "unstable") {
+    trustItems.push(
+      stabB === "unstable" && stabC === "unstable"
+        ? "GPU unstable both sides"
+        : stabB === "unstable"
+          ? "GPU base unstable"
+          : "GPU cand unstable"
+    );
+  } else if (mode === "paired") {
+    if (stabB === "unknown" && stabC === "unknown") {
+      trustItems.push("GPU stability unknown");
+    } else {
+      trustItems.push("GPU stable both sides");
+    }
+  } else if (clockB !== undefined || clockC !== undefined || stabB || stabC) {
+    if (clockB && clockC) {
+      trustItems.push("GPU clock-sensitive both sides");
+    } else if (clockB || clockC) {
+      trustItems.push(clockB ? "GPU base clock-sensitive" : "GPU cand clock-sensitive");
+    } else if (stabB === "stable" && stabC === "stable") {
+      trustItems.push("GPU stable both sides");
+    } else {
+      trustItems.push("GPU stability unknown");
+    }
   } else {
     trustItems.push("GPU clock-sensitive both sides");
   }
@@ -502,19 +555,41 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
   }
   lines.push(`Trust: ${trustItems.join("; ")}`);
 
-  // Line 6 (when informational rows changed): Not gated: <n> changed (<top 3 keys>)
+  // Line 6 (when informational rows changed): Not gated: <n> changed (<keys>)
   const infoChanged = rows.filter((r) => !r.gated && (r.status === "changed" || r.status === "regression" || r.status === "improved"));
   const changedCount = infoChanged.length || cmp.summary?.changed || 0;
   if (changedCount > 0) {
-    const topKeys = infoChanged.slice(0, 3).map((r) => shortenMetricKey(r.key));
-    lines.push(`Not gated: ${changedCount} changed${topKeys.length ? ` (${topKeys.join(", ")})` : ""}`);
+    const sliceLimit = infoChanged.length <= 4 ? 4 : 3;
+    const topKeys = infoChanged.slice(0, sliceLimit).map((r) => shortenMetricKey(r.key));
+    const moreCount = infoChanged.length > topKeys.length ? infoChanged.length - topKeys.length : 0;
+    const keyList = topKeys.length
+      ? ` (${topKeys.join(", ")}${moreCount > 0 ? `, +${moreCount} more` : ""})`
+      : "";
+    lines.push(`Not gated: ${changedCount} changed${keyList}`);
   }
 
   // Line 7 (when separate & unverified/inconclusive): Next: confirm with ab --base-file <…> --candidate-file <…> --metric <primary>[ copied flags]
   if (mode === "separate" && (cs.status === "unverified" || cs.status === "inconclusive")) {
-    const baseTarget = cmp.baseFile ? `--base-file ${relPath(cmp.baseFile, cwd)}` : cmp.baseUrl ? `--base-url ${cmp.baseUrl}` : "--base-file <base>";
-    const candTarget = cmp.candidateFile ? `--candidate-file ${relPath(cmp.candidateFile, cwd)}` : cmp.candidateUrl ? `--candidate-url ${cmp.candidateUrl}` : "--candidate-file <cand>";
-    lines.push(`Next: confirm with ab ${baseTarget} ${candTarget} --metric ${pKey}${copiedAbFlags(baseOptions)}`);
+    const baseFileRel = cmp.baseFile ? relPath(cmp.baseFile, cwd) : null;
+    const candFileRel = cmp.candidateFile ? relPath(cmp.candidateFile, cwd) : null;
+    const sameFile = Boolean(baseFileRel && candFileRel && baseFileRel === candFileRel);
+    const sameUrl = Boolean(cmp.baseUrl && cmp.candidateUrl && cmp.baseUrl === cmp.candidateUrl);
+    const baseTarget = sameFile
+      ? "--base-file <baseline-copy.html>"
+      : sameUrl
+        ? "--base-url <baseline-url>"
+        : baseFileRel
+          ? `--base-file ${baseFileRel}`
+          : cmp.baseUrl
+            ? `--base-url ${cmp.baseUrl}`
+            : "--base-file <base>";
+    const candTarget = candFileRel
+      ? `--candidate-file ${candFileRel}`
+      : cmp.candidateUrl
+        ? `--candidate-url ${cmp.candidateUrl}`
+        : "--candidate-file <cand>";
+    const effectiveBaseOptions = baseOptions || result?.baseOptions || cmp?.baseOptions;
+    lines.push(`Next: confirm with ab ${baseTarget} ${candTarget} --metric ${pKey}${copiedAbFlags(effectiveBaseOptions, cwd)}`);
   }
 
   // Line 8 (when out): Saved: <relpath>
@@ -758,14 +833,14 @@ export function compactComparison(result, comparisonPath = null, { allowMismatch
   };
 }
 
-function inferErrorCode(error, message) {
+function inferErrorCode(error, firstLine) {
   if (error?.code && typeof error.code === "string" && !error.code.startsWith("ERR_")) return error.code;
   if (error?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || error?.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") return "invalid-options";
-  if (error?.code === "ENOENT" || /not found|ENOENT/i.test(message)) return "file-not-found";
-  if (/unknown command|requires --url or --file|must be one of|must be a/i.test(message)) return "invalid-options";
-  if (/navigation|ERR_CONNECTION/i.test(message)) return "navigation-failed";
-  if (/timed? out/i.test(message)) return "capture-timeout";
-  if (/chrome|browser/i.test(message)) return "browser-launch-failed";
+  if (error?.code === "ENOENT" || /not found|ENOENT/i.test(firstLine)) return "file-not-found";
+  if (/unknown command|requires --url or --file|must be one of|must be a/i.test(firstLine)) return "invalid-options";
+  if (/navigation|ERR_CONNECTION/i.test(firstLine)) return "navigation-failed";
+  if (/timed? out/i.test(firstLine)) return "capture-timeout";
+  if (/failed to launch|executable|chrome.*(not found|exited|failed)|browser.*(launch|not found|exited)/i.test(firstLine)) return "browser-launch-failed";
   return "command-failed";
 }
 
@@ -787,12 +862,13 @@ function defaultErrorHint(code) {
 }
 
 export function normalizeCliError(error) {
-  const message = String(error?.message ?? error ?? "Unknown error")
+  const rawMessage = String(error?.message ?? error ?? "Unknown error")
     .replace(/^(?:Error:\s*)+/i, "")
     .trim();
-  const code = inferErrorCode(error, message);
+  const firstLine = rawMessage.split(/\r?\n/)[0].replace(/^(?:Error:\s*)+/i, "").trim();
+  const code = inferErrorCode(error, firstLine);
   const hint = error?.hint ? cleanLine(error.hint) : defaultErrorHint(code);
-  return { code, message, hint };
+  return { code, message: firstLine || rawMessage, hint };
 }
 
 /**

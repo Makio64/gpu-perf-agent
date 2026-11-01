@@ -171,8 +171,10 @@ export function warningCodes(report) {
 export function refreshState(report) {
   const summary = report?.inPage?.summary || {};
   const cadence = summary.cadence || report?.summary?.cadence || null;
-  const hz = finite(cadence?.hz);
-  const budgetMs = finite(cadence?.intervalMs) ?? (hz > 0 ? 1000 / hz : DEFAULT_BUDGET_MS);
+  const rawHz = finite(cadence?.hz);
+  const validRefresh = rawHz !== null && rawHz >= 60 && cadence?.hitRate !== null;
+  const hz = validRefresh ? rawHz : (cadence ? 60 : null);
+  const budgetMs = validRefresh ? (finite(cadence?.intervalMs) ?? 1000 / rawHz) : DEFAULT_BUDGET_MS;
   const refreshHz = hz ?? 1000 / budgetMs;
   const fps = finite(summary.fps?.mean) ?? finite(report?.summary?.fps);
   const activity = summary.activity;

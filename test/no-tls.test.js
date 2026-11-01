@@ -40,7 +40,7 @@ test('--help and compare never load tls or undici', async () => {
 });
 
 test('--server client errors use node:http, not fetch', async () => {
-  const result = await runCli(['run', '--server', 'http://127.0.0.1:1', '--url', 'http://127.0.0.1:2/', '--json']);
+  const result = await runCli(['run', '--server', 'http://127.0.0.1:1', '--url', 'http://127.0.0.1:2/', '--out', '$TMP/fail.json', '--json']);
   assert.notEqual(result.status, 0);
   assert.match(result.stdout, /127\.0\.0\.1:1/);
   assert.deepEqual(result.loaded, []);

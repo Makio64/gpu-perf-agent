@@ -115,9 +115,9 @@ npx gpu-perf-agent ab --base-url http://localhost:5174 --candidate-url http://lo
 deltas trustworthy; separate captures can differ just because GPU clocks changed. Use at
 least 4 rounds (the default) and the same readiness, `--api`, viewport, `--metric` and
 `--sampling-mode` flags as the baseline. 2.2+ enables instrumentation and GPU timing in `ab`
-by default. The `Next: confirm with ab ...` line printed after screening takes both targets
-from the reports: after an in-place edit it names the same target twice, so point its base
-at your baseline copy, add the `--file-root` you captured with, and check its `--metric`.
+by default. The `Next: confirm with ab ...` line printed after screening copies your
+readiness, `--file-root`, viewport and `--metric` flags; after an in-place edit, replace its
+`<baseline-url>` or `<baseline-copy.html>` placeholder with your baseline copy.
 
 **7. Stop, report, clean up.** See the last section.
 

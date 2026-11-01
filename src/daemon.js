@@ -210,13 +210,6 @@ export async function runViaDaemon(options = {}, {
   });
   if (!daemon) return null;
 
-  try {
-    if (daemon.reused) onReuse?.(daemon);
-    onDaemonUsed?.(daemon);
-  } catch {
-    // Ignore callback errors.
-  }
-
   const runBody = { ...options };
   for (const key of LAUNCH_OPTION_KEYS) delete runBody[key];
 
@@ -233,6 +226,12 @@ export async function runViaDaemon(options = {}, {
       }
     });
     if (status >= 200 && status < 300 && json && typeof json === "object") {
+      try {
+        if (daemon.reused) onReuse?.(daemon);
+        onDaemonUsed?.(daemon);
+      } catch {
+        // Ignore callback errors.
+      }
       if (typeof onProgress === "function") {
         const warmup = Number(options.warmup ?? json.options?.warmup ?? 0) || 0;
         const samples = Number(options.samples ?? json.options?.samples ?? 0) || 0;
@@ -249,16 +248,28 @@ export async function runViaDaemon(options = {}, {
       };
       return json;
     }
-    if (status >= 500 && json?.error?.samplingStarted === false) return null;
+    if (status >= 500 && isDaemonInfraFailure(json?.error)) return null;
     if (status === 400 && /must be inside the server report directory/.test(json?.error?.message || "")) return null;
     throw Object.assign(new Error(json?.error?.message || `Daemon returned HTTP ${status}.`), {
       code: json?.error?.code || "run-failed",
-      ...(json?.error?.hint ? { hint: json.error.hint } : {})
+      fromDaemon: true,
+      ...(json?.error?.hint ? { hint: json.error.hint } : {}),
+      ...(typeof json?.error?.samplingStarted === "boolean" ? { samplingStarted: json.error.samplingStarted } : {})
     });
   } catch (error) {
     if (error?.code === "server-unreachable") return null;
     throw error;
   }
+}
+
+function isDaemonInfraFailure(err) {
+  if (!err || err.samplingStarted === true) return false;
+  const code = String(err.code || "").toLowerCase();
+  if (["aborted", "capture-cleanup-failed", "browser-launch-failed", "server-unreachable"].includes(code)) {
+    return true;
+  }
+  const msg = String(err.message || "");
+  return /CDP connection closed|session closed|Target\.create|harness.*closed|browser.*(closed|disconnected|crashed|exited)|EPIPE|ECONNRESET/i.test(msg);
 }
 
 export const runWithDaemon = runViaDaemon;

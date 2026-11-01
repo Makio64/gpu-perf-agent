@@ -302,3 +302,106 @@ test("comparisonExitCode and formatGpuTimingSignal preserve contract semantics",
     "GPU timing scope: (root); 3/3 samples."
   );
 });
+
+test("normalizeCliError ignores src/browser/... stack frames and Next: ab command handles same-target and extra flags", async () => {
+  const { normalizeCliError } = await import("../src/output.js");
+  const pageErr = new Error(
+    "Error: Record one timed pass using the supplied timer helpers.\n    at Object.measure (http://127.0.0.1:51234/src/browser/timing.js:37:13)\n    at __gpuReportBench (http://127.0.0.1:51234/examples/page.html:25:18)"
+  );
+  const norm = normalizeCliError(pageErr);
+  assert.equal(norm.code, "command-failed");
+  assert.equal(norm.message, "Record one timed pass using the supplied timer helpers.");
+
+  const paired = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  const sameUrlSep = {
+    ...paired,
+    status: "unverified",
+    exitCode: 0,
+    mode: "separate",
+    baseUrl: "http://localhost:5173/",
+    candidateUrl: "http://localhost:5173/",
+    primary: {
+      key: "health.autoGpuFrameMs.p50",
+      selection: "bottleneck",
+      row: { ...paired.primary.row, status: "unverified", screen: "better", reasons: ["separate-capture-gpu"] }
+    }
+  };
+  const nextDigest = formatAgentComparison(sameUrlSep, {
+    cwd: root,
+    baseOptions: {
+      fileRoot: path.join(root, "examples"),
+      samplingMode: "hook",
+      waitUntil: "load",
+      waitCondition: "window.ready === true",
+      viewport: "1920x1080",
+      deviceScaleFactor: 2
+    }
+  });
+  assert.match(
+    nextDigest,
+    /Next: confirm with ab --base-url <baseline-url> --candidate-url http:\/\/localhost:5173\/ --metric health\.autoGpuFrameMs\.p50 --file-root examples --sampling-mode hook --wait-until load --wait-condition "window\.ready === true" --viewport 1920x1080 --device-scale-factor 2/
+  );
+});
+
+test("digest honesty: Bound null gpuMs, Trust stability/missing-metric reason, and Not gated 4 changed names", async () => {
+  const capture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-capture.json"), "utf8"));
+  const untrustedGpuCapture = {
+    ...capture,
+    summary: {
+      ...capture.summary,
+      bottleneck: {
+        ...capture.summary.bottleneck,
+        gpuMs: null,
+        gpuShare: null,
+        primaryMetric: "health.cpuMsPerFrame"
+      }
+    }
+  };
+  const capDigest = formatAgentReport(untrustedGpuCapture, { cwd: root });
+  assert.match(capDigest, /Bound: vsync-capped 60 Hz; GPU untrusted, CPU 1\.3 ms\/frame → primary health\.cpuMsPerFrame/);
+  assert.match(capDigest, /GPU p50 8\.41 ms/);
+
+  const paired = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  // Separate comparison with stable non-clock-sensitive GPU timing on both sides + 4 informational changed rows
+  const honestSep = {
+    ...paired,
+    mode: "separate",
+    gpuTiming: {
+      auto: {
+        base: { stability: { status: "stable" }, clockSensitive: false },
+        candidate: { stability: { status: "stable" }, clockSensitive: false }
+      }
+    },
+    rows: [
+      paired.primary.row,
+      { key: "frame.maxJitterMs.mean", gated: false, status: "changed" },
+      { key: "gpu.pass.gl-frame#0.exclusiveP50Ns", gated: false, status: "changed" },
+      { key: "health.autoGpuFrameMs.p95", gated: false, status: "changed" },
+      { key: "memory.heap.allocKiBPerFrame", gated: false, status: "changed" }
+    ]
+  };
+  const honestDigest = formatAgentComparison(honestSep);
+  assert.match(honestDigest, /Trust: base valid, cand valid; GPU stable both sides/);
+  assert.match(honestDigest, /Not gated: 4 changed \(maxJitterMs\.mean, pass\.gl-frame#0\.exclusiveP50Ns, autoGpuFrameMs\.p95, allocKiBPerFrame\)/);
+
+  // Invalid comparison caused by a missing budget metric
+  const invalidBudget = {
+    ...paired,
+    status: "invalid",
+    exitCode: 2,
+    validity: {
+      valid: false,
+      issues: [{ code: "missing-metric", key: "health.gpuFrameMs.mean", message: "health.gpuFrameMs.mean is missing from both reports." }],
+      base: { valid: true, issues: [] },
+      candidate: { valid: true, issues: [] }
+    },
+    rows: [
+      paired.primary.row,
+      { key: "health.gpuFrameMs.mean", budgeted: true, gated: false, status: "missing" }
+    ]
+  };
+  const invDigest = formatAgentComparison(invalidBudget);
+  assert.match(invDigest, /^INVALID — primary health\.autoGpuFrameMs\.p50 .*missing-metric/m);
+  assert.match(invDigest, /^Decision rows: gpuFrameMs\.mean missing/m);
+  assert.match(invDigest, /Trust: base valid, cand valid; invalid: health\.gpuFrameMs\.mean is missing from both reports\./);
+});
