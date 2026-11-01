@@ -68,11 +68,12 @@ test('resolveFileRoot picks the nearest package.json/.git ancestor, else the fil
 
 test('a missing --file fails with file-not-found before Chrome launches', async () => {
   const { runFastReport } = await import('../src/fast-cdp-runner.js');
-  const started = performance.now();
-  await assert.rejects(runFastReport({ file: path.resolve('does-not-exist/page.html'), executablePath: '/definitely/missing' }), (error) => {
+  // The "launch" progress stage is emitted right before Chrome starts.
+  const stages = [];
+  await assert.rejects(runFastReport({ file: path.resolve('does-not-exist/page.html'), executablePath: '/definitely/missing' }, { onProgress: event => stages.push(event.stage) }), (error) => {
     assert.equal(error.code, 'file-not-found');
     assert.match(error.hint, /resolved from --file .*cwd /);
     return true;
   });
-  assert.ok(performance.now() - started < 100, `took ${performance.now() - started} ms`);
+  assert.deepEqual(stages, []);
 });

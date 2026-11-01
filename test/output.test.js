@@ -10,8 +10,10 @@ import {
   formatAgentReport,
   formatCaptureAndCompare,
   formatCliError,
-  formatGpuTimingSignal
+  formatGpuTimingSignal,
+  normalizeCliError
 } from "../src/output.js";
+import { compareReports } from "../src/compare.js";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 
@@ -179,6 +181,9 @@ test("formatAgentReport renders §8.1 invalid capture concisely", () => {
 
 test("formatAgentComparison renders §8.2 paired and separate digests within 140-token budget", async () => {
   const paired = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  // The trimmed fixture lacks the auto GPU evidence a real comparison of its primary carries.
+  const stableAuto = { status: "single-scope", stability: { status: "stable", clockSensitive: true }, clockSensitive: true };
+  paired.gpuTiming = { ...paired.gpuTiming, auto: { base: stableAuto, candidate: stableAuto } };
   const pairedDigest = formatAgentComparison(paired, { out: "reports/ab-1.json" });
   assert.ok(approxTokens(pairedDigest) <= 140, `expected <=140 tokens, got ${approxTokens(pairedDigest)}`);
   assert.match(pairedDigest, /^IMPROVED — primary health\.autoGpuFrameMs\.p50 1\.68 → 1\.49 ms \(-11\.3%, 95% CI -0\.23\.\.-0\.15 ms; paired, 4 rounds\) \(primary from base bottleneck\)/);
@@ -250,7 +255,8 @@ test("compactReport and compactComparison obey §8.3 byte caps (<=1.6 KB and <=2
   const comparison = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
 
   const cReport = compactReport(capture, path.join(root, "reports/scene-1.json"));
-  const reportBytes = Buffer.byteLength(JSON.stringify(cReport), "utf8");
+  // `out` repeats the absolute path: measure it at a typical length, not this checkout's.
+  const reportBytes = Buffer.byteLength(JSON.stringify({ ...cReport, out: "/Users/dev/projects/scene/reports/scene-1.json" }), "utf8");
   assert.ok(reportBytes <= 1638, `expected compactReport <= 1638 bytes, got ${reportBytes}`);
   assert.equal(cReport.schemaVersion, 3);
   assert.equal(cReport.ok, true);
@@ -301,4 +307,92 @@ test("comparisonExitCode and formatGpuTimingSignal preserve contract semantics",
     formatGpuTimingSignal({ status: "single-scope", scope: "", validSampleCount: 3, sampleCount: 3 }),
     "GPU timing scope: (root); 3/3 samples."
   );
+});
+
+test("comparison Trust line states the GPU stability evidence and comparison-level invalidity", async () => {
+  const capture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-capture.json"), "utf8"));
+  const trustOf = (result) => formatAgentComparison(result).split("\n").find((line) => line.startsWith("Trust:"));
+  const withAuto = (base, candidate) => ({
+    mode: "separate",
+    rows: [],
+    validity: { valid: true, issues: [], base: { valid: true }, candidate: { valid: true } },
+    gpuTiming: { base: null, candidate: null, auto: { base, candidate } }
+  });
+  const stable = { stability: { status: "stable", clockSensitive: false }, clockSensitive: false };
+  const sensitive = { stability: { status: "stable", clockSensitive: true }, clockSensitive: true };
+  const unstable = { stability: { status: "unstable", clockSensitive: false }, clockSensitive: false };
+
+  assert.equal(trustOf(withAuto(stable, stable)), "Trust: base valid, cand valid; GPU stable both sides");
+  assert.equal(trustOf(withAuto(stable, sensitive)), "Trust: base valid, cand valid; GPU clock-sensitive cand");
+  assert.equal(trustOf(withAuto(sensitive, sensitive)), "Trust: base valid, cand valid; GPU clock-sensitive both sides");
+  assert.equal(trustOf(withAuto(unstable, sensitive)), "Trust: base valid, cand valid; GPU unstable base");
+  assert.equal(trustOf({ ...withAuto(sensitive, sensitive), mode: "paired" }), "Trust: base valid, cand valid; GPU stable both sides");
+  // No GPU timing on either side: no GPU claim at all.
+  assert.equal(trustOf({ ...withAuto(null, null), gpuTiming: { base: null, candidate: null } }), "Trust: base valid, cand valid");
+
+  // A budget metric neither capture has: both captures valid, the comparison INVALID, and the Trust line says why.
+  const missing = compareReports(capture, capture, { budget: { metrics: { "custom.score.mean": { maxRegressionPercent: 5 } } } });
+  assert.equal(missing.status, "invalid");
+  const digest = formatAgentComparison(missing);
+  assert.match(digest, /^INVALID/);
+  assert.match(digest, /^Trust: base valid, cand valid; comparison invalid: missing-metric \(custom\.score\.mean is missing from both reports\); GPU clock-sensitive both sides$/m);
+});
+
+test("comparison Not gated line names every changed metric or counts the rest", () => {
+  const row = (key) => ({ key, status: "changed", gated: false, base: 1, candidate: 2 });
+  const result = {
+    mode: "paired",
+    rows: ["trace.durationMs", "warmup.durationMs", "frame.fps.p95", "cdp.JSHeapUsedSize.after", "trace.gpu.eventCount"].map(row),
+    validity: { valid: true, issues: [] }
+  };
+  assert.match(formatAgentComparison(result), /^Not gated: 5 changed \(trace\.durationMs, warmup\.durationMs, fps\.p95, \+2 more\)$/m);
+  result.rows = result.rows.slice(0, 2);
+  assert.match(formatAgentComparison(result), /^Not gated: 2 changed \(trace\.durationMs, warmup\.durationMs\)$/m);
+});
+
+test("Next: confirm with ab uses a baseline placeholder after an in-place edit and copies capture flags", () => {
+  const unverified = {
+    mode: "separate",
+    primary: { key: "health.autoGpuFrameMs.p50", selection: "bottleneck", row: { key: "health.autoGpuFrameMs.p50", base: 2, candidate: 1.8, unit: "ms", status: "unverified", reasons: ["separate-capture-gpu"] } },
+    rows: [],
+    validity: { valid: true, issues: [] }
+  };
+  const nextOf = (extra, options) => formatAgentComparison({ ...unverified, ...extra }, { cwd: "/work/app", ...options }).split("\n").find((line) => line.startsWith("Next:"));
+
+  assert.equal(nextOf({ baseFile: "/work/app/index.html", candidateFile: "/work/app/index.html" }),
+    "Next: confirm with ab --base-file <baseline-copy.html> --candidate-file index.html --metric health.autoGpuFrameMs.p50");
+  assert.equal(nextOf({ baseUrl: "http://localhost:5173/", candidateUrl: "http://localhost:5173/" }),
+    "Next: confirm with ab --base-url <baseline-url> --candidate-url http://localhost:5173/ --metric health.autoGpuFrameMs.p50");
+  assert.equal(nextOf({ baseUrl: "http://localhost:5174/", candidateUrl: "http://localhost:5173/" }),
+    "Next: confirm with ab --base-url http://localhost:5174/ --candidate-url http://localhost:5173/ --metric health.autoGpuFrameMs.p50");
+
+  const baseOptions = {
+    fileRoot: "/work/app", autoInstrument: true, gpuTiming: true, api: "auto", samplingMode: "hook", hookName: "__gpuReportBench",
+    waitForHook: true, waitUntil: "load", waitCondition: "window.ready === true", viewport: "800x600", deviceScaleFactor: 2
+  };
+  assert.equal(nextOf({ baseFile: "/work/app/base.html", candidateFile: "/work/app/index.html" }, { baseOptions }),
+    "Next: confirm with ab --base-file base.html --candidate-file index.html --metric health.autoGpuFrameMs.p50"
+      + " --file-root . --sampling-mode hook --wait-until load --wait-condition 'window.ready === true' --viewport 800x600 --device-scale-factor 2");
+  // Defaults copy nothing; --wait-for-hook only outside hook mode, where it is not implied.
+  assert.equal(nextOf({ baseFile: "/work/app/base.html", candidateFile: "/work/app/index.html" }, {
+    baseOptions: { autoInstrument: true, gpuTiming: true, api: "auto", samplingMode: "frames", waitForHook: true, waitUntil: "networkidle", viewport: "1280x720", deviceScaleFactor: 1 }
+  }), "Next: confirm with ab --base-file base.html --candidate-file index.html --metric health.autoGpuFrameMs.p50 --wait-for-hook");
+});
+
+test("capture Bound line gives no GPU share when the classifier left GPU time untrusted", async () => {
+  const capture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-capture.json"), "utf8"));
+  capture.summary.bottleneck = { ...capture.summary.bottleneck, gpuMs: null, gpuShare: null, gpuSource: null };
+  const bound = formatAgentReport(capture).split("\n").find((line) => line.startsWith("Bound:"));
+  assert.equal(bound, "Bound: vsync-capped 60 Hz; GPU 8.41 ms (untrusted), CPU 1.3 ms/frame → primary health.autoGpuFrameMs.p50");
+  // Reports whose bottleneck predates gpuMs keep using the measured GPU time.
+  delete capture.summary.bottleneck.gpuMs;
+  capture.summary.bottleneck.gpuShare = 0.505;
+  assert.match(formatAgentReport(capture), /^Bound: vsync-capped 60 Hz; GPU 8\.41 ms \(51% of 16\.67 ms\)/m);
+});
+
+test("normalizeCliError infers codes from the message, not from stack frame URLs", () => {
+  const hookException = new Error("Error: hook threw: scene not ready\n    at __gpuReportBench (http://127.0.0.1:5173/src/browser/bench.js:4:11)\n    at http://127.0.0.1:5173/src/chrome/loop.js:9:3");
+  assert.equal(normalizeCliError(hookException).code, "command-failed");
+  assert.equal(normalizeCliError(Object.assign(new Error("Timed out after 15000 ms waiting for benchmark hook x (--wait-for-hook-timeout)."), { code: "hook-timeout" })).code, "hook-timeout");
+  assert.equal(normalizeCliError(new Error("Failed to launch Chrome: spawn EACCES")).code, "browser-launch-failed");
 });

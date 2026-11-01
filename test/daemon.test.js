@@ -163,6 +163,9 @@ test("connectOrStartDaemon and runViaDaemon reuse a healthy daemon and replace a
     {
       launchOptions,
       stateDir,
+      // test:browser sets GPU_PERF_AGENT_NO_DAEMON=1 for the CLI tests; this one drives the daemon directly.
+      argv: [],
+      env: {},
       onProgress: ev => progressEvents.push(ev),
       onDaemonUsed: info => assert.equal(info.pid, process.pid)
     }
@@ -200,6 +203,60 @@ test("connectOrStartDaemon and runViaDaemon reuse a healthy daemon and replace a
   assert.ok(reconnected);
   assert.equal(reconnected.reused, false);
   assert.equal(reconnected.pid, process.pid);
+});
+
+test("runViaDaemon falls back (null) only when the daemon cannot take the job, never after a page-level failure", async t => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gpu-daemon-fallback-"));
+  await chmod(stateDir, 0o700);
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  let runReply = null;
+  let health = { ok: true, alive: true, pid: process.pid };
+  let runs = 0;
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/health") return res.end(JSON.stringify(health));
+    req.resume();
+    req.on("end", () => {
+      runs += 1;
+      if (runReply.browserDied) health = { ok: false, alive: false, pid: process.pid };
+      res.statusCode = runReply.status;
+      res.end(JSON.stringify(runReply.body));
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const launchOptions = { angle: "metal" };
+  const key = daemonKey(launchOptions);
+  await writeFile(path.join(stateDir, `${key}.json`), JSON.stringify({ port: server.address().port, pid: process.pid, startedAt: new Date().toISOString(), key }), { mode: 0o600 });
+  let reused = 0;
+  const run = () => runViaDaemon({ url: "http://127.0.0.1:9/", samples: 1 }, {
+    launchOptions, stateDir, argv: [], env: {}, onReuse: () => { reused += 1; },
+    spawnFn() { throw new Error("must reuse the running daemon"); }
+  });
+  const failure = (status, code, extra = {}) => ({ status, body: { ok: false, error: { code, message: `${code} message`, ...extra } } });
+
+  // Page-level failures: the page already loaded once in the daemon; rerunning would load it twice.
+  for (const [code, samplingStarted] of [["hook-timeout", false], ["condition-timeout", false], ["navigation-failed", false], ["RUN_FAILED", true]]) {
+    runReply = failure(500, code, { samplingStarted });
+    await assert.rejects(run(), { code, message: `${code} message` });
+  }
+  // The daemon could not take the job.
+  for (const [status, code] of [[503, "CLOSING"], [429, "QUEUE_FULL"], [503, "CAPTURE_CLEANUP_FAILED"], [500, "aborted"]]) {
+    runReply = failure(status, code);
+    assert.equal(await run(), null, code);
+  }
+  // Its browser died mid-capture: /health no longer reports a live harness.
+  runReply = { ...failure(500, "RUN_FAILED", { samplingStarted: true }), browserDied: true };
+  assert.equal(await run(), null);
+  assert.equal(reused, 0, "the warm-profiler notice waits for a report");
+
+  health = { ok: true, alive: true, pid: process.pid };
+  runReply = { status: 200, body: { schemaVersion: 3, options: {}, summary: { verdict: "excellent" } } };
+  const report = await run();
+  assert.equal(report.summary.verdict, "excellent");
+  assert.equal(report.daemon.reused, true);
+  assert.equal(reused, 1);
+  assert.equal(runs, 10);
 });
 
 test("browser: second consecutive agent --file examples/webgpu-clear.html is >= 0.3 s faster and prints warm pid", {

@@ -199,13 +199,18 @@ export function formatAgentReport(report, { out, cwd = process.cwd() } = {}) {
     const subtype = b.subtype ? ` (${b.subtype})` : "";
     const hz = Math.round(b.hz ?? b.refreshHz ?? s.cadence?.hz ?? 60);
     const budgetMs = b.budgetMs ?? (hz > 0 ? 1000 / hz : 16.67);
-    const gpuMs = b.gpuMs ?? gpu.frameMsP50 ?? s.gpuFrameMsMean;
+    // The classifier leaves bottleneck.gpuMs null when GPU timing is untrusted (unstable auto
+    // GPU, between-run hook): the measured value then gets no budget share.
+    const measuredGpuMs = gpu.frameMsP50 ?? s.gpuFrameMsMean;
+    const gpuMs = Object.hasOwn(b, "gpuMs") ? b.gpuMs : measuredGpuMs;
     let gpuPart;
     if (b.gpuSaturated) {
       gpuPart = "GPU ≥ budget (saturated)";
     } else if (Number.isFinite(gpuMs)) {
       const sharePct = Number.isFinite(b.gpuShare) ? Math.round(b.gpuShare * 100) : Math.round((gpuMs / budgetMs) * 100);
       gpuPart = `GPU ${fmtSmart(gpuMs, 2)} ms (${sharePct}% of ${fmtSmart(budgetMs, 2)} ms)`;
+    } else if (Number.isFinite(measuredGpuMs)) {
+      gpuPart = `GPU ${fmtSmart(measuredGpuMs, 2)} ms (untrusted)`;
     } else {
       gpuPart = "GPU n/a";
     }
@@ -372,14 +377,55 @@ const OPTION_TO_FLAG = {
   hookName: (v) => `--hook-name ${v}`
 };
 
-function copiedAbFlags(baseOptions = {}) {
+function shellArg(value) {
+  const text = String(value);
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, "'\\''")}'`;
+}
+
+/** The baseline's capture flags that change what `ab` measures (non-default values only). */
+function copiedAbFlags(baseOptions = {}, cwd = process.cwd()) {
   if (!baseOptions || typeof baseOptions !== "object") return "";
   const flags = [];
+  if (baseOptions.fileRoot) {
+    const root = path.resolve(baseOptions.fileRoot) === path.resolve(cwd) ? "." : relPath(baseOptions.fileRoot, cwd);
+    flags.push(`--file-root ${shellArg(root)}`);
+  }
   if (baseOptions.autoInstrument === false) flags.push("--no-auto-instrument");
   if (baseOptions.gpuTiming === false) flags.push("--no-gpu-timing");
   if (baseOptions.api && baseOptions.api !== "auto") flags.push(`--api ${baseOptions.api}`);
-  if (baseOptions.hookName && baseOptions.hookName !== "__gpuReportBench") flags.push(`--hook-name ${baseOptions.hookName}`);
+  if (baseOptions.samplingMode === "hook") flags.push("--sampling-mode hook");
+  if (baseOptions.hookName && baseOptions.hookName !== "__gpuReportBench") flags.push(`--hook-name ${shellArg(baseOptions.hookName)}`);
+  if (baseOptions.waitForHook === true && baseOptions.samplingMode !== "hook") flags.push("--wait-for-hook");
+  if (baseOptions.waitUntil && baseOptions.waitUntil !== "networkidle") flags.push(`--wait-until ${baseOptions.waitUntil}`);
+  if (baseOptions.waitCondition) flags.push(`--wait-condition ${shellArg(baseOptions.waitCondition)}`);
+  const viewport = baseOptions.viewport?.width && baseOptions.viewport?.height
+    ? `${baseOptions.viewport.width}x${baseOptions.viewport.height}` : baseOptions.viewport;
+  if (typeof viewport === "string" && viewport !== "1280x720") flags.push(`--viewport ${viewport}`);
+  const dpr = Number(baseOptions.deviceScaleFactor);
+  if (baseOptions.deviceScaleFactor != null && Number.isFinite(dpr) && dpr !== 1) flags.push(`--device-scale-factor ${dpr}`);
   return flags.length ? ` ${flags.join(" ")}` : "";
+}
+
+/** GPU stability as both sides' evidence states it, or null without GPU timing. */
+function gpuTrustText(cmp, mode) {
+  const sideEvidence = (side) => {
+    const auto = cmp.gpuTiming?.auto?.[side];
+    if (auto) return { status: auto.stability?.status ?? "unknown", clockSensitive: auto.clockSensitive ?? auto.stability?.clockSensitive };
+    const hook = cmp.gpuTiming?.[side];
+    if (hook?.status === "single-scope") return { status: hook.stability?.status ?? "unknown", clockSensitive: hook.stability?.clockSensitive };
+    return null;
+  };
+  const sides = [["base", sideEvidence("base")], ["cand", sideEvidence("candidate")]].filter(([, evidence]) => evidence);
+  if (sides.length === 0) return null;
+  const named = (list) => (list.length === 2 ? "both sides" : list.map(([name]) => name).join(""));
+  const unstable = sides.filter(([, evidence]) => evidence.status === "unstable");
+  if (unstable.length) return `GPU unstable ${named(unstable)}`;
+  // Paired rounds share one browser and alternate sides, which is what controls GPU clocks.
+  const sensitive = mode === "paired" ? [] : sides.filter(([, evidence]) => evidence.clockSensitive === true);
+  if (sensitive.length) return `GPU clock-sensitive ${named(sensitive)}`;
+  const stable = sides.filter(([, evidence]) => evidence.status === "stable");
+  if (stable.length === 2) return "GPU stable both sides";
+  return `GPU ${sides.map(([name, evidence]) => `${name} ${evidence.status}`).join(", ")}`;
 }
 
 /**
@@ -486,14 +532,15 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
   const trustItems = [
     `base ${baseValid ? "valid" : `invalid: ${baseCode}`}, cand ${candValid ? "valid" : `invalid: ${candCode}`}`
   ];
-  const autoB = cmp.gpuTiming?.auto?.base;
-  const autoC = cmp.gpuTiming?.auto?.candidate;
-  if (mode === "paired") {
-    const unstable = autoB?.stability?.status === "unstable" || autoC?.stability?.status === "unstable";
-    trustItems.push(unstable ? "GPU unstable" : "GPU stable both sides");
-  } else {
-    trustItems.push("GPU clock-sensitive both sides");
+  // Comparison-level problems (missing budget metric, scope mismatch, ...) with both captures valid.
+  const comparisonIssues = (cmp.validity?.issues || []).filter((i) => i.code !== "invalid-base" && i.code !== "invalid-candidate");
+  if (comparisonIssues.length > 0) {
+    const first = comparisonIssues[0];
+    const more = comparisonIssues.length > 1 ? ` (+${comparisonIssues.length - 1} more)` : "";
+    trustItems.push(`comparison invalid: ${first.code}${first.message ? ` (${truncStr(stripPeriod(first.message), 80)})` : ""}${more}`);
   }
+  const gpuTrust = gpuTrustText(cmp, mode);
+  if (gpuTrust) trustItems.push(gpuTrust);
   const schemaWarn = (cmp.compatibility?.warnings || []).find((w) => w.key === "schemaVersion");
   if (schemaWarn) {
     const side = schemaWarn.base <= schemaWarn.candidate ? "baseline" : "candidate";
@@ -507,14 +554,20 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
   const changedCount = infoChanged.length || cmp.summary?.changed || 0;
   if (changedCount > 0) {
     const topKeys = infoChanged.slice(0, 3).map((r) => shortenMetricKey(r.key));
-    lines.push(`Not gated: ${changedCount} changed${topKeys.length ? ` (${topKeys.join(", ")})` : ""}`);
+    const unnamed = changedCount - topKeys.length;
+    if (unnamed > 0) topKeys.push(topKeys.length ? `+${unnamed} more` : "inspect --changed");
+    lines.push(`Not gated: ${changedCount} changed (${topKeys.join(", ")})`);
   }
 
   // Line 7 (when separate & unverified/inconclusive): Next: confirm with ab --base-file <…> --candidate-file <…> --metric <primary>[ copied flags]
   if (mode === "separate" && (cs.status === "unverified" || cs.status === "inconclusive")) {
-    const baseTarget = cmp.baseFile ? `--base-file ${relPath(cmp.baseFile, cwd)}` : cmp.baseUrl ? `--base-url ${cmp.baseUrl}` : "--base-file <base>";
-    const candTarget = cmp.candidateFile ? `--candidate-file ${relPath(cmp.candidateFile, cwd)}` : cmp.candidateUrl ? `--candidate-url ${cmp.candidateUrl}` : "--candidate-file <cand>";
-    lines.push(`Next: confirm with ab ${baseTarget} ${candTarget} --metric ${pKey}${copiedAbFlags(baseOptions)}`);
+    // Same target on both sides (in-place edit): the baseline now lives in a copy only the caller knows.
+    const sameTarget = cmp.baseFile ? cmp.baseFile === cmp.candidateFile : Boolean(cmp.baseUrl) && !cmp.candidateFile && cmp.baseUrl === cmp.candidateUrl;
+    const baseTarget = sameTarget
+      ? (cmp.baseFile ? "--base-file <baseline-copy.html>" : "--base-url <baseline-url>")
+      : cmp.baseFile ? `--base-file ${shellArg(relPath(cmp.baseFile, cwd))}` : cmp.baseUrl ? `--base-url ${shellArg(cmp.baseUrl)}` : "--base-file <base>";
+    const candTarget = cmp.candidateFile ? `--candidate-file ${shellArg(relPath(cmp.candidateFile, cwd))}` : cmp.candidateUrl ? `--candidate-url ${shellArg(cmp.candidateUrl)}` : "--candidate-file <cand>";
+    lines.push(`Next: confirm with ab ${baseTarget} ${candTarget} --metric ${pKey}${copiedAbFlags(baseOptions, cwd)}`);
   }
 
   // Line 8 (when out): Saved: <relpath>
@@ -790,7 +843,9 @@ export function normalizeCliError(error) {
   const message = String(error?.message ?? error ?? "Unknown error")
     .replace(/^(?:Error:\s*)+/i, "")
     .trim();
-  const code = inferErrorCode(error, message);
+  // Page exception messages carry their stack ("    at fn (http://…/src/browser/x.js:1:2)"):
+  // infer from the message lines only, never from frame URLs.
+  const code = inferErrorCode(error, message.split("\n").filter((line) => !/^\s*at\s/.test(line)).join("\n"));
   const hint = error?.hint ? cleanLine(error.hint) : defaultErrorHint(code);
   return { code, message, hint };
 }

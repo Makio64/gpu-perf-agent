@@ -112,6 +112,63 @@ test('an aborted signal rejects a queued run with code aborted before it starts'
   await harness.close();
 });
 
+test('doctor probe evaluates on a secure http://127.0.0.1 page, not about:blank', async () => {
+  const calls = [];
+  let served = null;
+  const page = {
+    listeners: new Map(),
+    once(name, listener) { this.listeners.set(name, listener); return () => this.listeners.delete(name); },
+    async send(method, params) {
+      calls.push(method);
+      if (method === 'Page.navigate') {
+        // navigator.gpu needs a secure context: the probe page must be served from 127.0.0.1.
+        const response = await fetch(params.url);
+        served = { url: params.url, status: response.status, body: await response.text() };
+        setImmediate(() => this.listeners.get('Page.loadEventFired')?.({}));
+        return { frameId: 'frame' };
+      }
+      if (method === 'Runtime.evaluate') {
+        return { result: { value: { webgpu: { available: true, adapter: { vendor: 'apple' }, timestampQuery: true }, webgl2: { available: true, renderer: 'ANGLE' } } } };
+      }
+      return {};
+    },
+    dispose() { calls.push('dispose'); }
+  };
+  const browser = {
+    async send(method, params) {
+      calls.push(method);
+      if (method === 'Browser.getVersion') return { product: 'Chrome/140.0', userAgent: 'UA' };
+      if (method === 'Target.createBrowserContext') return { browserContextId: 'ctx' };
+      if (method === 'Target.createTarget') return { targetId: 'target', url: params.url };
+      if (method === 'Target.attachToTarget') return { sessionId: 'session' };
+      return {};
+    },
+    session: () => page,
+    close() {}
+  };
+  const harness = new FastCDPHarness(fakeLaunch(), browser);
+  const probed = await harness.probe();
+  assert.match(served.url, /^http:\/\/127\.0\.0\.1:\d+\/examples\/doctor\.html$/);
+  assert.equal(served.status, 200);
+  assert.match(served.body, /<canvas>/);
+  assert.ok(calls.indexOf('Page.navigate') < calls.indexOf('Runtime.evaluate'), calls.join());
+  assert.deepEqual(calls.slice(-2), ['dispose', 'Target.disposeBrowserContext']);
+  assert.equal(probed.chrome.version, 'Chrome/140.0');
+  assert.equal(probed.webgpu.timestampQuery, true);
+  // The static page server is closed with the probe.
+  await assert.rejects(fetch(served.url));
+
+  // A browser that cannot reach the probe page (remote --cdp) still answers, with the reason.
+  page.send = async (method) => {
+    if (method === 'Page.navigate') return { errorText: 'net::ERR_CONNECTION_REFUSED' };
+    if (method === 'Runtime.evaluate') return { result: { value: { webgpu: { available: false, adapter: null, timestampQuery: false, error: 'navigator.gpu is undefined (insecure context)' }, webgl2: { available: true, renderer: 'ANGLE' } } } };
+    return {};
+  };
+  const unreachable = await harness.probe();
+  assert.match(unreachable.webgpu.error, /^navigator\.gpu is undefined \(insecure context\); probe page http:\/\/127\.0\.0\.1:\d+\/examples\/doctor\.html did not load: net::ERR_CONNECTION_REFUSED$/);
+  await harness.close();
+});
+
 // Minimal CDP session: on() returns an unsubscribe function; emit() fires events.
 function fakeSession() {
   const listeners = new Map();

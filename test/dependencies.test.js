@@ -45,7 +45,8 @@ test("public API and CLI load without packages and explain the optional runner",
     const cli = path.join(directory, "src/cli.js");
     const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8", timeout: 5000 });
     assert.equal(help.status, 0, help.stderr);
-    const result = spawnSync(process.execPath, [cli, "run", "--runner", "playwright", "--url", "http://127.0.0.1:5173", "--json"], { encoding: "utf8", timeout: 5000 });
+    // --out keeps the failure report in the temporary copy, out of this repository's reports/.
+    const result = spawnSync(process.execPath, [cli, "run", "--runner", "playwright", "--url", "http://127.0.0.1:5173", "--out", path.join(directory, "failed.json"), "--json"], { encoding: "utf8", timeout: 5000 });
     assert.equal(result.status, 3, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, false);

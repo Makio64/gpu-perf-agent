@@ -140,10 +140,16 @@ test("agent: runMcpServer handles initialize (2025-11-25 + instructions + versio
     }
   });
 
-  const server = await runMcpServer({ input, output });
+  // A temporary report directory: the default (reports/mcp) would land in this repository.
+  const reportDirectory = await mkdtemp(path.join(os.tmpdir(), "gpu-mcp-init-"));
+  const server = await runMcpServer({ input, output, reportDirectory });
+  const waitForLines = async (count) => {
+    const deadline = Date.now() + 10000;
+    while (outputLines.length < count && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+  };
 
   input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } }) + "\n");
-  await new Promise((r) => setTimeout(r, 10));
+  await waitForLines(1);
   assert.equal(outputLines.length, 1);
   const initRes = JSON.parse(outputLines[0]);
   assert.equal(initRes.id, 1);
@@ -154,7 +160,7 @@ test("agent: runMcpServer handles initialize (2025-11-25 + instructions + versio
   assert.ok(initRes.result.instructions.length <= 500);
 
   input.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n");
-  await new Promise((r) => setTimeout(r, 10));
+  await waitForLines(2);
   assert.equal(outputLines.length, 2);
   const listRes = JSON.parse(outputLines[1]);
   assert.equal(listRes.id, 2);
@@ -167,17 +173,29 @@ test("agent: runMcpServer handles initialize (2025-11-25 + instructions + versio
     method: "tools/call",
     params: { name: "non_existent_tool", arguments: {} }
   }) + "\n");
-  await new Promise((r) => setTimeout(r, 10));
+  await waitForLines(3);
   assert.equal(outputLines.length, 3);
   const errorRes = JSON.parse(outputLines[2]);
   assert.equal(errorRes.id, 3);
   assert.equal(errorRes.error.code, -32602);
 
   await server.close();
+  await rm(reportDirectory, { recursive: true, force: true });
 });
 
 function send(input, id, name, args, extraParams = {}) {
   input.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args, ...extraParams } }) + "\n");
+}
+
+// Polls instead of sleeping: a loaded machine can take longer than any fixed delay.
+async function waitForResponse(messages, id, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const message = messages.find(m => m.id === id);
+    if (message) return message;
+    if (Date.now() > deadline) throw new Error(`No response to request ${id} within ${timeoutMs} ms.`);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
 
 async function mcpFixture(t, createHarness, options = {}) {
@@ -306,8 +324,7 @@ test("MCP profile_webgpu supports inline JPEG screenshots, label naming, and bas
     cpuProfile: true,
     screenshot: "inline"
   });
-  await new Promise(r => setTimeout(r, 25));
-  const baseRes = fixture.messages.find(m => m.id === 1).result;
+  const baseRes = (await waitForResponse(fixture.messages, 1)).result;
   assert.equal(baseRes.isError, false);
   assert.match(baseRes.structuredContent.reportPath, /base-1\.json$/);
   const imageItem = baseRes.content.find(item => item.type === "image");
@@ -502,6 +519,26 @@ test("MCP notifications/cancelled drops queued jobs and aborts running jobs with
   assert.ok(progressMsgs.length >= 5, `Expected >= 5 progress notifications, got ${progressMsgs.length}`);
   assert.equal(progressMsgs[0].params.progress, 1);
   assert.equal(progressMsgs[0].params.total, 5);
+});
+
+test("MCP doctor_webgpu passes the probe's WebGPU and WebGL2 errors through", async t => {
+  const fixture = await mcpFixture(t, async () => ({
+    alive: true,
+    async probe() {
+      return {
+        chrome: { version: "HeadlessChrome/140.0", path: "/chrome" },
+        webgpu: { available: false, adapter: null, timestampQuery: false, error: "requestAdapter() returned null" },
+        webgl2: { available: true, renderer: "ANGLE Metal" }
+      };
+    },
+    async run() { throw new Error("not used"); },
+    async close() {}
+  }));
+  send(fixture.input, 1, "doctor_webgpu", {});
+  await fixture.server.close();
+  const { structuredContent } = fixture.messages.find(m => m.id === 1).result;
+  assert.deepEqual(structuredContent.webgpu, { available: false, adapter: null, timestampQuery: false, error: "requestAdapter() returned null" });
+  assert.equal(Object.hasOwn(structuredContent.webgl2, "error"), false);
 });
 
 test("MCP ab_compare_webgpu runs on the warm harness and doctor_webgpu reports environment & lock status", async t => {

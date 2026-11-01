@@ -606,11 +606,13 @@ export async function runMcpServer(options = {}) {
       webgpu: {
         available: Boolean(probed.webgpu?.available),
         adapter: probed.webgpu?.adapter ?? null,
-        timestampQuery: Boolean(probed.webgpu?.timestampQuery)
+        timestampQuery: Boolean(probed.webgpu?.timestampQuery),
+        ...(probed.webgpu?.error ? { error: String(probed.webgpu.error) } : {})
       },
       webgl2: {
         available: Boolean(probed.webgl2?.available),
-        renderer: probed.webgl2?.renderer ?? null
+        renderer: probed.webgl2?.renderer ?? null,
+        ...(probed.webgl2?.error ? { error: String(probed.webgl2.error) } : {})
       },
       reportDir: {
         path: displayPath(reportDirectory),
@@ -1009,6 +1011,7 @@ const EXTRA_TOOL_PROPERTIES = Object.freeze({
     adaptive: { type: "boolean" },
     autoInstrument: { type: "boolean" },
     waitConditionTimeoutMs: { type: "number" },
+    waitForHookTimeoutMs: { type: "number" },
     networkIdleBudgetMs: { type: "number" },
     includeReport: { type: "boolean" }
   }),

@@ -11,6 +11,14 @@ export function invalidOption(message) {
   return Object.assign(new TypeError(message), { code: "invalid-options" });
 }
 
+/** Readiness wait for the benchmark hook (`waitForHook`) ran out; names its own timeout. */
+export function hookTimeoutError(hookName, timeoutMs) {
+  return Object.assign(new Error(`Timed out after ${timeoutMs} ms waiting for benchmark hook ${hookName} (--wait-for-hook-timeout).`), {
+    code: "hook-timeout",
+    hint: `Define globalThis.${hookName}, pass --hook NAME, raise --wait-for-hook-timeout, or drop --wait-for-hook.`
+  });
+}
+
 export const LABEL_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** Keys `agent --base` and MCP `baseReportPath` copy from the base report's options (§2). */
@@ -106,6 +114,8 @@ export function normalizeOptions(input = {}, { requireTarget = true } = {}) {
   options.warmup = numberOption(options.warmup, 'warmup', { max: 10000, integer: true });
   options.durationMs = numberOption(options.durationMs, 'durationMs', { min: 1, max: 3600000 });
   options.timeoutMs = numberOption(options.timeoutMs ?? 60000, 'timeoutMs', { min: 1, max: 2147482647 });
+  // A hook that never appears is usually a wrong name: fail well before the capture timeout.
+  options.waitForHookTimeoutMs = Math.min(numberOption(options.waitForHookTimeoutMs ?? 15000, 'waitForHookTimeoutMs', { min: 1, max: 2147482647 }), options.timeoutMs);
   options.gpuTiming ??= true;
   options.allowIdle ??= false;
   options.readyTimeoutMs = Math.min(numberOption(options.readyTimeoutMs ?? 3000, 'readyTimeoutMs', { max: 2147482647 }), options.timeoutMs);

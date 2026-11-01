@@ -13,6 +13,9 @@ const SRC_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
 const REPORT_SERVER_PATH = fileURLToPath(new URL("./report-server.js", import.meta.url));
 const LAUNCH_OPTION_KEYS = ["angle", "channel", "chromiumArgs", "executablePath", "headful", "cdp", "cdpUrl", "webSocketUrl"];
+// Daemon answers meaning it could not take the job (closing, full queue, dead or
+// relaunching browser), as opposed to the page failing.
+const DAEMON_UNAVAILABLE_CODES = new Set(["CLOSING", "QUEUE_FULL", "CAPTURE_CLEANUP_FAILED", "capture-cleanup-failed", "chrome-launch-failed", "aborted"]);
 
 export function defaultDaemonStateDir() {
   if (process.env.GPU_PERF_AGENT_STATE_DIR) return path.resolve(process.env.GPU_PERF_AGENT_STATE_DIR);
@@ -211,7 +214,6 @@ export async function runViaDaemon(options = {}, {
   if (!daemon) return null;
 
   try {
-    if (daemon.reused) onReuse?.(daemon);
     onDaemonUsed?.(daemon);
   } catch {
     // Ignore callback errors.
@@ -247,9 +249,17 @@ export async function runViaDaemon(options = {}, {
         reused: daemon.reused,
         key: daemon.key
       };
+      try {
+        if (daemon.reused) onReuse?.(daemon);
+      } catch {
+        // Ignore callback errors.
+      }
       return json;
     }
-    if (status >= 500 && json?.error?.samplingStarted === false) return null;
+    // null lets the caller run the job in-process: only when the daemon could not take it,
+    // or its browser died. A page-level failure (navigation, readiness, hook exception)
+    // would fail the same way again, after loading the page a second time.
+    if (DAEMON_UNAVAILABLE_CODES.has(json?.error?.code) || (status >= 500 && !(await daemonAlive(daemon)))) return null;
     if (status === 400 && /must be inside the server report directory/.test(json?.error?.message || "")) return null;
     throw Object.assign(new Error(json?.error?.message || `Daemon returned HTTP ${status}.`), {
       code: json?.error?.code || "run-failed",
@@ -263,6 +273,18 @@ export async function runViaDaemon(options = {}, {
 
 export const runWithDaemon = runViaDaemon;
 export const runDaemonCapture = runViaDaemon;
+
+async function daemonAlive(daemon) {
+  try {
+    const { status, json } = await requestJson(`${daemon.url}/health`, {
+      timeoutMs: 1000,
+      headers: { host: `127.0.0.1:${daemon.port}` }
+    });
+    return status === 200 && json?.ok === true && json?.alive === true;
+  } catch {
+    return false;
+  }
+}
 
 async function probeStateFile(stateFile, expectedKey, reused) {
   let state;

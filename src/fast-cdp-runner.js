@@ -4,10 +4,11 @@ import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CDPConnection } from "./cdp.js";
 import { requestJson } from "./http-client.js";
 import { acquireMeasurementLock, processAlive } from "./measure-lock.js";
-import { normalizeOptions, parseViewport, PROFILING_PRESETS } from "./options.js";
+import { hookTimeoutError, normalizeOptions, parseViewport, PROFILING_PRESETS } from "./options.js";
 import { classifyBottleneck, finalizeReport } from "./analysis.js";
 import { autoInstrumentationSource } from "./browser/auto-instrument.js";
 import { startCpuProfile, stopCpuProfile, summarizeCpuProfile } from "./cpu-profile.js";
@@ -22,6 +23,7 @@ export const TOOL = Object.freeze({ name: "gpu-perf-agent", version: packageInfo
 const PROFILE_PREFIX = "webgpu-report-cdp-";
 const STDERR_RING_BYTES = 64 * 1024;
 const PROGRESS_BINDING = "__gpuPerfProgress";
+const DOCTOR_PAGE = fileURLToPath(new URL("../examples/doctor.html", import.meta.url));
 const liveHarnesses = new Set();
 
 export async function runFastReport(options = {}, { onProgress, signal } = {}) {
@@ -450,7 +452,7 @@ export class FastCDPHarness {
     }
   }
 
-  /** Quick capability check for doctor: one about:blank page in a throwaway context. */
+  /** Quick capability check for doctor: one http://127.0.0.1 page in a throwaway context. */
   probe() {
     if (this.closed) return Promise.reject(new Error("FastCDPHarness is already closed."));
     const job = this.queue.then(() => probeBrowser(this.browserSession, this.launch));
@@ -880,7 +882,7 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
       const hookName = options.hookName || "__gpuReportBench";
       const ready = await session.send("Runtime.evaluate", {
         expression: `(async () => {
-          const deadline = performance.now() + ${options.timeoutMs};
+          const deadline = performance.now() + ${options.waitForHookTimeoutMs};
           while (typeof globalThis[${JSON.stringify(hookName)}] !== "function") {
             if (performance.now() >= deadline) return "timeout";
             await new Promise(resolve => setTimeout(resolve, 25));
@@ -889,14 +891,9 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
         })()`,
         awaitPromise: true,
         returnByValue: true
-      }, options.timeoutMs + 1000);
+      }, options.waitForHookTimeoutMs + 1000);
       if (ready.exceptionDetails) throw new Error(formatExceptionDetails(ready.exceptionDetails));
-      if (ready.result?.value === "timeout") {
-        throw Object.assign(new Error(`Timed out waiting for benchmark hook ${hookName}.`), {
-          code: "hook-timeout",
-          hint: `Define globalThis.${hookName}, pass --hook NAME, or drop --wait-for-hook.`
-        });
-      }
+      if (ready.result?.value === "timeout") throw hookTimeoutError(hookName, options.waitForHookTimeoutMs);
     }
 
     return {
@@ -1204,19 +1201,39 @@ function createProgressRelay(session, emit, { onFirstSampleStart } = {}) {
 
 async function probeBrowser(browserSession, launch) {
   const version = await browserSession.send("Browser.getVersion", undefined, 5000);
-  const { browserContextId } = await browserSession.send("Target.createBrowserContext", { disposeOnDetach: true }, 5000);
+  // navigator.gpu exists only in secure contexts (not about:blank): probe the doctor page
+  // over http://127.0.0.1, as CLI doctor does.
+  const page = await createFileTarget(DOCTOR_PAGE);
+  let browserContextId = null;
   let session;
   try {
+    ({ browserContextId } = await browserSession.send("Target.createBrowserContext", { disposeOnDetach: true }, 5000));
     const target = await browserSession.send("Target.createTarget", { browserContextId, url: "about:blank" }, 5000);
     const attached = await browserSession.send("Target.attachToTarget", { flatten: true, targetId: target.targetId }, 5000);
     session = browserSession.session(attached.sessionId);
+    await session.send("Page.enable", undefined, 5000);
+    // A browser attached over --cdp may not reach this machine's 127.0.0.1: probe anyway, and
+    // say why WebGPU looks unavailable.
+    let pageError = null;
+    const load = waitForEvent(session, "Page.loadEventFired", 5000);
+    try {
+      const navigation = await session.send("Page.navigate", { url: page.url }, 5000);
+      if (navigation.errorText) throw new Error(navigation.errorText);
+      await load.promise;
+    } catch (error) {
+      pageError = `probe page ${page.url} did not load: ${error.message}`;
+    } finally {
+      load.cancel();
+    }
     const result = await session.send("Runtime.evaluate", {
       awaitPromise: true,
       returnByValue: true,
       expression: `(async () => {
         const webgpu = { available: false, adapter: null, timestampQuery: false };
         try {
+          if (!navigator.gpu) webgpu.error = isSecureContext ? "navigator.gpu is undefined" : "navigator.gpu is undefined (insecure context)";
           const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+          if (navigator.gpu && !adapter) webgpu.error = "requestAdapter() returned null";
           if (adapter) {
             const info = adapter.info || {};
             webgpu.available = true;
@@ -1238,13 +1255,16 @@ async function probeBrowser(browserSession, launch) {
       })()`
     }, 10000);
     if (result.exceptionDetails) throw new Error(formatExceptionDetails(result.exceptionDetails));
+    const probed = result.result.value;
+    if (pageError && !probed.webgpu.available) probed.webgpu.error = [probed.webgpu.error, pageError].filter(Boolean).join("; ");
     return {
       chrome: { version: version.product ?? null, path: launch?.executablePath ?? null, userAgent: version.userAgent ?? null },
-      ...result.result.value
+      ...probed
     };
   } finally {
     session?.dispose();
-    await safeSend(browserSession, "Target.disposeBrowserContext", { browserContextId }, 5000);
+    if (browserContextId) await safeSend(browserSession, "Target.disposeBrowserContext", { browserContextId }, 5000);
+    await page.close();
   }
 }
 
@@ -1570,6 +1590,8 @@ function reportOptions(options, launchArgs) {
     networkIdleBudgetMs: Number(options.networkIdleBudgetMs ?? 10000),
     cpuProfile: options.cpuProfile ?? "auto",
     measureLock: options.measureLock !== false,
-    label: options.label ?? null
+    label: options.label ?? null,
+    // Explicit module root only; the default (nearest package.json/.git) is not recorded.
+    ...(options.file && options.fileRoot ? { fileRoot: options.fileRoot } : {})
   };
 }

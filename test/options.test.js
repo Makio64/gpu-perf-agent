@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeOptions, parseViewport } from '../src/options.js';
+import { hookTimeoutError, normalizeOptions, parseViewport } from '../src/options.js';
 import { runFastReport } from '../src/fast-cdp-runner.js';
 
 const target = { url: 'http://localhost:1234' };
@@ -46,6 +46,18 @@ test('hook sampling is explicit and defaults only an omitted hook readiness opti
   assert.equal(normalizeOptions(hook).waitForHook, true);
   assert.equal(normalizeOptions({ ...target, samplingMode: 'hook', waitForHook: false }).waitForHook, false);
   assert.equal(normalizeOptions({ ...target, samplingMode: 'frames', waitForHook: true }).waitForHook, true);
+});
+
+test('waiting for the hook has its own short timeout, clamped to the capture timeout and named in the error', () => {
+  assert.equal(normalizeOptions({ ...target, waitForHook: true }).waitForHookTimeoutMs, 15000);
+  assert.equal(normalizeOptions({ ...target, samplingMode: 'hook', timeoutMs: 120000 }).waitForHookTimeoutMs, 15000);
+  assert.equal(normalizeOptions({ ...target, waitForHook: true, timeoutMs: 5000 }).waitForHookTimeoutMs, 5000);
+  assert.equal(normalizeOptions({ ...target, waitForHook: true, waitForHookTimeoutMs: 40000 }).waitForHookTimeoutMs, 40000);
+  assert.throws(() => normalizeOptions({ ...target, waitForHookTimeoutMs: 0 }), { code: 'invalid-options', message: /waitForHookTimeoutMs/ });
+  const error = hookTimeoutError('bench', 15000);
+  assert.equal(error.code, 'hook-timeout');
+  assert.match(error.message, /^Timed out after 15000 ms waiting for benchmark hook bench \(--wait-for-hook-timeout\)\.$/);
+  assert.match(error.hint, /raise --wait-for-hook-timeout/);
 });
 
 test('2.2 options: defaults, clamps and validation', () => {

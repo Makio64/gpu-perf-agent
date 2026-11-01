@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { normalizeOptions, parseViewport } from "./options.js";
+import { hookTimeoutError, normalizeOptions, parseViewport } from "./options.js";
 import { finalizeReport } from "./analysis.js";
 import { installAutoInstrumentation } from "./browser/auto-instrument.js";
 import { collectInPage } from "./injected.js";
@@ -79,7 +79,9 @@ export async function runReport(options = {}) {
     const readinessPolling = options.samplingMode === "hook" ? { polling: 50 } : {};
     if (options.waitCondition) await page.waitForFunction(options.waitCondition, undefined, {timeout: options.waitConditionTimeoutMs, ...readinessPolling});
     if (options.waitForHook) {
-      await page.waitForFunction(name => typeof globalThis[name] === "function", options.hookName || "__gpuReportBench", { timeout: options.timeoutMs, ...readinessPolling });
+      const hookName = options.hookName || "__gpuReportBench";
+      await page.waitForFunction(name => typeof globalThis[name] === "function", hookName, { timeout: options.waitForHookTimeoutMs, ...readinessPolling })
+        .catch(error => { throw error?.name === "TimeoutError" ? hookTimeoutError(hookName, options.waitForHookTimeoutMs) : error; });
     }
     const cdpBefore = await cdpSnapshot(session, options);
     let evaluationTimer;
@@ -290,6 +292,8 @@ function reportOptions(options, launchArgs) {
     networkIdleBudgetMs: Number(options.networkIdleBudgetMs ?? 10000),
     cpuProfile: options.cpuProfile ?? "auto",
     measureLock: false,
-    label: options.label ?? null
+    label: options.label ?? null,
+    // Explicit module root only; the default (nearest package.json/.git) is not recorded.
+    ...(options.file && options.fileRoot ? { fileRoot: options.fileRoot } : {})
   };
 }

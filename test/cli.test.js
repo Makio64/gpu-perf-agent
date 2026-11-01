@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -156,7 +156,7 @@ test("A/B rejects conflicting output and invalid readiness before browser launch
   }
 });
 
-test("CLI run and agent forward only explicit flags through --server, support agent --base, and write failure reports", async (t) => {
+test("CLI run and agent send their merged, validated options through --server, support agent --base, and write failure reports", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "gpu-cli-hook-"));
   const requests = [];
   let shouldFail = false;
@@ -175,6 +175,7 @@ test("CLI run and agent forward only explicit flags through --server, support ag
       options: { ...options, autoInstrument: options.autoInstrument ?? false, api: options.api ?? "auto", samplingMode: options.samplingMode ?? "frames", viewport: "1280x720", deviceScaleFactor: 1 },
       inPage: {
         hook: { found: true },
+        ...(options.autoInstrument ? { instrumentation: { before: {}, after: {}, delta: {} } } : {}),
         samples: [{ index: 0, elapsedMs: 100, measurement: { gpuMs: 1.5, observedFrames: { count: 6, fps: 60, frameTimeMs: { count: 6, mean: 16.67, p95: 16.7 } } } }],
         summary: { fps: { mean: 60 }, frameTimeMsMean: { mean: 16.67 }, frameTimeMsP95: { mean: 16.7 }, observedFrameCount: 6, sampleCount: 1 }
       }
@@ -198,11 +199,19 @@ test("CLI run and agent forward only explicit flags through --server, support ag
   }
   assert.equal(requests[0].samplingMode, "frames");
   assert.equal(requests[0].waitForHook, undefined);
+  // run: its default preset and instrumentation, the typed --samples; generic defaults
+  // (viewport, context) stay the service's, launch flags stay on serve.
+  assert.deepEqual([requests[0].samples, requests[0].durationMs, requests[0].warmup, requests[0].autoInstrument, requests[0].gpuTiming], [1, 1000, 1, false, true]);
   assert.equal(requests[0].viewport, undefined);
+  assert.equal(requests[0].contextMode, undefined);
+  assert.equal(requests[0].chromiumArgs, undefined);
   assert.equal(requests[1].samplingMode, "hook");
   assert.equal(requests[1].waitForHook, true);
   assert.equal(requests[2].samplingMode, "hook");
   assert.equal(requests[2].waitForHook, true);
+  // agent: the quick preset, auto-instrument and GPU timing defaults are sent, not only typed flags.
+  assert.deepEqual([requests[2].preset, requests[2].samples, requests[2].durationMs, requests[2].warmup, requests[2].autoInstrument, requests[2].gpuTiming],
+    ["quick", 1, 250, 2, true, true]);
 
   const runAsync = async (cliArgs, cwdDir = root) => {
     const child = spawn(process.execPath, [cli, ...cliArgs], { cwd: cwdDir });
@@ -220,6 +229,10 @@ test("CLI run and agent forward only explicit flags through --server, support ag
   ], directory);
   assert.equal(combined.status, 0, combined.stderr || combined.stdout);
   assert.match(combined.stdout, /Matched baseline: .*autoInstrument=false/);
+  // Options inherited through --base reach the service, over the agent defaults.
+  const inherited = requests.at(-1);
+  assert.deepEqual([inherited.samples, inherited.durationMs, inherited.warmup, inherited.autoInstrument, inherited.viewport, inherited.deviceScaleFactor],
+    [1, 1000, 1, false, "1280x720", 1]);
   assert.match(combined.stdout, /Saved: reports\/iter-1\.json, reports\/iter-1\.compare\.json/);
 
   // Test runtime failure writes failure report and exits 3
@@ -234,6 +247,74 @@ test("CLI run and agent forward only explicit flags through --server, support ag
   const savedFail = JSON.parse(await readFile(failOut, "utf8"));
   assert.equal(savedFail.runError.code, "navigation-failed");
   assert.equal(savedFail.diagnostics.validity.valid, false);
+});
+
+test("CLI never reruns a warm daemon's page-level failure in-process, and falls back only when the daemon cannot take the job", async (t) => {
+  const { daemonKey } = await import("../src/daemon.js");
+  const directory = await mkdtemp(path.join(tmpdir(), "gpu-cli-daemon-"));
+  const stateDir = path.join(directory, "state");
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  let reply = null;
+  let runs = 0;
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.method === "GET" && request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, alive: true, pid: process.pid }));
+      return;
+    }
+    request.resume();
+    request.on("end", () => {
+      runs += 1;
+      response.statusCode = reply.status;
+      response.end(JSON.stringify(reply.body));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  // The launch options the CLI derives without launch flags. The target file does not exist,
+  // so an in-process run fails fast with file-not-found instead of launching Chrome.
+  const key = daemonKey({ chromiumArgs: [] });
+  await writeFile(path.join(stateDir, `${key}.json`), JSON.stringify({ port: server.address().port, pid: process.pid, startedAt: new Date().toISOString(), key }));
+  const runCli = async () => {
+    const child = spawn(process.execPath, [cli, "run", "--file", path.join(directory, "missing.html"), "--out", path.join(directory, "report.json"), "--json"], {
+      cwd: directory,
+      env: { ...process.env, GPU_PERF_AGENT_STATE_DIR: stateDir, GPU_PERF_AGENT_NO_DAEMON: "0" }
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const status = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve); });
+    return { status, stderr, output: JSON.parse(stdout) };
+  };
+
+  reply = { status: 500, body: { ok: false, error: { code: "hook-timeout", message: "Timed out after 15000 ms waiting for benchmark hook __gpuReportBench (--wait-for-hook-timeout).", samplingStarted: false } } };
+  const pageFailure = await runCli();
+  assert.equal(pageFailure.status, 3);
+  assert.equal(pageFailure.output.error.code, "hook-timeout");
+  assert.equal(runs, 1);
+  assert.doesNotMatch(pageFailure.stderr, /using warm profiler/);
+
+  reply = { status: 503, body: { ok: false, error: { code: "CLOSING", message: "Server is closing." } } };
+  const fallback = await runCli();
+  assert.equal(fallback.status, 3);
+  assert.equal(fallback.output.error.code, "file-not-found", "ran in-process after the daemon declined");
+  assert.equal(runs, 2);
+  assert.doesNotMatch(fallback.stderr, /using warm profiler/);
+
+  reply = { status: 200, body: {
+    options: { file: path.join(directory, "missing.html"), samples: 1, autoInstrument: false, api: "auto", samplingMode: "frames", viewport: "1280x720", deviceScaleFactor: 1 },
+    inPage: {
+      samples: [{ index: 0, elapsedMs: 100, measurement: { observedFrames: { count: 6, fps: 60, frameTimeMs: { count: 6, mean: 16.67, p95: 16.7 } } } }],
+      summary: { fps: { mean: 60 }, frameTimeMsMean: { mean: 16.67 }, frameTimeMsP95: { mean: 16.7 }, observedFrameCount: 6, sampleCount: 1 }
+    }
+  } };
+  const warm = await runCli();
+  assert.notEqual(warm.status, 3, warm.stderr);
+  assert.match(warm.stderr, new RegExp(`using warm profiler pid ${process.pid} \\(started \\d+s ago\\)`));
+  assert.equal(runs, 3);
 });
 
 test("quick doctor locates xctrace without enumerating templates and handles missing tools", { skip: process.platform !== "darwin" }, async () => {

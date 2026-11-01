@@ -25,6 +25,9 @@ import { reportValidity } from "./validity.js";
 
 const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.2.0" });
 
+// Launch flags belong to `serve`; the rest are recomputed by the service.
+const SERVER_OMITTED_KEYS = new Set(["angle", "channel", "executablePath", "headful", "chromiumArgs", "cdp", "cdpUrl", "webSocketUrl", "cdpAttached", "launchTimeoutMs"]);
+
 function daemonDisabled(options = {}) {
   const flag = process.env.GPU_PERF_AGENT_NO_DAEMON;
   return Boolean(options.noDaemon || (flag && flag !== "0" && flag !== "false"));
@@ -46,7 +49,7 @@ const RUN_OPTIONS = {
   "duration-ms": { type: "string", desc: "Per-sample duration in milliseconds." },
   samples: { type: "string", desc: "Number of measured samples." },
   warmup: { type: "string", desc: "Number of warmup samples before measurement." },
-  adaptive: { type: "boolean", desc: "Stop after >=3 samples when FPS CV < 1.5%." },
+  adaptive: { type: "boolean", desc: "Stop after >=3 samples once stable (GPU p50 CV < 3%, else FPS/frame times)." },
   gc: { type: "boolean", desc: "Force GC around sampling for retained heap bracket." },
   "deep-memory": { type: "boolean", desc: "Opt in to user-agent specific memory measurements." },
   "cpu-profile": { type: "string", desc: "auto|true|false CDP CPU profiler control." },
@@ -58,6 +61,7 @@ const RUN_OPTIONS = {
   "wait-condition": { type: "string", desc: "JS expression to await before sampling." },
   "wait-condition-timeout": { type: "string", desc: "Timeout in ms for --wait-condition." },
   "wait-for-hook": { type: "boolean", desc: "Wait for the benchmark hook after async startup." },
+  "wait-for-hook-timeout": { type: "string", desc: "Timeout in ms for --wait-for-hook (default: 15000)." },
   hook: { type: "string", desc: "Window benchmark hook name (default: __gpuReportBench)." },
   "hook-name": { type: "string", desc: "Alias for --hook." },
   "slow-frame-threshold": { type: "string", desc: "Slow-frame cutoff in ms (default: 20)." },
@@ -128,6 +132,7 @@ const COMMAND_OPTIONS = {
     "wait-condition": { type: "string", desc: "JS readiness expression." },
     "wait-condition-timeout": { type: "string", desc: "Timeout in ms for --wait-condition." },
     "wait-for-hook": { type: "boolean", desc: "Wait for benchmark hook before sampling." },
+    "wait-for-hook-timeout": { type: "string", desc: "Timeout in ms for --wait-for-hook (default: 15000)." },
     hook: { type: "string", desc: "Benchmark hook name." },
     "hook-name": { type: "string", desc: "Alias for --hook." },
     "slow-frame-threshold": { type: "string", desc: "Slow-frame cutoff in ms." },
@@ -427,7 +432,7 @@ async function runCommand(args, { isAgent = false } = {}) {
   let report;
   try {
     if (values.server) {
-      report = await runRemote(values.server, buildServerPayload(explicit, validated));
+      report = await runRemote(values.server, buildServerPayload(effectiveInput, validated));
     } else if (runnerName === "playwright") {
       const { runReport } = await import("./runner.js");
       report = await runReport(validated);
@@ -575,6 +580,7 @@ async function abCommand(args) {
     waitCondition: values["wait-condition"],
     waitConditionTimeoutMs: values["wait-condition-timeout"],
     waitForHook: values["wait-for-hook"],
+    waitForHookTimeoutMs: values["wait-for-hook-timeout"],
     waitUntil: values["wait-until"],
     readyTimeoutMs: values["ready-timeout"],
     allowIdle: values["allow-idle"],
@@ -856,6 +862,7 @@ function buildExplicitRunOptions(values) {
   if (values["wait-condition"] !== undefined) explicit.waitCondition = values["wait-condition"];
   if (values["wait-condition-timeout"] !== undefined) explicit.waitConditionTimeoutMs = Number(values["wait-condition-timeout"]);
   if (values["wait-for-hook"] !== undefined) explicit.waitForHook = Boolean(values["wait-for-hook"]);
+  if (values["wait-for-hook-timeout"] !== undefined) explicit.waitForHookTimeoutMs = Number(values["wait-for-hook-timeout"]);
   if (values["hook-name"] !== undefined || values.hook !== undefined) explicit.hookName = values["hook-name"] || values.hook;
   if (values["slow-frame-threshold"] !== undefined) explicit.slowFrameThresholdMs = Number(values["slow-frame-threshold"]);
   if (values.timeout !== undefined) explicit.timeoutMs = Number(values.timeout);
@@ -872,16 +879,20 @@ function buildExplicitRunOptions(values) {
   return explicit;
 }
 
-function buildServerPayload(explicit, validated) {
-  const payload = { ...explicit };
-  if (validated.url) payload.url = validated.url;
-  if (validated.file) payload.file = validated.file;
-  if (validated.fileRoot) payload.fileRoot = validated.fileRoot;
-  if (validated.rawTracePath) payload.rawTracePath = validated.rawTracePath;
-  if (validated.screenshotPath) payload.screenshotPath = validated.screenshotPath;
-  payload.samplingMode = explicit.samplingMode ?? "frames";
-  if (payload.samplingMode === "hook" && payload.waitForHook === undefined) {
-    payload.waitForHook = true;
+/**
+ * What this command decided (explicit flags, the preset's values, command defaults such as
+ * agent's auto-instrument, options inherited through --base), as validated. Options left to
+ * the generic defaults keep the service's own (serve --viewport, --context, ...).
+ */
+function buildServerPayload(decided, validated) {
+  const keys = new Set([
+    ...Object.keys(decided).filter((key) => decided[key] !== undefined),
+    ...Object.keys(PROFILING_PRESETS[validated.preset] ?? {}),
+    "gpuTiming", "samplingMode", "waitForHook", "trace", "rawTracePath", "screenshotPath"
+  ]);
+  const payload = {};
+  for (const key of keys) {
+    if (!SERVER_OMITTED_KEYS.has(key) && validated[key] != null) payload[key] = validated[key];
   }
   return payload;
 }
@@ -890,24 +901,20 @@ async function runWithOptionalDaemon(validated, values) {
   const skipDaemon = daemonDisabled({ noDaemon: values["no-daemon"] })
     || Boolean(values.cdp || values["cdp-url"] || values.headful || values.runner === "playwright");
   if (!skipDaemon) {
-    try {
-      const daemonMod = await import("./daemon.js");
-      const runDaemon = daemonMod.runWithDaemon || daemonMod.runDaemonCapture;
-      if (typeof runDaemon === "function") {
-        const res = await runDaemon(validated, {
-          onReuse(info) {
-            if (info?.pid) {
-              const ageS = info.startedAt ? Math.max(0, Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)) : null;
-              const ageText = ageS != null ? (ageS >= 60 ? `${Math.round(ageS / 60)}m` : `${ageS}s`) : "warm";
-              process.stderr.write(`using warm profiler pid ${info.pid} (started ${ageText} ago)\n`);
-            }
-          }
-        });
-        if (res) return res;
+    const { runViaDaemon } = await import("./daemon.js");
+    // null: no daemon could be reached or started, or its browser died, so run in-process.
+    // Page-level failures are thrown: a rerun would load the page twice.
+    const res = await runViaDaemon(validated, {
+      // Called after the daemon returned a report.
+      onReuse(info) {
+        if (info?.pid) {
+          const ageS = info.startedAt ? Math.max(0, Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)) : null;
+          const ageText = ageS != null ? (ageS >= 60 ? `${Math.round(ageS / 60)}m` : `${ageS}s`) : "warm";
+          process.stderr.write(`using warm profiler pid ${info.pid} (started ${ageText} ago)\n`);
+        }
       }
-    } catch {
-      // Fall back to direct fast-cdp runner when daemon is unavailable.
-    }
+    });
+    if (res) return res;
   }
   const { runFastReport } = await import("./fast-cdp-runner.js");
   return runFastReport(validated);
