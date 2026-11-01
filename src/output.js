@@ -460,7 +460,10 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
       ? `, 95% CI ${fmtSigned(pRow.confidence95.low)}..${fmtSigned(pRow.confidence95.high)}${unit}`
       : "";
     let modeDetail = "";
-    if (mode === "paired") {
+    if (cs.status === "invalid") {
+      // Say why the comparison is invalid (e.g. missing-metric), not an unrelated row reason.
+      modeDetail = `, ${cs.reasons?.[0] || cmp.statusReasons?.[0] || "invalid evidence"}`;
+    } else if (mode === "paired") {
       const rounds = pRow.baseStats?.count ?? pRow.candidateStats?.count ?? result?.rounds ?? null;
       if (rounds) modeDetail = `, ${rounds} rounds`;
     } else if (pRow.status === "unverified" || cs.status === "unverified") {
@@ -818,7 +821,8 @@ function inferErrorCode(error, message) {
   if (/unknown command|requires --url or --file|must be one of|must be a/i.test(message)) return "invalid-options";
   if (/navigation|ERR_CONNECTION/i.test(message)) return "navigation-failed";
   if (/timed? out/i.test(message)) return "capture-timeout";
-  if (/chrome|browser/i.test(message)) return "browser-launch-failed";
+  // Only launch wording: page errors that merely mention "browser" (or load src/browser/*) are not launch failures.
+  if (/failed to launch|executable|chrome.*(not found|exited|failed)|browser.*(launch|not found|exited|closed unexpectedly)/i.test(message)) return "browser-launch-failed";
   return "command-failed";
 }
 

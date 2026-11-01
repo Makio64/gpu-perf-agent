@@ -335,6 +335,9 @@ test("comparison Trust line states the GPU stability evidence and comparison-lev
   assert.equal(missing.status, "invalid");
   const digest = formatAgentComparison(missing);
   assert.match(digest, /^INVALID/);
+  // Line 1 names the invalid reason, not an unrelated row reason.
+  assert.match(digest.split("\n")[0], /missing-metric/);
+  assert.doesNotMatch(digest.split("\n")[0], /separate-capture-gpu/);
   assert.match(digest, /^Trust: base valid, cand valid; comparison invalid: missing-metric \(custom\.score\.mean is missing from both reports\); GPU clock-sensitive both sides$/m);
 });
 
@@ -395,4 +398,10 @@ test("normalizeCliError infers codes from the message, not from stack frame URLs
   assert.equal(normalizeCliError(hookException).code, "command-failed");
   assert.equal(normalizeCliError(Object.assign(new Error("Timed out after 15000 ms waiting for benchmark hook x (--wait-for-hook-timeout)."), { code: "hook-timeout" })).code, "hook-timeout");
   assert.equal(normalizeCliError(new Error("Failed to launch Chrome: spawn EACCES")).code, "browser-launch-failed");
+  // Page messages that only mention the browser, or load src/browser/*, are not launch failures.
+  assert.equal(normalizeCliError(new Error("WebGPU is not supported in this browser")).code, "command-failed");
+  assert.equal(normalizeCliError(new Error("Failed to fetch dynamically imported module: http://127.0.0.1:5173/src/browser/timing.js")).code, "command-failed");
+  assert.equal(normalizeCliError(new Error("Chrome failed to start (exit 1)")).code, "browser-launch-failed");
+  // The full message (with the page's stack location) is kept.
+  assert.match(normalizeCliError(hookException).message, /bench\.js:4:11/);
 });

@@ -1232,10 +1232,11 @@ async function probeBrowser(browserSession, launch) {
         const webgpu = { available: false, adapter: null, timestampQuery: false };
         try {
           if (!navigator.gpu) webgpu.error = isSecureContext ? "navigator.gpu is undefined" : "navigator.gpu is undefined (insecure context)";
-          const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
-          if (navigator.gpu && !adapter) webgpu.error = "requestAdapter() returned null";
+          // Same adapter request as CLI doctor (injected.js), so both pick the same GPU on dual-GPU machines.
+          const adapter = navigator.gpu && await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+          if (navigator.gpu && !adapter) webgpu.error = "navigator.gpu.requestAdapter returned null";
           if (adapter) {
-            const info = adapter.info || {};
+            const info = adapter.info || (typeof adapter.requestAdapterInfo === "function" ? await adapter.requestAdapterInfo() : {});
             webgpu.available = true;
             webgpu.adapter = { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "" };
             webgpu.timestampQuery = adapter.features.has("timestamp-query");

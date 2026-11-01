@@ -363,7 +363,7 @@ async function runCommand(args, { isAgent = false } = {}) {
     effectiveInput = {
       ...mergedOptions,
       url: values.url,
-      file: values.file,
+      file: values.file ? path.resolve(values.file) : undefined,
       fileArg: values.file,
       fileRoot: values["file-root"] ? path.resolve(values["file-root"]) : undefined,
       cdpUrl: values.cdp || values["cdp-url"],
@@ -379,7 +379,7 @@ async function runCommand(args, { isAgent = false } = {}) {
       preset: presetName,
       autoInstrument: explicit.autoInstrument !== undefined ? explicit.autoInstrument : isAgent,
       url: values.url,
-      file: values.file,
+      file: values.file ? path.resolve(values.file) : undefined,
       fileArg: values.file,
       fileRoot: values["file-root"] ? path.resolve(values["file-root"]) : undefined,
       cdpUrl: values.cdp || values["cdp-url"],
@@ -394,7 +394,12 @@ async function runCommand(args, { isAgent = false } = {}) {
     ? path.resolve(values.out)
     : await resolveDefaultOutPath({ label: values.label, file: values.file, url: values.url });
   const useRawTrace = Boolean(values["raw-trace"] || effectiveInput.rawTrace);
-  const useTrace = Boolean(values.trace || values["minimal-trace"] || useRawTrace || values["trace-out"] || effectiveInput.trace);
+  // A named preset's trace (profile) applies; with --base and no --preset the baseline's trace
+  // decides (trace is a compatibility key, so a difference would be a mismatch).
+  const presetTrace = values.base
+    ? !values.preset && baseReport?.options?.trace === true
+    : PROFILING_PRESETS[effectiveInput.preset]?.trace === true;
+  const useTrace = Boolean(values.trace || values["minimal-trace"] || useRawTrace || values["trace-out"] || effectiveInput.trace || presetTrace);
   const rawTracePath = values["trace-out"]
     ? path.resolve(values["trace-out"])
     : useRawTrace
@@ -432,7 +437,13 @@ async function runCommand(args, { isAgent = false } = {}) {
   let report;
   try {
     if (values.server) {
-      report = await runRemote(values.server, buildServerPayload(effectiveInput, validated));
+      // Plain `run --server` sends only typed flags so serve's own defaults (--auto-instrument) apply.
+      const commandDecides = isAgent || Boolean(baseReport) || Boolean(values.preset);
+      // run --preset adds only the preset's values, not run's generic autoInstrument: false.
+      const decided = isAgent || baseReport
+        ? effectiveInput
+        : { ...explicit, preset: values.preset, url: values.url, file: effectiveInput.file, fileRoot: effectiveInput.fileRoot, label: values.label };
+      report = await runRemote(values.server, buildServerPayload(decided, validated, { commandDecides }));
     } else if (runnerName === "playwright") {
       const { runReport } = await import("./runner.js");
       report = await runReport(validated);
@@ -882,13 +893,15 @@ function buildExplicitRunOptions(values) {
 /**
  * What this command decided (explicit flags, the preset's values, command defaults such as
  * agent's auto-instrument, options inherited through --base), as validated. Options left to
- * the generic defaults keep the service's own (serve --viewport, --context, ...).
+ * the generic defaults keep the service's own (serve --viewport, --context, ...). Without
+ * `commandDecides` (plain `run` with no --preset or --base) only typed flags are decided.
  */
-function buildServerPayload(decided, validated) {
+function buildServerPayload(decided, validated, { commandDecides = true } = {}) {
   const keys = new Set([
     ...Object.keys(decided).filter((key) => decided[key] !== undefined),
-    ...Object.keys(PROFILING_PRESETS[validated.preset] ?? {}),
-    "gpuTiming", "samplingMode", "waitForHook", "trace", "rawTracePath", "screenshotPath"
+    ...(commandDecides ? [...Object.keys(PROFILING_PRESETS[validated.preset] ?? {}), "gpuTiming", "trace"] : []),
+    ...(validated.trace ? ["trace"] : []),
+    "samplingMode", "waitForHook", "rawTracePath", "screenshotPath"
   ]);
   const payload = {};
   for (const key of keys) {

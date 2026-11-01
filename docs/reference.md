@@ -323,7 +323,7 @@ checked from their sample evidence; scope-less aggregates cannot prove health ti
 comparability. Saved comparison inspection displays original calculations, so use a
 fresh comparison of the original captures to apply current checks.
 
-For asynchronous scenes, `ab` accepts `--wait-until domcontentloaded`, `--wait-condition 'window.ready === true'`, `--wait-condition-timeout`, `--wait-for-hook`, `--hook`, `--timeout`, and `--device-scale-factor`. Both variants use the same readiness contract before every round. Use `--agent --metric health.gpuFrameMs.mean` instead of `--json` for a bounded digest focused on GPU timing. Full rounds and comparisons remain in `--out`; `--metric` does not exclude other regressions. `ab` accepts `--preset`; explicit `--samples`, `--duration-ms`, and `--warmup` override it.
+For asynchronous scenes, `ab` accepts `--wait-until domcontentloaded`, `--wait-condition 'window.ready === true'`, `--wait-condition-timeout`, `--wait-for-hook`, `--wait-for-hook-timeout`, `--hook`, `--timeout`, and `--device-scale-factor`. Both variants use the same readiness contract before every round. Use `--agent --metric health.gpuFrameMs.mean` instead of `--json` for a bounded digest focused on GPU timing. Full rounds and comparisons remain in `--out`; `--metric` does not exclude other regressions. `ab` accepts `--preset`; explicit `--samples`, `--duration-ms`, and `--warmup` override it.
 
 ## Baseline and candidate reports
 
@@ -398,7 +398,7 @@ globalThis.__gpuReportBench = async ({ phase, sampleIndex, durationMs, api }) =>
 };
 ```
 
-For apps that create their benchmark hook after asynchronous initialization, add `--wait-for-hook` (`waitForHook: true` in the API). It waits for the named hook after navigation, bounded by `--timeout`, before detecting capabilities and warming up. This also lets you use `--wait-until domcontentloaded` on applications with persistent network requests. Without explicit readiness, a hook registered later may be missed.
+For apps that create their benchmark hook after asynchronous initialization, add `--wait-for-hook` (`waitForHook: true` in the API). It waits for the named hook after navigation, bounded by `--wait-for-hook-timeout` (default 15000 ms, at most `--timeout`; `waitForHookTimeoutMs` in the API), before detecting capabilities and warming up. This also lets you use `--wait-until domcontentloaded` on applications with persistent network requests. Without explicit readiness, a hook registered later may be missed.
 
 In default `frames` mode the runner observes `requestAnimationFrame` concurrently with the hook, so it retains independent frame-time and slow-frame measurements. Without a hook, it samples the page’s natural animation loop. Explicit `hook` mode requires the hook and skips that observer.
 

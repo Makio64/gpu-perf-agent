@@ -15,23 +15,24 @@ names distinct and keep the original baseline.
 
 `agent` and `run` (2.2+) start and reuse a background Chrome daemon automatically. A change
 of tool version, source files or launch flags starts a new daemon; each one exits after 10
-idle minutes. Use `--no-daemon` or `GPU_PERF_AGENT_NO_DAEMON=1` to run in-process. Any
-failure on the daemon path is retried once in-process, so a failing or timed-out capture
-can take about twice `--timeout`.
+idle minutes. Use `--no-daemon` or `GPU_PERF_AGENT_NO_DAEMON=1` to run in-process. The CLI
+falls back to an in-process run only when the daemon cannot be reached or started, declines
+the job (queue full, shutting down) or its browser dies; target, readiness and hook errors
+fail once, without a second page load.
 
 To share one browser explicitly across shells or machines:
 
 ```bash
 npx gpu-perf-agent serve --port 9099 --auto-instrument
-npx gpu-perf-agent agent --server http://127.0.0.1:9099 --url http://localhost:5173 \
-  --samples 6 --duration-ms 250 --warmup 2 --out reports/base.json
+npx gpu-perf-agent agent --server http://127.0.0.1:9099 --url http://localhost:5173 --out reports/base.json
 ```
 
-`agent --server` forwards only the flags you type: the `agent` defaults, `--preset` and
-options inherited through `--base` are not sent, and the service applies its own defaults
-(5 x 1000 ms). Pass the sampling flags explicitly and identically for every capture, and do
-not mix `--server` captures with daemon captures in one comparison. Configure launch flags
-on `serve`, not on its clients.
+`agent --server` (and `run --server` with `--preset` or `--base`) sends what the command
+decided: the `agent` defaults (6 x 250 ms, auto-instrumentation, GPU timing), the preset's
+values and options inherited through `--base`. Plain `run --server` sends only the flags you
+type, so `serve`'s own defaults (such as `--auto-instrument`) apply. Do not mix `--server`
+captures with daemon captures in one comparison, and configure browser launch flags on
+`serve`, not on its clients.
 
 The service serializes jobs and gives each a fresh browser context (cookies, storage and
 page caches isolated; browser-process caches and hardware state persist). Use
@@ -71,9 +72,10 @@ same subset of options as `agent --base`), and accepts `screenshot: "none" | "fi
 `cpuProfile` and `label`. It returns a `resource_link` to the saved report JSON. Check
 `isError` and the structured status/validity of every result, not only that the call
 returned. `ab_compare_webgpu` cannot set readiness flags, hook mode, `--api`, viewport or
-budgets (see measurement.md); use the CLI `ab` for those. If `doctor_webgpu` reports WebGPU
-unavailable on a machine where captures work, trust CLI `doctor --json` instead: the MCP
-probe runs on a page where `navigator.gpu` is not exposed.
+budgets (see measurement.md); use the CLI `ab` for those. `doctor_webgpu` probes the WebGPU
+adapter, timestamp-query and WebGL2 from a page served on `http://127.0.0.1`, like CLI
+`doctor`; with a browser attached over `--cdp` that cannot reach this machine, its error
+says the probe page did not load.
 
 ## Inspect saved reports
 

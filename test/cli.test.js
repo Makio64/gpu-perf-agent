@@ -172,7 +172,8 @@ test("CLI run and agent send their merged, validated options through --server, s
       return;
     }
     response.end(JSON.stringify({
-      options: { ...options, autoInstrument: options.autoInstrument ?? false, api: options.api ?? "auto", samplingMode: options.samplingMode ?? "frames", viewport: "1280x720", deviceScaleFactor: 1 },
+      // Like serve: options the client leaves out get the service's defaults (default preset).
+      options: { samples: 5, durationMs: 1000, warmup: 1, ...options, autoInstrument: options.autoInstrument ?? false, api: options.api ?? "auto", samplingMode: options.samplingMode ?? "frames", viewport: "1280x720", deviceScaleFactor: 1 },
       inPage: {
         hook: { found: true },
         ...(options.autoInstrument ? { instrumentation: { before: {}, after: {}, delta: {} } } : {}),
@@ -187,7 +188,7 @@ test("CLI run and agent send their merged, validated options through --server, s
     await rm(directory, { recursive: true, force: true });
   });
   const service = `http://127.0.0.1:${server.address().port}`;
-  for (const [index, command, args] of [[0, "run", []], [1, "run", ["--sampling-mode", "hook"]], [2, "agent", ["--sampling-mode", "hook"]]]) {
+  for (const [index, command, args] of [[0, "run", []], [1, "run", ["--sampling-mode", "hook"]], [2, "agent", ["--sampling-mode", "hook"]], [3, "run", ["--preset", "profile"]]]) {
     const child = spawn(process.execPath, [cli, command, "--url", "http://localhost:1234", "--samples", "1", "--server", service,
       "--out", path.join(directory, `${index}.json`), "--json", ...args], { cwd: root });
     let stdout = "", stderr = "";
@@ -199,9 +200,10 @@ test("CLI run and agent send their merged, validated options through --server, s
   }
   assert.equal(requests[0].samplingMode, "frames");
   assert.equal(requests[0].waitForHook, undefined);
-  // run: its default preset and instrumentation, the typed --samples; generic defaults
-  // (viewport, context) stay the service's, launch flags stay on serve.
-  assert.deepEqual([requests[0].samples, requests[0].durationMs, requests[0].warmup, requests[0].autoInstrument, requests[0].gpuTiming], [1, 1000, 1, false, true]);
+  // Plain run: only the typed --samples, so serve's own defaults (serve --auto-instrument,
+  // viewport, context) apply; launch flags stay on serve.
+  assert.deepEqual([requests[0].samples, requests[0].durationMs, requests[0].warmup, requests[0].autoInstrument, requests[0].gpuTiming, requests[0].trace],
+    [1, undefined, undefined, undefined, undefined, undefined]);
   assert.equal(requests[0].viewport, undefined);
   assert.equal(requests[0].contextMode, undefined);
   assert.equal(requests[0].chromiumArgs, undefined);
@@ -212,6 +214,11 @@ test("CLI run and agent send their merged, validated options through --server, s
   // agent: the quick preset, auto-instrument and GPU timing defaults are sent, not only typed flags.
   assert.deepEqual([requests[2].preset, requests[2].samples, requests[2].durationMs, requests[2].warmup, requests[2].autoInstrument, requests[2].gpuTiming],
     ["quick", 1, 250, 2, true, true]);
+  // run --preset profile: the preset decides, including its GC and Chrome trace, but not
+  // run's generic autoInstrument: false (serve --auto-instrument still applies).
+  assert.deepEqual([requests[3].preset, requests[3].samples, requests[3].durationMs, requests[3].gc, requests[3].trace],
+    ["profile", 1, 750, true, true]);
+  assert.equal(requests[3].autoInstrument, undefined);
 
   const runAsync = async (cliArgs, cwdDir = root) => {
     const child = spawn(process.execPath, [cli, ...cliArgs], { cwd: cwdDir });
@@ -234,6 +241,15 @@ test("CLI run and agent send their merged, validated options through --server, s
   assert.deepEqual([inherited.samples, inherited.durationMs, inherited.warmup, inherited.autoInstrument, inherited.viewport, inherited.deviceScaleFactor],
     [1, 1000, 1, false, "1280x720", 1]);
   assert.match(combined.stdout, /Saved: reports\/iter-1\.json, reports\/iter-1\.compare\.json/);
+
+  // A profile baseline (trace: true) screened with agent --base and no --preset keeps tracing,
+  // since trace is a compatibility key.
+  const profiled = await runAsync([
+    "agent", "--url", "http://localhost:1234", "--base", path.join(directory, "3.json"), "--server", service, "--out", path.join(directory, "prof-cand.json")
+  ], directory);
+  assert.equal(profiled.status, 0, profiled.stderr || profiled.stdout);
+  assert.equal(requests.at(-1).trace, true);
+  assert.doesNotMatch(profiled.stdout, /MISMATCH/);
 
   // Test runtime failure writes failure report and exits 3
   shouldFail = true;

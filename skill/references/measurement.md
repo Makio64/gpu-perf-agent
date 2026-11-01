@@ -63,7 +63,8 @@ that returns only `gpuTimeNs` is treated as vsync-paced in frame mode (or `unkno
 mode), and its comparisons between separate captures stay `UNVERIFIED`. A fixed-work
 benchmark you time yourself can return `gpuTiming: { method: 'fixed-work' }` next to the
 value. Warm or fixed-work timings gate separate comparisons only when they are stable
-(about 5% CV or better). Capture with `--wait-for-hook` when the hook is installed after load.
+(about 5% CV or better). Capture with `--wait-for-hook` when the hook is installed after load;
+it fails after `--wait-for-hook-timeout` (default 15 s, at most `--timeout`).
 
 Without a warm-up, `timer.measure(record)` uses the same helper signature and returns
 nanoseconds. For several passes, `timer.createBatch({ capacity: 8, label: 'profile' })`:

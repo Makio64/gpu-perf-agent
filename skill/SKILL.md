@@ -115,9 +115,10 @@ npx gpu-perf-agent ab --base-url http://localhost:5174 --candidate-url http://lo
 deltas trustworthy; separate captures can differ just because GPU clocks changed. Use at
 least 4 rounds (the default) and the same readiness, `--api`, viewport, `--metric` and
 `--sampling-mode` flags as the baseline. 2.2+ enables instrumentation and GPU timing in `ab`
-by default. The `Next: confirm with ab ...` line printed after screening takes both targets
-from the reports: after an in-place edit it names the same target twice, so point its base
-at your baseline copy, add the `--file-root` you captured with, and check its `--metric`.
+by default. The `Next: confirm with ab ...` line printed after screening copies your
+readiness, `--file-root`, sampling-mode, viewport and pixel-ratio flags. After an in-place
+edit it prints `<baseline-url>` or `<baseline-copy.html>` for the baseline: replace that with
+your baseline copy, and check its `--metric`.
 
 **7. Stop, report, clean up.** See the last section.
 
@@ -132,7 +133,7 @@ Capture digest:
 | `Frame ... \| GPU p50 ... \| passes/f, draws/f \| VRAM \| heap` | Frame time and p95; GPU busy time per frame (overlapping passes counted once); work per frame; declared GPU allocations rounded to MiB (an estimate, not residency); JS heap growth |
 | `Passes (excl p50):` | Most expensive passes, each with its own time and source location (WebGL2 shows one `gl-frame` pass) |
 | `CPU:` / `Hitch:` | Hottest function and its caller / worst slow frame |
-| `Trust:` | Validity and stability; `unstable` or `clock-sensitive` GPU means confirm GPU deltas with `ab` |
+| `Trust:` | Validity and GPU stability per side; `unstable` or `clock-sensitive` GPU means confirm GPU deltas with `ab`. In comparisons, `base invalid: <code>`, `cand invalid: <code>` or `comparison invalid: <code>` says why the status is `INVALID` |
 | `Next:` / `Report:` | Suggested step (a hypothesis) / saved report path |
 
 Comparison output adds `Matched baseline:` (flags inherited from `--base`),
@@ -163,7 +164,8 @@ threshold as well as for CLI errors; see "Older releases" in transports.md.
   `--channel canary` or `--executable-path <chrome>`. Headless Linux/CI often has no GPU:
   report a software or fallback adapter instead of its numbers.
 - `no-gpu-work`, or 0 passes and draws: the page is not rendering while sampled. Use
-  `--wait-for-hook` if the app defines `globalThis.__gpuReportBench`, or
+  `--wait-for-hook` if the app defines `globalThis.__gpuReportBench` (2.2+ gives up after
+  `--wait-for-hook-timeout`, default 15 s), or
   `--wait-condition 'window.ready === true'` with a real readiness signal; raise
   `--ready-timeout`; add `--wait-until domcontentloaded` when the page keeps requests open.
 - Page errors (`runtime-errors`, `critical-resource-failed`): `inspect --report <r> --section errors`.

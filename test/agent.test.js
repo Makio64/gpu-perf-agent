@@ -527,7 +527,7 @@ test("MCP doctor_webgpu passes the probe's WebGPU and WebGL2 errors through", as
     async probe() {
       return {
         chrome: { version: "HeadlessChrome/140.0", path: "/chrome" },
-        webgpu: { available: false, adapter: null, timestampQuery: false, error: "requestAdapter() returned null" },
+        webgpu: { available: false, adapter: null, timestampQuery: false, error: "navigator.gpu.requestAdapter returned null" },
         webgl2: { available: true, renderer: "ANGLE Metal" }
       };
     },
@@ -537,7 +537,7 @@ test("MCP doctor_webgpu passes the probe's WebGPU and WebGL2 errors through", as
   send(fixture.input, 1, "doctor_webgpu", {});
   await fixture.server.close();
   const { structuredContent } = fixture.messages.find(m => m.id === 1).result;
-  assert.deepEqual(structuredContent.webgpu, { available: false, adapter: null, timestampQuery: false, error: "requestAdapter() returned null" });
+  assert.deepEqual(structuredContent.webgpu, { available: false, adapter: null, timestampQuery: false, error: "navigator.gpu.requestAdapter returned null" });
   assert.equal(Object.hasOwn(structuredContent.webgl2, "error"), false);
 });
 
