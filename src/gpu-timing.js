@@ -6,6 +6,8 @@ const stabilityReasons = new Set(['within-run-spread', 'between-sample-drift', '
 const AUTO_PROVENANCE = 'auto.frame-busy';
 // Attached browsers without allow_unsafe_apis quantize timestamps to 100 µs.
 const QUANTUM_MS = 0.1;
+const GPU_MS_LEAF_RE = /^(gpuMs|gpuFrameMs|gpuTimeMs|gpuDurationMs)$/i;
+const GPU_NS_LEAF_RE = /^(gpuNs|gpuTimeNs|gpuDurationNs)$/i;
 
 /** Select one GPU timing per sample only when its scope is unambiguous. */
 export function collectGpuTimingEvidence(report) {
@@ -26,28 +28,55 @@ export function collectGpuTimingEvidence(report) {
   let sampleValue = null;
   let sampleScope = null;
 
-  function visit(value, property = '', depth = 0) {
+  function recordLeaf(value, key) {
+    const leaf = key.includes('.') ? key.slice(key.lastIndexOf('.') + 1) : key;
+    const milliseconds = GPU_MS_LEAF_RE.test(leaf);
+    if (!milliseconds && !GPU_NS_LEAF_RE.test(leaf)) return;
+    sampleCount++;
+    timingCount++;
+    if (value < 0) { negativeTimingCount++; return; }
+    if (sampleCount !== 1) return;
+    // Build a path only for the first matching timing leaf in a sample.
+    let path = '';
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      path = path ? `${path}.${part}` : part;
+    }
+    path = path ? `${path}.${key}` : key;
+    sampleScope = path.slice(0, Math.max(0, path.lastIndexOf('.')));
+    sampleValue = milliseconds ? value : value / 1e6;
+  }
+
+  function visit(value, depth = 0) {
     if (depth > 8 || value == null) return;
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      const key = property.slice(property.lastIndexOf('.') + 1);
-      const milliseconds = /^(gpuMs|gpuFrameMs|gpuTimeMs|gpuDurationMs)$/i.test(key);
-      if (!milliseconds && !/^(gpuNs|gpuTimeNs|gpuDurationNs)$/i.test(key)) return;
-      sampleCount++;
-      timingCount++;
-      if (value < 0) { negativeTimingCount++; return; }
-      // Build a path only for a matching timing leaf, never other telemetry.
-      // Match the custom metric prefix convention, including leading empty keys.
-      let path = '';
-      for (const part of parts) path = path ? `${path}.${part}` : part;
-      sampleScope = path.slice(0, Math.max(0, path.lastIndexOf('.')));
-      sampleValue = milliseconds ? value : value / 1e6;
+    if (typeof value === 'number') {
+      if (Number.isFinite(value)) recordLeaf(value, '');
       return;
     }
     if (typeof value !== 'object') return;
-    for (const [key, item] of Object.entries(value)) {
-      parts.push(key);
-      visit(item, key, depth + 1);
-      parts.pop();
+    if (Array.isArray(value)) {
+      if (depth + 1 > 8) return;
+      for (let i = 0; i < value.length; i += 1) {
+        const item = value[i];
+        if (item && typeof item === 'object') {
+          parts.push(String(i));
+          visit(item, depth + 1);
+          parts.pop();
+        }
+      }
+      return;
+    }
+    const keys = Object.keys(value);
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i];
+      const item = value[key];
+      if (typeof item === 'number') {
+        if (depth + 1 <= 8 && Number.isFinite(item)) recordLeaf(item, key);
+      } else if (item && typeof item === 'object') {
+        parts.push(key);
+        visit(item, depth + 1);
+        parts.pop();
+      }
     }
   }
 

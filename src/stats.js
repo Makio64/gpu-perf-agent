@@ -3,22 +3,74 @@ export function finiteNumber(value) {
 }
 
 export function numericStats(values) {
-  const numbers = values.filter(finiteNumber).sort((a, b) => a - b);
-  if (numbers.length === 0) {
+  let numbers;
+  const arrayInput = Array.isArray(values);
+  if (!arrayInput) {
+    numbers = values.filter(finiteNumber).sort((a, b) => a - b);
+  } else if (values.length <= 64) {
+    numbers = [];
+    let sorted = true;
+    let prev = -Infinity;
+    for (let i = 0; i < values.length; i += 1) {
+      const v = values[i];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        if (v < prev) sorted = false;
+        prev = v;
+        numbers.push(v);
+      }
+    }
+    if (!sorted) {
+      for (let i = 1; i < numbers.length; i += 1) {
+        const current = numbers[i];
+        let j = i - 1;
+        while (j >= 0 && current < numbers[j]) {
+          numbers[j + 1] = numbers[j];
+          j -= 1;
+        }
+        numbers[j + 1] = current;
+      }
+    }
+  } else {
+    const buf = new Float64Array(values.length);
+    let count = 0;
+    let sorted = true;
+    let hasNegativeZero = false;
+    let prev = -Infinity;
+    for (let i = 0; i < values.length; i += 1) {
+      const v = values[i];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        if (v < prev) sorted = false;
+        if (v === 0 && 1 / v < 0) hasNegativeZero = true;
+        prev = v;
+        buf[count++] = v;
+      }
+    }
+    if (hasNegativeZero) {
+      numbers = values.filter(finiteNumber).sort((a, b) => a - b);
+    } else {
+      numbers = count === buf.length ? buf : buf.subarray(0, count);
+      if (!sorted) numbers.sort();
+    }
+  }
+  const count = numbers.length;
+  if (count === 0) {
     return null;
   }
 
-  const sum = numbers.reduce((total, value) => total + value, 0);
-  const mean = sum / numbers.length;
-  const variance = numbers.reduce((total, value) => total + ((value - mean) ** 2), 0) / numbers.length;
+  let sum = 0;
+  for (let i = 0; i < count; i += 1) sum += numbers[i];
+  const mean = sum / count;
+  let sqDiffSum = 0;
+  for (let i = 0; i < count; i += 1) sqDiffSum += ((numbers[i] - mean) ** 2);
+  const variance = sqDiffSum / count;
   const stddev = Math.sqrt(variance);
   const median = percentile(numbers, 0.5);
   return {
     coefficientOfVariation: mean === 0 ? null : stddev / Math.abs(mean),
-    count: numbers.length,
-    mad: medianAbsoluteDeviation(numbers, median),
+    count,
+    mad: medianAbsoluteDeviation(numbers, median, arrayInput),
     min: numbers[0],
-    max: numbers[numbers.length - 1],
+    max: numbers[count - 1],
     mean,
     p50: median,
     p90: percentile(numbers, 0.9),
@@ -29,9 +81,9 @@ export function numericStats(values) {
   };
 }
 
-function medianAbsoluteDeviation(numbers, median) {
+function medianAbsoluteDeviation(numbers, median, fastMerge = Array.isArray(numbers)) {
   // Typed-array map operations can round or truncate deviations; retain that behavior.
-  if (!Array.isArray(numbers)) {
+  if (!fastMerge) {
     return percentile(numbers.map(value => Math.abs(value - median)).sort((a, b) => a - b), 0.5);
   }
 
@@ -220,13 +272,15 @@ export function flattenNumbers(value, prefix = "", out = {}) {
   return out;
 }
 
+const NOISY_SEGMENT_RE = /(^|\.)(length|byteLength|count|fps|frameCount|frameTimeMs|observationWindowMs|observedFrames|samples|slowFrameCount|totalResources)(\.|$)/i;
+const LEADING_DIGIT_RE = /^\d+/;
+
 /**
  * Hook-returned measurement paths that are not workload metrics: observed-frame
  * histories, counts, and anything that mirrors profiler telemetry.
  */
 export function isNoisyMeasurementPath(path) {
-  return /(^|\.)(length|byteLength|count|fps|frameCount|frameTimeMs|observationWindowMs|observedFrames|samples|slowFrameCount|totalResources)(\.|$)/i.test(path)
-    || /^\d+/.test(path);
+  return NOISY_SEGMENT_RE.test(path) || LEADING_DIGIT_RE.test(path);
 }
 
 /** Flatten a hook measurement to `{path: number}`, skipping noisy subtrees before visiting them. */
@@ -234,15 +288,32 @@ export function flattenMeasurementNumbers(value, prefix = "", out = {}, depth = 
   // Once a path contains an excluded segment every descendant is excluded too.
   // Skip observed-frame histories before allocating their thousands of paths.
   // The depth bound also stops on cyclic objects passed in directly (never JSON).
-  if ((prefix && isNoisyMeasurementPath(prefix)) || depth > 32) return out;
+  if (depth > 32 || (depth === 0 && prefix && isNoisyMeasurementPath(prefix))) return out;
   if (finiteNumber(value)) {
     out[prefix || "value"] = value;
   } else if (value && typeof value === "object") {
     if (Array.isArray(value)) {
-      value.forEach((item, index) => flattenMeasurementNumbers(item, prefix ? `${prefix}.${index}` : String(index), out, depth + 1));
+      if (!prefix) return out;
+      for (let index = 0; index < value.length; index += 1) {
+        const item = value[index];
+        if (typeof item === "number") {
+          if (Number.isFinite(item)) out[`${prefix}.${index}`] = item;
+        } else if (item && typeof item === "object") {
+          flattenMeasurementNumbers(item, `${prefix}.${index}`, out, depth + 1);
+        }
+      }
     } else {
-      for (const [key, item] of Object.entries(value)) {
-        flattenMeasurementNumbers(item, prefix ? `${prefix}.${key}` : key, out, depth + 1);
+      const keys = Object.keys(value);
+      for (let i = 0; i < keys.length; i += 1) {
+        const key = keys[i];
+        if (NOISY_SEGMENT_RE.test(key) || (!prefix && LEADING_DIGIT_RE.test(key))) continue;
+        const item = value[key];
+        const nextPrefix = prefix ? `${prefix}.${key}` : key;
+        if (typeof item === "number") {
+          if (Number.isFinite(item)) out[nextPrefix] = item;
+        } else if (item && typeof item === "object") {
+          flattenMeasurementNumbers(item, nextPrefix, out, depth + 1);
+        }
       }
     }
   }

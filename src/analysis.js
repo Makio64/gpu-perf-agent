@@ -27,8 +27,8 @@ export function finalizeReport(report, options = {}) {
 /** One pass over a raw or finalized report: the §1.9 summary and the diagnostics block. */
 export function analyzeReport(report, options = {}) {
   const inPage = report?.inPage || {};
-  const validity = reportValidity(report);
   const context = analysisContext(report, options);
+  const validity = reportValidity(report, { gpu: context.gpu.hook, autoEvidence: context.gpu.auto });
   const bottleneck = classifyContext(context, validity);
   const findings = buildFindings({ ...context, bottleneck, validity });
   // The §6.4 two-argument call: the findings carry every input of the verdict.
@@ -171,8 +171,10 @@ export function warningCodes(report) {
 export function refreshState(report) {
   const summary = report?.inPage?.summary || {};
   const cadence = summary.cadence || report?.summary?.cadence || null;
-  const hz = finite(cadence?.hz);
-  const budgetMs = finite(cadence?.intervalMs) ?? (hz > 0 ? 1000 / hz : DEFAULT_BUDGET_MS);
+  const rawHz = finite(cadence?.hz);
+  const hz = rawHz !== null && rawHz >= 50 ? rawHz : null;
+  const rawInterval = finite(cadence?.intervalMs);
+  const budgetMs = rawInterval !== null && rawInterval <= 20 ? rawInterval : (hz > 0 ? 1000 / hz : DEFAULT_BUDGET_MS);
   const refreshHz = hz ?? 1000 / budgetMs;
   const fps = finite(summary.fps?.mean) ?? finite(report?.summary?.fps);
   const activity = summary.activity;

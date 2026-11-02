@@ -4,26 +4,15 @@ import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import {
-  compactComparison,
-  compactReport,
-  comparisonExitCode,
-  formatAgentComparison,
-  formatAgentReport,
-  formatCaptureAndCompare,
-  formatCliError,
-  normalizeCliError,
-  relPath
-} from "./output.js";
-import {
-  applyOptionPrecedence,
-  BASE_INHERITED_OPTION_KEYS,
-  normalizeOptions,
-  PROFILING_PRESETS
-} from "./options.js";
-import { reportValidity } from "./validity.js";
 
 const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.2.0" });
+
+function relPath(targetPath, cwd = process.cwd()) {
+  if (!targetPath || typeof targetPath !== "string") return "";
+  const rel = path.relative(cwd, path.resolve(targetPath));
+  if (!rel) return path.basename(targetPath);
+  return rel.startsWith("..") ? targetPath : rel;
+}
 
 // Launch flags belong to `serve`; the rest are recomputed by the service.
 const SERVER_OMITTED_KEYS = new Set(["angle", "channel", "executablePath", "headful", "chromiumArgs", "cdp", "cdpUrl", "webSocketUrl", "cdpAttached", "launchTimeoutMs"]);
@@ -262,6 +251,7 @@ try {
     });
   }
 } catch (error) {
+  const { formatCliError, normalizeCliError } = await import("./output.js");
   const reportPath = error?.failureReportPath ? relPath(error.failureReportPath) : undefined;
   const normalized = normalizeCliError(error);
   if (wantsJson) {
@@ -321,6 +311,11 @@ async function runCommand(args, { isAgent = false } = {}) {
   if (values.server && (runnerName === "playwright" || values.cdp || values["cdp-url"] || values.angle || values.channel || values["executable-path"] || values.headful || values["chromium-arg"]?.length)) {
     throw Object.assign(new Error("Configure browser launch flags on serve when using --server."), { code: "invalid-options" });
   }
+  const [
+    { applyOptionPrecedence, BASE_INHERITED_OPTION_KEYS, normalizeOptions, PROFILING_PRESETS },
+    { compactComparison, compactReport, comparisonExitCode, formatAgentReport, formatCaptureAndCompare },
+    { reportValidity }
+  ] = await Promise.all([import("./options.js"), import("./output.js"), import("./validity.js")]);
 
   // Build explicit options map (only flags explicitly passed by caller).
   const explicit = buildExplicitRunOptions(values);
@@ -443,7 +438,7 @@ async function runCommand(args, { isAgent = false } = {}) {
       const decided = isAgent || baseReport
         ? effectiveInput
         : { ...explicit, preset: values.preset, url: values.url, file: effectiveInput.file, fileRoot: effectiveInput.fileRoot, label: values.label };
-      report = await runRemote(values.server, buildServerPayload(decided, validated, { commandDecides }));
+      report = await runRemote(values.server, buildServerPayload(decided, validated, PROFILING_PRESETS, { commandDecides }));
     } else if (runnerName === "playwright") {
       const { runReport } = await import("./runner.js");
       report = await runReport(validated);
@@ -550,7 +545,10 @@ async function runCommand(args, { isAgent = false } = {}) {
 }
 
 async function abCommand(args) {
-  const { runABComparison } = await import("./ab-runner.js");
+  const [{ runABComparison }, { compactComparison, comparisonExitCode, formatAgentComparison }] = await Promise.all([
+    import("./ab-runner.js"),
+    import("./output.js")
+  ]);
   const { values } = parseCommandArgs("ab", args);
   if (values.json && values.agent) {
     throw Object.assign(new Error("Choose --json or --agent."), { code: "invalid-options" });
@@ -640,7 +638,10 @@ async function abCommand(args) {
 }
 
 async function compareCommand(args) {
-  const { compareReports, formatCompareTable, loadReport } = await import("./compare.js");
+  const [{ compareReports, formatCompareTable, loadReport }, { compactComparison, comparisonExitCode, formatAgentComparison }] = await Promise.all([
+    import("./compare.js"),
+    import("./output.js")
+  ]);
   const { values } = parseCommandArgs("compare", args);
 
   if (!values.base || !values.candidate) {
@@ -896,10 +897,10 @@ function buildExplicitRunOptions(values) {
  * the generic defaults keep the service's own (serve --viewport, --context, ...). Without
  * `commandDecides` (plain `run` with no --preset or --base) only typed flags are decided.
  */
-function buildServerPayload(decided, validated, { commandDecides = true } = {}) {
+function buildServerPayload(decided, validated, presets, { commandDecides = true } = {}) {
   const keys = new Set([
     ...Object.keys(decided).filter((key) => decided[key] !== undefined),
-    ...(commandDecides ? [...Object.keys(PROFILING_PRESETS[validated.preset] ?? {}), "gpuTiming", "trace"] : []),
+    ...(commandDecides ? [...Object.keys(presets?.[validated.preset] ?? {}), "gpuTiming", "trace"] : []),
     ...(validated.trace ? ["trace"] : []),
     "samplingMode", "waitForHook", "rawTracePath", "screenshotPath"
   ]);
@@ -934,7 +935,7 @@ async function runWithOptionalDaemon(validated, values) {
 }
 
 async function writeFailureReport(out, validated, error) {
-  const { finalizeReport } = await import("./analysis.js");
+  const [{ finalizeReport }, { normalizeCliError }] = await Promise.all([import("./analysis.js"), import("./output.js")]);
   const normalized = normalizeCliError(error);
   const failed = finalizeReport({
     tool: TOOL,

@@ -32,31 +32,10 @@ export function installAutoInstrumentation(options = {}) {
     webglDrawArrays: 0, webglDrawElements: 0, webglDrawArraysInstanced: 0, webglDrawElementsInstanced: 0,
     webglDrawRangeElements: 0, webglClear: 0
   };
-  const HOT_NAMES = [
-    ["webgpu.draw", "webgpuDraw"], ["webgpu.drawIndexed", "webgpuDrawIndexed"], ["webgpu.drawIndirect", "webgpuDrawIndirect"],
-    ["webgpu.drawIndexedIndirect", "webgpuDrawIndexedIndirect"], ["webgpu.dispatchWorkgroups", "webgpuDispatch"],
-    ["webgpu.dispatchWorkgroupsIndirect", "webgpuDispatchIndirect"], ["webgpu.bundleDrawCalls", "webgpuBundleDraw"],
-    ["webgpu.bundleDrawsExecuted", "webgpuBundleDrawsExecuted"], ["webgpu.renderBundles", "webgpuRenderBundles"],
-    ["webgpu.renderPasses", "webgpuRenderPasses"], ["webgpu.computePasses", "webgpuComputePasses"],
-    ["webgpu.commandEncoders", "webgpuCommandEncoders"], ["webgpu.queueSubmits", "webgpuQueueSubmits"],
-    ["webgpu.commandBuffersSubmitted", "webgpuCommandBuffers"], ["webgpu.writeBufferCalls", "webgpuWriteBufferCalls"],
-    ["webgpu.writeBufferBytes", "webgpuWriteBufferBytes"], ["webgpu.writeTextureCalls", "webgpuWriteTextureCalls"],
-    ["webgpu.writeTextureBytes", "webgpuWriteTextureBytes"], ["webgpu.createBindGroup", "webgpuCreateBindGroup"],
-    ["webgpu.createBuffer", "webgpuCreateBuffer"], ["webgpu.createTexture", "webgpuCreateTexture"],
-    ["webgpu.createView", "webgpuCreateView"], ["webgpu.createSampler", "webgpuCreateSampler"],
-    ["webgl2.drawArrays", "webgl2DrawArrays"], ["webgl2.drawElements", "webgl2DrawElements"],
-    ["webgl2.drawArraysInstanced", "webgl2DrawArraysInstanced"], ["webgl2.drawElementsInstanced", "webgl2DrawElementsInstanced"],
-    ["webgl2.drawRangeElements", "webgl2DrawRangeElements"], ["webgl2.clearCalls", "webgl2Clear"],
-    ["webgl.drawArrays", "webglDrawArrays"], ["webgl.drawElements", "webglDrawElements"],
-    ["webgl.drawArraysInstanced", "webglDrawArraysInstanced"], ["webgl.drawElementsInstanced", "webglDrawElementsInstanced"],
-    ["webgl.drawRangeElements", "webglDrawRangeElements"], ["webgl.clearCalls", "webglClear"]
-  ];
-  const HOT_TOTALS = [
-    ["webgpu.drawCalls", ["webgpuDraw", "webgpuDrawIndexed", "webgpuDrawIndirect", "webgpuDrawIndexedIndirect"]],
-    ["webgpu.dispatchCalls", ["webgpuDispatch", "webgpuDispatchIndirect"]],
-    ["webgl2.drawCalls", ["webgl2DrawArrays", "webgl2DrawElements", "webgl2DrawArraysInstanced", "webgl2DrawElementsInstanced", "webgl2DrawRangeElements"]],
-    ["webgl.drawCalls", ["webglDrawArrays", "webglDrawElements", "webglDrawArraysInstanced", "webglDrawElementsInstanced", "webglDrawRangeElements"]]
-  ];
+  let patchedEncoderProto = null;
+  let patchedRenderPassProto = null;
+  let patchedComputePassProto = null;
+  let hasTimedEncoders = false;
   const errors = [];
   const history = [];
   const objectIds = new WeakMap();
@@ -331,12 +310,18 @@ export function installAutoInstrumentation(options = {}) {
       });
     }
 
+    const deviceTimer = deviceTimers.get(device);
     replaceMethod(device, "createCommandEncoder", (original) => function gpuPerfCreateCommandEncoder(...args) {
       hot.webgpuCommandEncoders += 1;
       const encoder = original.apply(this, args);
-      patchCommandEncoder(encoder);
-      const timer = deviceTimers.get(this);
-      if (timer && encoder) encoderTiming.set(encoder, { generation: 0, partial: null, slot: -1, timer });
+      if (encoder) {
+        if (Object.getPrototypeOf(encoder) !== patchedEncoderProto) patchCommandEncoder(encoder);
+        const timer = this === device ? deviceTimer : deviceTimers.get(this);
+        if (timer) {
+          hasTimedEncoders = true;
+          encoderTiming.set(encoder, { generation: 0, partial: null, slot: -1, timer });
+        }
+      }
       return encoder;
     });
     patchQueue(device.queue, device);
@@ -438,15 +423,17 @@ export function installAutoInstrumentation(options = {}) {
   }
 
   function gpuErrorSnapshot() {
-    const top = Array.from(gpuErrorLog.messages, ([message, count]) => ({ message, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 3);
+    const top = gpuErrorLog.messages.size > 0
+      ? Array.from(gpuErrorLog.messages, ([message, count]) => ({ message, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3)
+      : [];
     return {
       total: counters["webgpu.uncapturedErrors"],
       top,
-      deviceLost: gpuErrorLog.deviceLost.map((entry) => ({ ...entry })),
+      deviceLost: gpuErrorLog.deviceLost.length > 0 ? gpuErrorLog.deviceLost.map((entry) => ({ ...entry })) : [],
       contextLost: counters["webgl.contextLost"],
-      shaderFailures: gpuErrorLog.shaderFailures.map((entry) => ({ ...entry }))
+      shaderFailures: gpuErrorLog.shaderFailures.length > 0 ? gpuErrorLog.shaderFailures.map((entry) => ({ ...entry })) : []
     };
   }
 
@@ -500,28 +487,29 @@ export function installAutoInstrumentation(options = {}) {
   }
 
   function patchCommandEncoder(encoder) {
-    encoder = methodTarget(encoder, "beginRenderPass");
-    if (!encoder || patched.has(encoder)) {
+    const target = methodTarget(encoder, "beginRenderPass");
+    if (!target || patched.has(target)) {
       return;
     }
-    patched.add(encoder);
-    if (!nativeEncoderMethods.has(encoder)) nativeEncoderMethods.set(encoder, encoderMethodsOf(encoder));
-    replaceMethod(encoder, "beginRenderPass", (original) => function gpuPerfBeginRenderPass(...args) {
+    patched.add(target);
+    if (target !== encoder) patchedEncoderProto = target;
+    if (!nativeEncoderMethods.has(target)) nativeEncoderMethods.set(target, encoderMethodsOf(target));
+    replaceMethod(target, "beginRenderPass", (original) => function gpuPerfBeginRenderPass(...args) {
       hot.webgpuRenderPasses += 1;
-      const state = encoderTiming.get(this);
+      const state = hasTimedEncoders ? encoderTiming.get(this) : undefined;
       if (state) args[0] = timedPassDescriptor(state, args[0], "render");
       const pass = original.apply(this, args);
       if (state) watchPassPipeline(pass);
-      patchRenderPass(pass);
+      if (pass && Object.getPrototypeOf(pass) !== patchedRenderPassProto) patchRenderPass(pass);
       return pass;
     });
-    replaceMethod(encoder, "beginComputePass", (original) => function gpuPerfBeginComputePass(...args) {
+    replaceMethod(target, "beginComputePass", (original) => function gpuPerfBeginComputePass(...args) {
       hot.webgpuComputePasses += 1;
-      const state = encoderTiming.get(this);
+      const state = hasTimedEncoders ? encoderTiming.get(this) : undefined;
       if (state) args[0] = timedPassDescriptor(state, args[0], "compute");
       const pass = original.apply(this, args);
       if (state) watchPassPipeline(pass);
-      patchComputePass(pass);
+      if (pass && Object.getPrototypeOf(pass) !== patchedComputePassProto) patchComputePass(pass);
       return pass;
     });
     for (const method of [
@@ -529,13 +517,13 @@ export function installAutoInstrumentation(options = {}) {
       "resolveQuerySet", "writeTimestamp"
     ]) {
       const counter = `webgpu.${method}`;
-      replaceMethod(encoder, method, (original) => function gpuPerfEncoderOperation(...args) {
+      replaceMethod(target, method, (original) => function gpuPerfEncoderOperation(...args) {
         increment(counter);
         return original.apply(this, args);
       });
     }
-    replaceMethod(encoder, "finish", (original) => function gpuPerfFinish(...args) {
-      const state = encoderTiming.get(this);
+    replaceMethod(target, "finish", (original) => function gpuPerfFinish(...args) {
+      const state = hasTimedEncoders ? encoderTiming.get(this) : undefined;
       if (state) {
         encoderTiming.delete(this);
         finishEncoderTiming(state);
@@ -547,29 +535,30 @@ export function installAutoInstrumentation(options = {}) {
   }
 
   function patchRenderPass(pass) {
-    pass = methodTarget(pass, "draw");
-    if (!pass || patched.has(pass)) {
+    const target = methodTarget(pass, "draw");
+    if (!target || patched.has(target)) {
       return;
     }
-    patched.add(pass);
+    patched.add(target);
+    if (target !== pass) patchedRenderPassProto = target;
     // One wrapper per method, so each increments its own predeclared field (no computed keys per draw).
-    replaceMethod(pass, "draw", (original) => function gpuPerfDraw(...args) {
+    replaceMethod(target, "draw", (original) => function gpuPerfDraw(...args) {
       hot.webgpuDraw += 1;
       return original.apply(this, args);
     });
-    replaceMethod(pass, "drawIndexed", (original) => function gpuPerfDrawIndexed(...args) {
+    replaceMethod(target, "drawIndexed", (original) => function gpuPerfDrawIndexed(...args) {
       hot.webgpuDrawIndexed += 1;
       return original.apply(this, args);
     });
-    replaceMethod(pass, "drawIndirect", (original) => function gpuPerfDrawIndirect(...args) {
+    replaceMethod(target, "drawIndirect", (original) => function gpuPerfDrawIndirect(...args) {
       hot.webgpuDrawIndirect += 1;
       return original.apply(this, args);
     });
-    replaceMethod(pass, "drawIndexedIndirect", (original) => function gpuPerfDrawIndexedIndirect(...args) {
+    replaceMethod(target, "drawIndexedIndirect", (original) => function gpuPerfDrawIndexedIndirect(...args) {
       hot.webgpuDrawIndexedIndirect += 1;
       return original.apply(this, args);
     });
-    replaceMethod(pass, "executeBundles", (original) => function gpuPerfExecuteBundles(bundles) {
+    replaceMethod(target, "executeBundles", (original) => function gpuPerfExecuteBundles(bundles) {
       // A one-shot iterable would be consumed by counting; pass the page an array instead.
       const list = Array.isArray(bundles) ? bundles : Array.from(bundles ?? []);
       hot.webgpuRenderBundles += list.length;
@@ -579,24 +568,25 @@ export function installAutoInstrumentation(options = {}) {
       }
       return original.call(this, list);
     });
-    patchSetPipeline(pass);
+    patchSetPipeline(target);
   }
 
   function patchComputePass(pass) {
-    pass = methodTarget(pass, "dispatchWorkgroups");
-    if (!pass || patched.has(pass)) {
+    const target = methodTarget(pass, "dispatchWorkgroups");
+    if (!target || patched.has(target)) {
       return;
     }
-    patched.add(pass);
-    replaceMethod(pass, "dispatchWorkgroups", (original) => function gpuPerfDispatch(...args) {
+    patched.add(target);
+    if (target !== pass) patchedComputePassProto = target;
+    replaceMethod(target, "dispatchWorkgroups", (original) => function gpuPerfDispatch(...args) {
       hot.webgpuDispatch += 1;
       return original.apply(this, args);
     });
-    replaceMethod(pass, "dispatchWorkgroupsIndirect", (original) => function gpuPerfDispatchIndirect(...args) {
+    replaceMethod(target, "dispatchWorkgroupsIndirect", (original) => function gpuPerfDispatchIndirect(...args) {
       hot.webgpuDispatchIndirect += 1;
       return original.apply(this, args);
     });
-    patchSetPipeline(pass);
+    patchSetPipeline(target);
   }
 
   function patchSetPipeline(pass) {
@@ -1063,6 +1053,7 @@ export function installAutoInstrumentation(options = {}) {
 
   function churnSnapshot() {
     const out = {};
+    if (churn.sites.size === 0) return out;
     for (const entry of churn.sites.values()) {
       (out[entry.kind] ||= []).push({ site: entry.site, count: Math.round(entry.count) });
     }
@@ -2292,9 +2283,17 @@ export function installAutoInstrumentation(options = {}) {
     }
   }
 
+  function copyGroups(groups) {
+    const out = {};
+    for (const key in groups) {
+      const group = groups[key];
+      out[key] = { bytes: group.bytes, count: group.count };
+    }
+    return out;
+  }
+
   function resourceSnapshot(snapshotOptions = {}) {
     // Copy only the small category totals; snapshots are independent of live-resource count.
-    const copyGroups = (groups) => Object.fromEntries(Object.entries(groups).map(([key, value]) => [key, { ...value }]));
     const liveResources = [];
     if (config.includeResources && snapshotOptions.includeResources !== false) {
       for (const resource of resources.values()) {
@@ -2321,12 +2320,54 @@ export function installAutoInstrumentation(options = {}) {
 
   // Dotted counter names: the cold dictionary, every hot field, and the derived totals.
   function counterValues() {
-    const out = { ...counters };
-    for (const [name, field] of HOT_NAMES) out[name] = hot[field];
-    for (const [name, fields] of HOT_TOTALS) {
-      let total = 0;
-      for (const field of fields) total += hot[field];
-      out[name] = total;
+    const out = {
+      "webgpu.uncapturedErrors": counters["webgpu.uncapturedErrors"],
+      "webgpu.deviceLost": counters["webgpu.deviceLost"],
+      "webgl.contextLost": counters["webgl.contextLost"],
+      "webgl.shaderCompileFailures": counters["webgl.shaderCompileFailures"],
+      "webgl.programLinkFailures": counters["webgl.programLinkFailures"],
+      "webgpu.draw": hot.webgpuDraw,
+      "webgpu.drawIndexed": hot.webgpuDrawIndexed,
+      "webgpu.drawIndirect": hot.webgpuDrawIndirect,
+      "webgpu.drawIndexedIndirect": hot.webgpuDrawIndexedIndirect,
+      "webgpu.dispatchWorkgroups": hot.webgpuDispatch,
+      "webgpu.dispatchWorkgroupsIndirect": hot.webgpuDispatchIndirect,
+      "webgpu.bundleDrawCalls": hot.webgpuBundleDraw,
+      "webgpu.bundleDrawsExecuted": hot.webgpuBundleDrawsExecuted,
+      "webgpu.renderBundles": hot.webgpuRenderBundles,
+      "webgpu.renderPasses": hot.webgpuRenderPasses,
+      "webgpu.computePasses": hot.webgpuComputePasses,
+      "webgpu.commandEncoders": hot.webgpuCommandEncoders,
+      "webgpu.queueSubmits": hot.webgpuQueueSubmits,
+      "webgpu.commandBuffersSubmitted": hot.webgpuCommandBuffers,
+      "webgpu.writeBufferCalls": hot.webgpuWriteBufferCalls,
+      "webgpu.writeBufferBytes": hot.webgpuWriteBufferBytes,
+      "webgpu.writeTextureCalls": hot.webgpuWriteTextureCalls,
+      "webgpu.writeTextureBytes": hot.webgpuWriteTextureBytes,
+      "webgpu.createBindGroup": hot.webgpuCreateBindGroup,
+      "webgpu.createBuffer": hot.webgpuCreateBuffer,
+      "webgpu.createTexture": hot.webgpuCreateTexture,
+      "webgpu.createView": hot.webgpuCreateView,
+      "webgpu.createSampler": hot.webgpuCreateSampler,
+      "webgl2.drawArrays": hot.webgl2DrawArrays,
+      "webgl2.drawElements": hot.webgl2DrawElements,
+      "webgl2.drawArraysInstanced": hot.webgl2DrawArraysInstanced,
+      "webgl2.drawElementsInstanced": hot.webgl2DrawElementsInstanced,
+      "webgl2.drawRangeElements": hot.webgl2DrawRangeElements,
+      "webgl2.clearCalls": hot.webgl2Clear,
+      "webgl.drawArrays": hot.webglDrawArrays,
+      "webgl.drawElements": hot.webglDrawElements,
+      "webgl.drawArraysInstanced": hot.webglDrawArraysInstanced,
+      "webgl.drawElementsInstanced": hot.webglDrawElementsInstanced,
+      "webgl.drawRangeElements": hot.webglDrawRangeElements,
+      "webgl.clearCalls": hot.webglClear,
+      "webgpu.drawCalls": hot.webgpuDraw + hot.webgpuDrawIndexed + hot.webgpuDrawIndirect + hot.webgpuDrawIndexedIndirect,
+      "webgpu.dispatchCalls": hot.webgpuDispatch + hot.webgpuDispatchIndirect,
+      "webgl2.drawCalls": hot.webgl2DrawArrays + hot.webgl2DrawElements + hot.webgl2DrawArraysInstanced + hot.webgl2DrawElementsInstanced + hot.webgl2DrawRangeElements,
+      "webgl.drawCalls": hot.webglDrawArrays + hot.webglDrawElements + hot.webglDrawArraysInstanced + hot.webglDrawElementsInstanced + hot.webglDrawRangeElements
+    };
+    for (const key in counters) {
+      out[key] = counters[key];
     }
     return out;
   }

@@ -10,7 +10,7 @@ const ADAPTIVE_REASONS = new Set(["fps-converged", "gpu-converged", "frames-conv
  * The single source of truth (§3): `{valid, issues, warnings}`, every entry
  * `{code, severity, message, …details}`. GPU timing issues are folded in here.
  */
-export function reportValidity(report) {
+export function reportValidity(report, precomputed = null) {
   const issues = [];
   const warnings = [];
   const add = (code, message, details = {}) => issues.push({ code, severity: "invalid", message, ...details });
@@ -114,10 +114,11 @@ export function reportValidity(report) {
     warn("idle-samples", `${idle}/${samples.length} samples had no GPU work and were excluded.`, { count: idle, sampleCount: samples.length });
   }
 
-  for (const entry of gpuTimingValidityIssues(collectGpuTimingEvidence(report), report)) {
+  const gpuEvidence = precomputed?.gpu ?? collectGpuTimingEvidence(report);
+  for (const entry of gpuTimingValidityIssues(gpuEvidence, report)) {
     (entry.severity === "invalid" ? issues : warnings).push(entry);
   }
-  const auto = collectAutoGpuEvidence(report);
+  const auto = precomputed?.autoEvidence ?? collectAutoGpuEvidence(report);
   if (auto.stability.status === "unstable") {
     const existing = warnings.find(warning => warning.code === "gpu-timing-unstable");
     if (existing) {

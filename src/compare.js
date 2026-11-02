@@ -16,6 +16,9 @@ const HEAP = "health.retainedHeapMiBPerSec";
 const MIN_PAIRED_ROUNDS = 4;
 // Hook-returned paths that mirror profiler telemetry or clocks, never workload metrics (§4.1).
 const CUSTOM_EXCLUDED = /(^|\.)(trackedGpuMemory|gpuTiming)(\.|$)|\.atMs$|timestamp/i;
+const CUSTOM_SEGMENT_EXCLUDED_RE = /(^|\.)(length|byteLength|count|fps|frameCount|frameTimeMs|observationWindowMs|observedFrames|samples|slowFrameCount|totalResources|trackedGpuMemory|gpuTiming)(\.|$)|timestamp/i;
+const LEADING_DIGIT_RE = /^\d+/;
+const AT_MS_LEAF_RE = /(^|\.)atMs$/i;
 const GPU_TIMING_LEAF = /^(gpuMs|gpuFrameMs|gpuTimeMs|gpuDurationMs|gpuNs|gpuTimeNs|gpuDurationNs)$/i;
 /** Rows whose ab per-round value is the round's median per-sample value (§4.6). */
 export const PER_ROUND_MEDIAN = Object.freeze(new Set([FRAME, AUTO_GPU, HOOK_GPU, CPU, SLOW, "frame.fps.mean"]));
@@ -55,7 +58,7 @@ function hasHealthGpu(report, gpu) {
     && (Object.hasOwn(report?.summary || {}, "gpuFrameMsMean") || Number.isFinite(report?.aggregateMetrics?.[HOOK_GPU]));
 }
 
-function collectReportMetrics(report, customStats, gpu, statsCache = new Map(), paths = null) {
+function collectReportMetrics(report, customStats, gpu, statsCache = new Map(), paths = null, precomputedAuto = null, precomputedRefresh = null) {
   const metrics = {};
   const summary = report?.inPage?.summary || {};
   const health = report?.summary || {};
@@ -105,7 +108,7 @@ function collectReportMetrics(report, customStats, gpu, statsCache = new Map(), 
   add(metrics, "health.trackedVramMiB", health.trackedVram?.totalMiB);
   add(metrics, "health.drawCallsPerFrame", health.drawCallsPerFrame);
   if (hasSamples || report?.inPage?.summary) {
-    const auto = collectAutoGpuEvidence(report);
+    const auto = precomputedAuto ?? collectAutoGpuEvidence(report);
     if (auto.status !== "unavailable") {
       add(metrics, AUTO_GPU, auto.pooled?.p50 ?? (auto.perSampleMs.length ? median(auto.perSampleMs) : undefined));
       add(metrics, "health.autoGpuFrameMs.p95", auto.pooled?.p95);
@@ -124,13 +127,15 @@ function collectReportMetrics(report, customStats, gpu, statsCache = new Map(), 
     if (health.heap?.method === "gc-bracket") add(metrics, HEAP, health.heap.retainedMiBPerSec);
   }
 
-  for (const [path, stats] of Object.entries(customStats)) {
-    add(metrics, `custom.${path}.mean`, stats.mean);
+  for (const key of Object.keys(customStats)) {
+    add(metrics, `custom.${key}.mean`, customStats[key].mean);
   }
 
-  for (const [key, value] of Object.entries(report?.aggregateMetrics || {})) {
-    if (key === HOOK_GPU && (gpu.status !== "single-scope" || gpu.source === "raw")) continue;
-    add(metrics, key, value);
+  if (report?.aggregateMetrics) {
+    for (const [key, value] of Object.entries(report.aggregateMetrics)) {
+      if (key === HOOK_GPU && (gpu.status !== "single-scope" || gpu.source === "raw")) continue;
+      add(metrics, key, value);
+    }
   }
 
   return metrics;
@@ -177,8 +182,8 @@ export function compareReports(baseReport, candidateReport, options = {}) {
   if (scopeMismatch) issues.push({ code: "gpu-timing-scope-mismatch", key: HOOK_GPU, baseScope: base.gpu.scope, candidateScope: candidate.gpu.scope,
     message: "GPU timing scopes differ; the health GPU metric cannot be compared." });
   // reportValidity folds in the GPU timing issues (review:bug-1); nothing is appended here.
-  const baseValidity = reportValidity(baseReport);
-  const candidateValidity = reportValidity(candidateReport);
+  const baseValidity = reportValidity(baseReport, base);
+  const candidateValidity = reportValidity(candidateReport, candidate);
   if (!baseValidity.valid) issues.push({ code: "invalid-base", message: "Baseline measurements are invalid.", issues: baseValidity.issues });
   if (!candidateValidity.valid) issues.push({ code: "invalid-candidate", message: "Candidate measurements are invalid.", issues: candidateValidity.issues });
   // A capture that observed no GPU work has no work counts to hold the other side to.
@@ -561,12 +566,13 @@ function selectPrimary(base, candidate, explicit, { paired = false } = {}) {
 /** Metrics, per-sample (or per-round) values and gating evidence for one side. */
 function collectSide(report) {
   const evidence = collectReportSamples(report, true);
-  const metrics = collectReportMetrics(report, evidence.customStats, evidence.gpu, evidence.stats, evidence.paths);
   const savedAuto = report?.autoGpu;
-  const autoEvidence = savedAuto ? null : collectAutoGpuEvidence(report);
+  const autoEvidence = collectAutoGpuEvidence(report);
+  const refresh = refreshState(report);
+  const metrics = collectReportMetrics(report, evidence.customStats, evidence.gpu, evidence.stats, evidence.paths, autoEvidence, refresh);
   const auto = savedAuto ?? (autoEvidence.status === "unavailable" ? null : gpuTimingMetadata(autoEvidence));
   return {
-    report, metrics, paths: evidence.paths, stats: evidence.stats, gpu: evidence.gpu, auto, refresh: refreshState(report),
+    report, metrics, paths: evidence.paths, stats: evidence.stats, gpu: evidence.gpu, auto, autoEvidence, refresh,
     samplingMode: report?.options?.samplingMode ?? report?.inPage?.config?.samplingMode ?? "frames",
     cpuPerSample: (evidence.paths[CPU] || []).some(Number.isFinite)
   };
@@ -629,20 +635,35 @@ function sampleStats(values, cache) {
 
 function collectReportSamples(report, shareCustomSamples = false) {
   const samples = report?.inPage?.samples || [];
+  const sampleCount = samples.length;
   const paths = {};
-  const customSamples = {};
+  const customSamples = new Map();
   const stats = new Map();
   const gpu = collectGpuTimingEvidence(report);
   const excludeLeaf = selectedGpuLeaf(report, gpu);
-  const cpu = cpuSampleValues(report);
-  const slow = samples.length ? slowFrameRateSamples(report) : [];
+  const cpu = sampleCount ? cpuSampleValues(report) : [];
+  const slow = sampleCount ? slowFrameRateSamples(report) : [];
   let sampleIndex = 0;
   const push = (key, value) => {
-    paths[key] ||= Array(samples.length).fill(null);
-    paths[key][sampleIndex] = Number.isFinite(value) ? value : null;
+    let arr = paths[key];
+    if (!arr) {
+      arr = Array(sampleCount).fill(null);
+      paths[key] = arr;
+    }
+    arr[sampleIndex] = Number.isFinite(value) ? value : null;
+  };
+  const onCustomNumber = (path, value) => {
+    let arr = customSamples.get(path);
+    if (!arr) {
+      arr = Array(sampleCount).fill(null);
+      customSamples.set(path, arr);
+      paths[`custom.${path}.mean`] = arr;
+    }
+    arr[sampleIndex] = value;
   };
 
-  for (const sample of samples) {
+  for (let i = 0; i < sampleCount; i += 1) {
+    const sample = samples[i];
     // Idle samples are excluded from every per-sample path (§4.1).
     if (sample?.idle === true) { sampleIndex += 1; continue; }
     const frames = sample.measurement?.observedFrames || sample.measurement || {};
@@ -662,27 +683,37 @@ function collectReportSamples(report, shareCustomSamples = false) {
     if (Number.isFinite(cpu[sampleIndex])) push(CPU, cpu[sampleIndex]);
     if (Number.isFinite(slow[sampleIndex])) push(SLOW, slow[sampleIndex]);
 
-    for (const [path, value] of Object.entries(customNumbers(sample.measurement, excludeLeaf))) {
-      const meanKey = `custom.${path}.mean`;
-      push(meanKey, value);
-      if (shareCustomSamples) customSamples[path] = paths[meanKey];
+    if (sample.measurement != null) {
+      visitCustomNumbers(sample.measurement, excludeLeaf, onCustomNumber);
     }
     sampleIndex += 1;
   }
   let customStats = {};
-  for (const [path, values] of Object.entries(customSamples)) {
-    const summary = sampleStats(values, stats);
-    if (summary) customStats[path] = summary;
-  }
-  // Legacy scalar zero measurements are sampled but excluded by summary's
-  // historical filter(Boolean). Preserve that distinction for those reports.
-  if (shareCustomSamples && samples.some(sample => sample.measurement === 0)) {
-    customStats = customMeasurementStats(report, gpu);
+  if (shareCustomSamples) {
+    if (samples.some(sample => sample.measurement === 0)) {
+      customStats = customMeasurementStats(report, gpu);
+    } else {
+      for (const [path, values] of customSamples) {
+        const summary = sampleStats(values, stats);
+        if (summary) customStats[path] = summary;
+      }
+    }
   }
   if (gpu.status === "single-scope" && gpu.source === "raw") paths[HOOK_GPU] = gpu.values;
-  for (const [key, values] of Object.entries(report?.metricSamples || {})) {
-    if (key === HOOK_GPU && (gpu.status !== "single-scope" || gpu.source === "raw")) continue;
-    paths[key] = Array.isArray(values) ? values.map(value => Number.isFinite(value) ? value : null) : [];
+  if (report?.metricSamples) {
+    for (const [key, values] of Object.entries(report.metricSamples)) {
+      if (key === HOOK_GPU && (gpu.status !== "single-scope" || gpu.source === "raw")) continue;
+      if (Array.isArray(values)) {
+        const copy = Array(values.length);
+        for (let i = 0; i < values.length; i += 1) {
+          const v = values[i];
+          copy[i] = Number.isFinite(v) ? v : null;
+        }
+        paths[key] = copy;
+      } else {
+        paths[key] = [];
+      }
+    }
   }
   return { paths, gpu, customStats, stats };
 }
@@ -692,16 +723,62 @@ function selectedGpuLeaf(report, gpu) {
   return hasHealthGpu(report, gpu) ? { scope: gpu.scope } : null;
 }
 
-function customNumbers(measurement, excludeLeaf) {
-  const flat = flattenMeasurementNumbers(measurement);
-  for (const path of Object.keys(flat)) {
-    if (CUSTOM_EXCLUDED.test(path)) { delete flat[path]; continue; }
-    if (excludeLeaf) {
-      const dot = path.lastIndexOf(".");
-      const scope = dot < 0 ? "" : path.slice(0, dot);
-      if (scope === excludeLeaf.scope && GPU_TIMING_LEAF.test(path.slice(dot + 1))) delete flat[path];
+function visitCustomNumbers(value, excludeLeaf, onNumber, prefix = "", depth = 0) {
+  if (depth > 32) return;
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) {
+      const path = prefix || "value";
+      if (!CUSTOM_EXCLUDED.test(path)) {
+        if (excludeLeaf) {
+          const dot = path.lastIndexOf(".");
+          const scope = dot < 0 ? "" : path.slice(0, dot);
+          if (scope === excludeLeaf.scope && GPU_TIMING_LEAF.test(path.slice(dot + 1))) return;
+        }
+        onNumber(path, value);
+      }
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    if (!prefix) return;
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      const nextPrefix = `${prefix}.${index}`;
+      if (typeof item === "number") {
+        if (Number.isFinite(item)) onNumber(nextPrefix, item);
+      } else if (item && typeof item === "object") {
+        visitCustomNumbers(item, excludeLeaf, onNumber, nextPrefix, depth + 1);
+      }
+    }
+    return;
+  }
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    if (CUSTOM_SEGMENT_EXCLUDED_RE.test(key) || (!prefix && LEADING_DIGIT_RE.test(key))) continue;
+    const item = value[key];
+    const nextPrefix = prefix ? `${prefix}.${key}` : key;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) continue;
+      if (prefix ? AT_MS_LEAF_RE.test(key) : /\.atMs$/i.test(key)) continue;
+      if (excludeLeaf) {
+        const dot = nextPrefix.lastIndexOf(".");
+        const scope = dot < 0 ? "" : nextPrefix.slice(0, dot);
+        if (scope === excludeLeaf.scope && GPU_TIMING_LEAF.test(nextPrefix.slice(dot + 1))) continue;
+      }
+      onNumber(nextPrefix, item);
+    } else if (item && typeof item === "object") {
+      visitCustomNumbers(item, excludeLeaf, onNumber, nextPrefix, depth + 1);
     }
   }
+}
+
+function customNumbers(measurement, excludeLeaf) {
+  const flat = {};
+  visitCustomNumbers(measurement, excludeLeaf, (path, value) => {
+    flat[path] = value;
+  });
   return flat;
 }
 
@@ -867,14 +944,22 @@ function customMeasurementStats(report, gpu = null) {
   const excludeLeaf = gpu ? selectedGpuLeaf(report, gpu) : null;
   for (const sample of report?.inPage?.samples || []) {
     if (!sample.measurement || sample.idle === true) continue;
-    for (const [path, value] of Object.entries(customNumbers(sample.measurement, excludeLeaf))) {
-      if (!paths.has(path)) paths.set(path, []);
-      paths.get(path).push(value);
+    const flat = customNumbers(sample.measurement, excludeLeaf);
+    for (const key of Object.keys(flat)) {
+      let arr = paths.get(key);
+      if (!arr) {
+        arr = [];
+        paths.set(key, arr);
+      }
+      arr.push(flat[key]);
     }
   }
   const compact = {};
   for (const [path, values] of paths) {
-    compact[path] = numericStats(values);
+    const numbers = values.slice().sort((a, b) => a - b);
+    let sum = 0;
+    for (let i = 0; i < numbers.length; i += 1) sum += numbers[i];
+    compact[path] = { mean: sum / numbers.length };
   }
   return compact;
 }

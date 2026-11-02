@@ -5,9 +5,10 @@ import { lstat, mkdir, readdir, readFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { TOOL } from "./fast-cdp-runner.js";
 import { requestJson } from "./http-client.js";
 import { processAlive } from "./measure-lock.js";
+
+const TOOL_VERSION = "2.2.0";
 
 const SRC_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
@@ -62,7 +63,7 @@ export function daemonKey(launchOptions = {}, options = {}) {
     ? Number(launchOptions.maxMtimeMs)
     : computeMaxMtimeMs(resolvedSrcDir);
   const payload = {
-    version: launchOptions?.version ?? TOOL.version,
+    version: launchOptions?.version ?? TOOL_VERSION,
     srcDir: resolvedSrcDir,
     maxMtimeMs,
     executablePath: launchOptions?.executablePath || process.env.CHROME_PATH || process.env.CHROMIUM_PATH || null,
@@ -128,17 +129,18 @@ export async function connectOrStartDaemon(launchOptions = {}, {
 } = {}) {
   const spawner = spawnFn || spawnImpl || spawn;
   const dir = path.resolve(stateDir);
+  const key = daemonKey(launchOptions);
+  const stateFile = path.join(dir, `${key}.json`);
+
+  const existing = await probeStateFile(stateFile, key, true);
+  if (existing) return existing;
+
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await pruneDirectory(dir);
   } catch {
     return null;
   }
-  const key = daemonKey(launchOptions);
-  const stateFile = path.join(dir, `${key}.json`);
-
-  const existing = await probeStateFile(stateFile, key, true);
-  if (existing) return existing;
 
   const serveArgs = buildServeArgs(launchOptions, { idleTimeoutMs, stateFile });
   let childExited = false;

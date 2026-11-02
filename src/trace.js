@@ -78,66 +78,126 @@ export async function stopChromeTrace(session, { timeoutMs = 30000, maxBytes = 1
   }
 }
 
+const GPU_CAT_RE = /(^|,|\.)gpu|webgpu|dawn|webgl|gl_/i;
+const GPU_NAME_RE = /(,|\.)gpu|webgpu|dawn|webgl|gl_/i;
+const FRAME_NAME_RE = /DrawFrame|BeginFrame|FramePresented|CompositeLayers/i;
+const MEMORY_TEXT_RE = /memory|dump/i;
+const MEMORY_PATH_RE = /(bytes|byte_size|size|resident|malloc|allocated|gpu_memory|discardable|private_footprint|peak)/i;
+
 export function summarizeTrace(trace) {
   const events = Array.isArray(trace?.traceEvents) ? trace.traceEvents : [];
-  const frameNames = new Map();
-  const gpuNames = new Map();
   const gpuDurations = [];
   const topComplete = [];
   const topGPU = [];
   const memoryPaths = new Map();
+  const catFlags = new Map();
+  const nameInfo = new Map();
+  let lastCat = null;
+  let lastCf = 0;
   let minTimestamp = Infinity;
   let maxTimestamp = -Infinity;
   let frameCount = 0;
   let gpuCount = 0;
   let memoryCount = 0;
 
+  const onMemoryNumber = (path, value) => {
+    const normalizedPath = path.startsWith("dumps.") ? path.slice(6) : path;
+    const previous = memoryPaths.get(normalizedPath);
+    if (previous) {
+      if (value > previous.maxBytes) previous.maxBytes = value;
+      previous.samples += 1;
+    } else memoryPaths.set(normalizedPath, { maxBytes: Math.max(0, value), path: normalizedPath, samples: 1 });
+  };
+
   // Classify once without retaining several additional arrays of trace events.
   // Exact GPU percentiles still require durations, but never the event objects.
-  for (const event of events) {
-    if (typeof event.ts === "number") {
-      if (event.ts < minTimestamp) minTimestamp = event.ts;
-      if (event.ts > maxTimestamp) maxTimestamp = event.ts;
+  for (let i = 0; i < events.length; i += 1) {
+    const event = events[i];
+    const ts = event.ts;
+    if (typeof ts === "number") {
+      if (ts < minTimestamp) minTimestamp = ts;
+      if (ts > maxTimestamp) maxTimestamp = ts;
     }
-    if (event.ph === "X") addTopCompleteEvent(topComplete, event, 15);
+    const dur = event.dur;
+    const hasDur = typeof dur === "number" && Number.isFinite(dur);
+    if (event.ph === "X" && hasDur) {
+      const durationMs = dur / 1000;
+      if (topComplete.length < 15 || durationMs > topComplete[14].durationMs) {
+        insertTopEvent(topComplete, event, durationMs, 15);
+      }
+    }
 
-    const name = event.name || "(unnamed)";
-    const text = `${event.cat || ""} ${event.name || ""}`;
-    if (/(^|,|\.)gpu|webgpu|dawn|webgl|gl_/i.test(text)) {
+    const cat = event.cat || "";
+    let cf;
+    if (cat === lastCat) {
+      cf = lastCf;
+    } else {
+      cf = catFlags.get(cat);
+      if (cf === undefined) {
+        cf = (GPU_CAT_RE.test(cat) ? 1 : 0) | (MEMORY_TEXT_RE.test(cat) ? 4 : 0);
+        catFlags.set(cat, cf);
+      }
+      lastCat = cat;
+      lastCf = cf;
+    }
+
+    const rawName = event.name || "";
+    let info = nameInfo.get(rawName);
+    if (info === undefined) {
+      info = {
+        flags: (GPU_NAME_RE.test(rawName) ? 1 : 0) | (FRAME_NAME_RE.test(rawName) ? 2 : 0) | (MEMORY_TEXT_RE.test(rawName) ? 4 : 0),
+        name: rawName || "(unnamed)",
+        gpuCount: 0,
+        frameCount: 0
+      };
+      nameInfo.set(rawName, info);
+    }
+    const flags = cf | info.flags;
+
+    if (flags & 1) {
       gpuCount += 1;
-      gpuNames.set(name, (gpuNames.get(name) || 0) + 1);
-      if (Number.isFinite(event.dur)) gpuDurations.push(event.dur / 1000);
-      addTopCompleteEvent(topGPU, event, 12);
+      info.gpuCount += 1;
+      if (hasDur) {
+        const durationMs = dur / 1000;
+        gpuDurations.push(durationMs);
+        if (topGPU.length < 12 || durationMs > topGPU[11].durationMs) {
+          insertTopEvent(topGPU, event, durationMs, 12);
+        }
+      }
     }
-    if (/DrawFrame|BeginFrame|FramePresented|CompositeLayers/i.test(event.name || "")) {
+    if (flags & 2) {
       frameCount += 1;
-      frameNames.set(name, (frameNames.get(name) || 0) + 1);
+      info.frameCount += 1;
     }
-    if (event.ph === "v" || /memory|dump/i.test(text)) {
+    if (event.ph === "v" || (flags & 4)) {
       memoryCount += 1;
-      collectMemoryNumbers(event.args, "", (path, value) => {
-        const normalizedPath = path.replace(/^dumps\./, "");
-        const previous = memoryPaths.get(normalizedPath);
-        if (previous) {
-          previous.maxBytes = Math.max(previous.maxBytes, value);
-          previous.samples += 1;
-        } else memoryPaths.set(normalizedPath, { maxBytes: Math.max(0, value), path: normalizedPath, samples: 1 });
-      });
+      if (event.args) collectMemoryNumbers(event.args, "", onMemoryNumber);
     }
   }
+
+  const frameTop = [];
+  const gpuTop = [];
+  for (const info of nameInfo.values()) {
+    if (info.frameCount > 0) frameTop.push({ count: info.frameCount, name: info.name });
+    if (info.gpuCount > 0) gpuTop.push({ count: info.gpuCount, name: info.name });
+  }
+  frameTop.sort((a, b) => b.count - a.count);
+  if (frameTop.length > 12) frameTop.length = 12;
+  gpuTop.sort((a, b) => b.count - a.count);
+  if (gpuTop.length > 15) gpuTop.length = 15;
 
   return {
     durationMs: minTimestamp === Infinity || maxTimestamp === -Infinity ? null : (maxTimestamp - minTimestamp) / 1000,
     eventCount: events.length,
     frames: {
       eventCount: frameCount,
-      topNames: topNames(frameNames, 12)
+      topNames: frameTop
     },
     gpu: {
       completeDurationMs: numericStats(gpuDurations),
       eventCount: gpuCount,
       topCompleteEvents: topGPU,
-      topNames: topNames(gpuNames, 15)
+      topNames: gpuTop
     },
     memory: {
       eventCount: memoryCount,
@@ -148,35 +208,30 @@ export function summarizeTrace(trace) {
   };
 }
 
-function topNames(counts, limit) {
-  return Array.from(counts, ([name, count]) => ({ count, name }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, limit);
-}
-
-function addTopCompleteEvent(top, event, limit) {
-  if (!Number.isFinite(event.dur)) return;
-  const durationMs = event.dur / 1000;
-  if (top.length === limit && durationMs <= top[top.length - 1].durationMs) return;
+function insertTopEvent(top, event, durationMs, limit) {
   const entry = { cat: event.cat || null, durationMs, name: event.name || "(unnamed)" };
   const index = top.findIndex(item => item.durationMs < durationMs);
   top.splice(index < 0 ? top.length : index, 0, entry);
   if (top.length > limit) top.pop();
 }
 
-function collectMemoryNumbers(value, path, onNumber, seen = new WeakSet(), depth = 0) {
-  if (!value || typeof value !== "object") {
+function collectMemoryNumbers(value, path, onNumber, seen = null, depth = 0, pathMatched = false) {
+  if (!value || typeof value !== "object" || depth > 12) {
     return;
   }
-  if (depth > 12 || seen.has(value)) {
-    return;
+  if (seen) {
+    if (seen.has(value)) return;
+    seen.add(value);
   }
-  seen.add(value);
 
-  for (const [key, item] of Object.entries(value)) {
+  const keys = Object.keys(value);
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    const item = value[key];
     const nextPath = path ? `${path}.${key}` : key;
+    const matched = pathMatched || MEMORY_PATH_RE.test(key);
 
-    if (isMemoryNumberPath(nextPath)) {
+    if (matched) {
       const number = parseTraceNumber(item);
       if (number != null) {
         onNumber(nextPath, number);
@@ -185,13 +240,14 @@ function collectMemoryNumbers(value, path, onNumber, seen = new WeakSet(), depth
     }
 
     if (item && typeof item === "object") {
-      collectMemoryNumbers(item, nextPath, onNumber, seen, depth + 1);
+      if (item === value || (seen && seen.has(item))) continue;
+      if (!seen) {
+        seen = new WeakSet();
+        seen.add(value);
+      }
+      collectMemoryNumbers(item, nextPath, onNumber, seen, depth + 1, matched);
     }
   }
-}
-
-function isMemoryNumberPath(path) {
-  return /(bytes|byte_size|size|resident|malloc|allocated|gpu_memory|discardable|private_footprint|peak)/i.test(path);
 }
 
 function parseTraceNumber(value) {
