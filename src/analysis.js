@@ -397,9 +397,10 @@ function gpuContext(report) {
   const hookValues = hook.status === "single-scope" ? (hook.values || []).filter(Number.isFinite) : [];
   const hookStats = numericStats(hookValues);
   const autoMs = auto.pooled?.p50 ?? (auto.perSampleMs.length ? median(auto.perSampleMs) : null);
-  // §5.1 trust: auto p50 when stable or saturated (whatever its partial-frame status); else a warm/fixed-work
-  // stable hook mean; else untrusted.
-  const autoTrusted = autoMs !== null && (auto.stability.status === "stable" || auto.saturated);
+  // §5.1 trust: auto p50 when stable or saturated (whatever its partial-frame status) and not contended; else a
+  // warm/fixed-work stable hook mean; else untrusted. Contended auto timing is other GPU work, not this page's cost.
+  const autoContended = auto.plausibility?.status === "contended";
+  const autoTrusted = autoMs !== null && !autoContended && (auto.stability.status === "stable" || auto.saturated);
   const hookTrusted = hookStats !== null && ["warm", "fixed-work"].includes(hook.provenance) && hook.stability?.status === "stable";
   // The decision metric: a trusted, uncontended warm/fixed-work hook gates in separate captures, auto GPU never
   // does (§4.2), so the hook wins the primary even when the auto value classifies the page.
@@ -410,8 +411,9 @@ function gpuContext(report) {
     gpuMs: gpuMs === null ? null : round(gpuMs, 4),
     gpuSource: autoTrusted ? "auto" : hookTrusted ? "hook" : null,
     gpuSaturated: autoTrusted && auto.saturated === true,
-    // Best available estimate, trusted or not; only used to split gpu-bound from gpu/compositor-bound (§5.2 rule 4).
-    estimateMs: gpuMs ?? autoMs ?? hookStats?.mean ?? null,
+    // Best available estimate, trusted or not (never contended auto timing); only used to split gpu-bound from
+    // gpu/compositor-bound (§5.2 rule 4).
+    estimateMs: gpuMs ?? (autoContended ? null : autoMs) ?? hookStats?.mean ?? null,
     metric: hookPreferred ? HOOK_GPU_METRIC : autoTrusted ? AUTO_GPU_METRIC : hookTrusted ? HOOK_GPU_METRIC : null
   };
 }

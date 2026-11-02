@@ -689,6 +689,75 @@ test("auto GPU timing: a pass key captures its call site once, not per pass", as
   assert.equal(captures, 2);
 });
 
+test("auto GPU timing: unlabelled pass keys take their site and pipeline from steady-state frames, not init passes", async () => {
+  const context = timingContext();
+  vm.runInContext(`
+    const format = (error, frames) => [String(error), ...frames.map((f) =>
+      "    at " + (f.getFunctionName() ? f.getFunctionName() + " (" : "") + f.getFileName() + ":" + f.getLineNumber() + ":" + f.getColumnNumber() + (f.getFunctionName() ? ")" : ""))].join("\\n");
+    Error.prepareStackTrace = (error, frames) => { gpuLog.stackCaptures += 1; return format(error, frames); };
+  `, context);
+  await page(context, `
+    device = await (await navigator.gpu.requestAdapter()).requestDevice();
+    pipelines = {};
+    for (const label of ["Shadow", "PMREM.Background", "PMREM.Blur", "Intro", "Scene", "Bloom"]) {
+      pipelines[label] = device.createRenderPipeline({ label });
+    }
+    draw = (pass, pipeline) => { pass.setPipeline(pipelines[pipeline]); pass.draw(3); pass.end(); };
+    // The labelled pass takes ordinal 0 in both functions; render#1 and render#2 first run PMREM passes.
+    globalThis.initHDR = function initHDR() {
+      const e = device.createCommandEncoder();
+      draw(e.beginRenderPass({ label: "shadow" }), "Shadow");
+      draw(e.beginRenderPass({}), "PMREM.Background");
+      draw(e.beginRenderPass({}), "PMREM.Blur");
+      draw(e.beginRenderPass({}), "Intro");
+      device.queue.submit([e.finish()]);
+    };
+    globalThis.renderFrame = function renderFrame() {
+      const e = device.createCommandEncoder();
+      draw(e.beginRenderPass({ label: "shadow" }), "Shadow");
+      draw(e.beginRenderPass({}), "Scene");
+      draw(e.beginRenderPass({}), "Bloom");
+      device.queue.submit([e.finish()]);
+    };
+    pump();
+    initHDR();
+    pump();
+    for (let i = 0; i < 3; i++) { renderFrame(); pump(); }
+  `);
+  await settle();
+  const passesBetween = (start, end) => Object.fromEntries(plain(vm.runInContext(
+    `__gpuPerfAutoInstrumentation.frames.window(${start}, ${end}).autoGpu.passes`, context)).map((pass) => [pass.key, pass]));
+  await page(context, "await drain();");
+  // Warmup: every key is still named by the first pass seen at its ordinal.
+  const warmup = passesBetween(0, vm.runInContext("clock", context));
+  assert.match(warmup["render#1"].site, /^initHDR src\/app\.js:\d+$/);
+  assert.equal(warmup["render#1"].pipeline, "PMREM.Background");
+
+  const steady = await page(context, `
+    __gpuPerfAutoInstrumentation.beginSteadyState();
+    const start = clock;
+    const before = gpuLog.stackCaptures;
+    for (let i = 0; i < 5; i++) { renderFrame(); pump(); }
+    return { captures: gpuLog.stackCaptures - before, start };
+  `);
+  await settle();
+  await page(context, "await drain();");
+  const measured = passesBetween(steady.start, vm.runInContext("clock", context));
+  // One stack per ordinal key seen in steady state, not one per pass; the labelled key is never re-read.
+  assert.equal(steady.captures, 2);
+  assert.match(measured["render#1"].site, /^renderFrame src\/app\.js:\d+$/);
+  assert.equal(measured["render#1"].appSite, measured["render#1"].site);
+  assert.equal(measured["render#1"].pipeline, "Scene");
+  assert.match(measured["render#2"].site, /^renderFrame src\/app\.js:\d+$/);
+  assert.equal(measured["render#2"].pipeline, "Bloom");
+  assert.equal(measured["render#1"].count, 5);
+  assert.equal(measured["render#3"], undefined);
+  // A label is the app's own identity: its key keeps the site and pipeline it was created with.
+  assert.match(measured.shadow.site, /^initHDR src\/app\.js:\d+$/);
+  assert.equal(measured.shadow.pipeline, "Shadow");
+  assert.equal(measured.shadow.label, "shadow");
+});
+
 test("auto GPU timing: sample output key set matches the v3 fixture", async () => {
   const context = timingContext();
   await page(context, `

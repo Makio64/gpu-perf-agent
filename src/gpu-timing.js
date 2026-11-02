@@ -6,6 +6,10 @@ const stabilityReasons = new Set(['within-run-spread', 'between-sample-drift', '
 const AUTO_PROVENANCE = 'auto.frame-busy';
 // Attached browsers without allow_unsafe_apis quantize timestamps to 100 µs.
 const QUANTUM_MS = 0.1;
+// A saturated union reads somewhat above the interval (latency, not cost: a
+// GPU-heavy page at 60 Hz reads ~1.04 ×); past this ratio, with every frame on
+// time, it cannot be the page's own cost.
+const CONTENDED_INTERVAL_RATIO = 1.2;
 const GPU_MS_LEAF_RE = /^(gpuMs|gpuFrameMs|gpuTimeMs|gpuDurationMs)$/i;
 const GPU_NS_LEAF_RE = /^(gpuNs|gpuTimeNs|gpuDurationNs)$/i;
 
@@ -227,7 +231,9 @@ export function gpuTimingStability({ perSampleMs = [], pooled = null, cadenceInt
  * Hook: a sample is implausible when its GPU time exceeds its own frame time
  * (other GPU work or overlap); more than 1/3 implausible is `contended`.
  * Auto: the union p50 reaching 0.9 × the frame interval is `saturated`; that
- * value is latency, not cost.
+ * value is latency, not cost. Past 1.2 × the interval while frames land on time
+ * it is `contended`: other GPU work on the machine or cross-frame overlap
+ * stretched the timestamps, so the value is not this page's cost either.
  */
 export function gpuTimingPlausibility(report, evidence) {
   const samples = report?.inPage?.samples || [];
@@ -247,7 +253,11 @@ export function gpuTimingPlausibility(report, evidence) {
     const saturated = Number.isFinite(unionMs) && Number.isFinite(intervalMs)
       ? unionMs >= 0.9 * intervalMs
       : evaluated > 0 && implausibleSamples * 2 > evaluated;
-    return { status: saturated ? 'saturated' : 'ok', implausibleSamples };
+    // A GPU-bound page misses frames; one whose GPU time far exceeds the
+    // interval while every frame lands on time is sharing the GPU.
+    const contended = saturated && Number.isFinite(unionMs) && Number.isFinite(intervalMs)
+      && unionMs > CONTENDED_INTERVAL_RATIO * intervalMs && framesOnTime(report);
+    return { status: contended ? 'contended' : saturated ? 'saturated' : 'ok', implausibleSamples };
   }
   const values = Array.isArray(evidence?.values) ? evidence.values : [];
   let implausibleSamples = 0;
@@ -436,4 +446,27 @@ function pooledFrameIntervalMs(report) {
   if (deltas.length) return medianOf([...deltas].sort((a, b) => a - b));
   const intervals = (report?.inPage?.samples || []).filter(sample => sample?.idle !== true).map(sampleFrameIntervalMs).filter(Number.isFinite);
   return intervals.length ? medianOf(intervals.sort((a, b) => a - b)) : null;
+}
+
+// Frames land on the display interval: mean ≤ 1.05 × interval and at most 2% of
+// frames slow (> 1.5 × interval, §1.9). Unknown evidence is not on time.
+function framesOnTime(report) {
+  const { hz, intervalMs: cadenceMs } = cadenceOf(report);
+  // A cadence slower than 50 Hz is the page's rate, not the display's (refreshState).
+  const intervalMs = cadenceMs !== null && cadenceMs <= 20 ? cadenceMs : hz >= 50 ? 1000 / hz : null;
+  if (intervalMs === null) return false;
+  const summary = report?.inPage?.summary || {};
+  const deltas = Array.isArray(summary.frameDeltasMs) ? summary.frameDeltasMs.filter(Number.isFinite) : [];
+  let meanMs = null;
+  let slowRate = null;
+  if (deltas.length) {
+    meanMs = deltas.reduce((total, value) => total + value, 0) / deltas.length;
+    slowRate = deltas.filter(value => value > 1.5 * intervalMs).length / deltas.length;
+  } else {
+    // Older reports: the pooled mean and the observer's own slow count (threshold ≤ 1.5 × interval).
+    meanMs = finiteOrNull(summary.frameTimeMsMean?.mean ?? summary.frameTimeMsMean ?? report?.summary?.frameTimeMsMean);
+    const frames = finiteOrNull(summary.observedFrameCount);
+    if (frames > 0 && Number.isFinite(summary.slowFrameCount)) slowRate = summary.slowFrameCount / frames;
+  }
+  return meanMs !== null && slowRate !== null && meanMs <= 1.05 * intervalMs && slowRate <= 0.02;
 }

@@ -106,8 +106,9 @@ capture settings compatible.
 ## Older releases
 
 `npx gpu-perf-agent --version` failing with `Unknown command "--version"` means 2.0/2.1.x;
-printing the help text means 1.x (npm `latest` may lag the skill, and projects often pin
-an older version). These forms work on all versions (`ab` needs 2.0+):
+printing the help text means 1.x. That usually comes from a project pin: prefer
+`npx gpu-perf-agent@latest`, which leaves the project untouched. Use the notes below only
+when 2.2+ cannot run. These forms work on all versions (`ab` needs 2.0+):
 
 ```bash
 npx gpu-perf-agent agent --url http://localhost:5173 --out reports/base.json

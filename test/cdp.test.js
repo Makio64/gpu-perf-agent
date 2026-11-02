@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CDPConnection } from '../src/cdp.js';
 import { FastCDPHarness } from '../src/fast-cdp-runner.js';
+import { formatCliError } from '../src/output.js';
 
 class Socket extends EventTarget {
   readyState = 1;
@@ -135,6 +136,12 @@ test('failed context cleanup prevents queued jobs from measuring contaminated st
   const queued = assert.rejects(harness.run({url:'http://localhost/next'}), /Capture cleanup failed/);
   await Promise.all([first, queued]);
   assert.deepEqual(calls, ['Target.createBrowserContext', 'Target.createTarget', 'Target.disposeBrowserContext']);
+  // API users keep the harness message; the CLI prints a hint a command-line user can act on.
+  const error = await harness.run({url:'http://localhost/again'}).catch(failure => failure);
+  assert.equal(error.code, 'capture-cleanup-failed');
+  assert.equal(error.message, 'Capture cleanup failed; close this harness and launch a new one before profiling again.');
+  assert.equal(formatCliError(error, {debug:false}), 'error[capture-cleanup-failed]: Capture cleanup failed; close this harness and launch a new one before profiling again.\n'
+    + 'hint: Rerun the command (it starts a fresh browser); if it repeats with agent or run, add --no-daemon.');
 });
 
 test('pipe transport frames NUL-delimited JSON across chunk and UTF-8 boundaries', async () => {

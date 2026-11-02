@@ -914,7 +914,11 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
 }
 
 function captureCleanupError(cause) {
-  return Object.assign(new Error("Capture cleanup failed; close this harness and launch a new one before profiling again.", { cause }), { code: "capture-cleanup-failed" });
+  // The message addresses API users who hold the harness; the CLI prints `hint` (formatCliError).
+  return Object.assign(new Error("Capture cleanup failed; close this harness and launch a new one before profiling again.", { cause }), {
+    code: "capture-cleanup-failed",
+    hint: "Rerun the command (it starts a fresh browser); if it repeats with agent or run, add --no-daemon."
+  });
 }
 
 async function navigatePage(session, url, { deadline, waitUntil = "load", network }) {
@@ -1587,6 +1591,8 @@ function reportOptions(options, launchArgs) {
     warmup: Number(options.warmup ?? 1),
     gpuTiming: options.gpuTiming !== false,
     readyTimeoutMs: Number(options.readyTimeoutMs ?? 3000),
+    timeoutMs: Number(options.timeoutMs ?? 60000),
+    waitConditionTimeoutMs: options.waitConditionTimeoutMs ?? null,
     allowIdle: Boolean(options.allowIdle),
     networkIdleBudgetMs: Number(options.networkIdleBudgetMs ?? 10000),
     cpuProfile: options.cpuProfile ?? "auto",

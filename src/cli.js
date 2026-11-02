@@ -159,10 +159,10 @@ const COMMAND_OPTIONS = {
   },
   inspect: {
     report: { type: "string", desc: "Report, comparison, or A/B JSON file to inspect." },
-    section: { type: "string", desc: "overview|metrics|samples|errors|environment|instrumentation|trace|gpu|cpu." },
-    metric: { type: "string", desc: "Exact metric key or prefix* (in metrics section)." },
+    section: { type: "string", desc: "overview|metrics|samples|errors|environment|instrumentation|trace|gpu|cpu|rounds (A/B per-round pairs)." },
+    metric: { type: "string", desc: "Exact metric key or prefix* (metrics section); exact key, default primary (rounds section)." },
     offset: { type: "string", desc: "Zero-based pagination offset." },
-    limit: { type: "string", desc: "Page size (1..10, default: 3)." },
+    limit: { type: "string", desc: "Page size (1..10, default: 3; rounds: 10)." },
     run: { type: "string", desc: "Zero-based A/B run index." },
     raw: { type: "boolean", desc: "Return 1 raw unprojected sample at offset." },
     changed: { type: "boolean", desc: "Filter comparison metrics to changed rows only." },

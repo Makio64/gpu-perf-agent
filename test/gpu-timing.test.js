@@ -324,6 +324,50 @@ test('auto evidence skips idle and untimed samples and uses the page frame time 
   assert.equal(collectAutoGpuEvidence(half).saturated, false);
 });
 
+// The saturated fixture (GPU 17.35 ms at a steady 60 fps) with every auto frame time scaled to a pooled p50 of `ms`.
+const autoGpuAt = ms => {
+  const report = fixture('report-saturated.json');
+  const scale = ms * 1e6 / report.inPage.summary.autoGpu.frameNs.p50;
+  const scaleNs = frameNs => { for (const key of ['p50', 'p95', 'mean', 'min', 'max']) frameNs[key] *= scale; };
+  scaleNs(report.inPage.summary.autoGpu.frameNs);
+  for (const sample of report.inPage.samples) scaleNs(sample.autoGpu.frameNs);
+  return report;
+};
+
+test('auto plausibility is contended when the union far exceeds the frame interval while frames land on time', () => {
+  // cyprus base2: GPU p50 26.5 ms at a steady 60 fps with 0 slow frames.
+  const contended = collectAutoGpuEvidence(autoGpuAt(26.5));
+  assert.deepEqual(contended.plausibility, { status: 'contended', implausibleSamples: 6 });
+  assert.equal(contended.saturated, false);
+  assert.equal(contended.stability.status, 'stable', 'stable timing is still contended');
+  assert.deepEqual(gpuTimingMetadata(contended).plausibility, contended.plausibility);
+  // Up to 1.2 x the interval a saturated union is latency (the fixture reads 1.04 x).
+  assert.equal(collectAutoGpuEvidence(autoGpuAt(19.9)).plausibility.status, 'saturated');
+  // Older reports without frame deltas: the pooled mean and the observer's slow count.
+  const older = autoGpuAt(26.5);
+  delete older.inPage.summary.frameDeltasMs;
+  assert.equal(collectAutoGpuEvidence(older).plausibility.status, 'contended');
+  older.inPage.summary.slowFrameCount = 3;
+  assert.equal(collectAutoGpuEvidence(older).plausibility.status, 'saturated', '3/90 slow frames is more than 2%');
+});
+
+test('auto plausibility stays saturated when frames miss the interval (a GPU-bound page)', () => {
+  // Every third frame misses vsync: the mean is 22 ms and a third of frames are slow.
+  const late = autoGpuAt(26.5);
+  late.inPage.summary.frameDeltasMs = late.inPage.summary.frameDeltasMs.map((value, index) => index % 3 ? value : 33.3);
+  assert.deepEqual(collectAutoGpuEvidence(late).plausibility, { status: 'saturated', implausibleSamples: 6 });
+  // Mean within 1.05 x the interval, but 3/90 frames slower than 1.5 x the interval.
+  const hitches = autoGpuAt(26.5);
+  hitches.inPage.summary.frameDeltasMs = hitches.inPage.summary.frameDeltasMs.map((value, index) => index < 3 ? 26 : value);
+  assert.equal(collectAutoGpuEvidence(hitches).saturated, true);
+  // A page that renders every other tick has a 33 ms frame: 36 ms of GPU is saturated there, not contended,
+  // although the rAF ticks are on time.
+  const half = autoGpuAt(36);
+  half.inPage.summary.activity = { pageFps: { p50: 30 }, activeFrameRatio: 0.5 };
+  for (const sample of half.inPage.samples) sample.activity = { ...sample.activity, pageFps: 30, activeFrameRatio: 0.5 };
+  assert.equal(collectAutoGpuEvidence(half).plausibility.status, 'saturated');
+});
+
 test('signal metadata is bounded; saved v1 and v2 evidence round-trip', () => {
   const auto = gpuTimingMetadata(collectAutoGpuEvidence(fixture('report-capture.json')));
   assert.deepEqual(Object.keys(auto), ['status', 'source', 'frames', 'timedFrames', 'partialFrames', 'provenance', 'stability',

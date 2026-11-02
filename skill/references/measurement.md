@@ -28,6 +28,12 @@ the same page can report 2-4x different GPU time in separate browser launches wh
 run is internally consistent. That is why separate captures only screen GPU time and
 `ab` confirms it.
 
+Other GPU work on the machine (another browser, another profiling agent, a headless Chrome
+left running) inflates the timestamps. Signs: small and large passes report similar
+milliseconds, or GPU p50 exceeds the frame interval while frames stay on time (2.3+ marks
+this `contended` above 1.2x the interval). Then per-pass milliseconds are not cost: rank passes by count and pixel
+work, stop the other GPU users, and rely only on `ab`.
+
 For animation or simulation, reset the seed and initial state, step both variants to the
 same frame with a fixed timestep, and pause normal advancement while reading back or
 capturing output. Free-running screenshots taken after different durations are not
@@ -129,6 +135,8 @@ sizes, resource reuse, output and quality; a lower resolution is a quality trade
 | --- | --- | --- |
 | CPU submission/draw pressure | Instancing, batching, no per-frame state rebuilding | Same visibility, draw order and output; counters alone are not timing |
 | One GPU pass dominates | Remove redundant work, overdraw, reads/writes; try tiling or dispatch sizes | Real pass timing and output; larger tiles or fewer instructions can be slower |
+| Many passes, none dominant (post-processing chains) | Find passes whose result is unused or zero: set the effect's strength to 0, pause the app clock, read back and diff frames; drop or merge those passes | Pixel diff of 0 on frozen frames in several scenes; name content that still needs the effect |
+| Cost grows with resolution | Lower-resolution intermediate targets (half-res blur, SSGI or denoise), a pixel-ratio cap | A quality tradeoff: show before/after frames and let the user decide |
 | Pipeline startup cost | Cache by exact descriptor/source; create asynchronously outside the hot loop | Time actual completion; creation counts do not prove stalls |
 | Upload/GC spikes | Reuse buffers, dirty ranges, fewer transient objects | Same workload; inspect the spikes, not a short noisy heap slope |
 | Declared resource growth | Pair creation with destruction; bound caches | Repeat load/unload cycles; tell a retained cache from a leak |

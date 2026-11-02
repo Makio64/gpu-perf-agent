@@ -383,6 +383,14 @@ test('gpu-timing-unstable (hook or auto) and gpu-timing-contended are warnings',
   contended.inPage.samples.forEach((sample, index) => { sample.measurement.gpuMs = index < 3 ? 30 : 3; });
   const entry = reportValidity(contended).warnings.find(item => item.code === 'gpu-timing-contended');
   assert.equal(entry.message, 'GPU timing exceeds frame time in 3/6 samples (other GPU work or overlap).');
+  // Auto GPU 26.5 ms at a steady 60 fps (report-saturated.json scaled, cyprus base2).
+  const autoContended = fixture('report-saturated.json');
+  const scale = 26.5e6 / autoContended.inPage.summary.autoGpu.frameNs.p50;
+  for (const frameNs of [autoContended.inPage.summary.autoGpu.frameNs, ...autoContended.inPage.samples.map(sample => sample.autoGpu.frameNs)]) {
+    for (const key of ['p50', 'p95', 'mean', 'min', 'max']) frameNs[key] *= scale;
+  }
+  assert.deepEqual(reportValidity(autoContended).warnings.map(item => [item.code, item.source, item.severity, item.message]),
+    [['gpu-timing-contended', 'auto', 'warning', "Auto GPU timing exceeds the frame interval while frames are on time (other GPU work or cross-frame overlap); it is not this page's cost."]]);
 });
 
 test('capture-environment warnings: network idle, readiness, measurement lock, instrumentation overhead', () => {

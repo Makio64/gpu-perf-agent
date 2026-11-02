@@ -261,15 +261,30 @@ Use `inspect` when the compact capture digest does not expose the evidence you n
 npx gpu-perf-agent inspect --report reports/base.json --section metrics --metric health.gpuFrameMs.mean
 npx gpu-perf-agent inspect --report reports/base.json --section samples --offset 3 --limit 3
 npx gpu-perf-agent inspect --report reports/ab.json --run 0 --section errors
+npx gpu-perf-agent inspect --report reports/ab.json --section rounds
 ```
 
 The command emits bounded JSON and never launches Chrome. It accepts captures, saved
 comparisons and A/B artifacts. Sections are `overview` (default), `metrics`, `samples`,
-`errors`, `environment`, `instrumentation`, `trace`, `gpu` (per-pass GPU breakdown) and
-`cpu` (CPU-profile hotspots and callers). `--metric` selects an exact key
-from comparison metrics; use it with `--section metrics`. `--offset` and `--limit` page
-records (default limit 3, maximum 10). `--run` selects a zero-based A/B run before
-inspection. Select a run for A/B sample/error/instrumentation/trace details.
+`errors`, `environment`, `instrumentation`, `trace`, `gpu` (per-pass GPU breakdown),
+`cpu` (CPU-profile hotspots and callers) and `rounds` (A/B artifacts only). `--metric`
+selects an exact key from comparison metrics; use it with `--section metrics` or
+`--section rounds`. `--offset` and `--limit` page records (default limit 3, maximum 10).
+`--run` selects a zero-based A/B run before inspection. Select a run for A/B
+sample/error/instrumentation/trace details.
+
+`--section rounds` shows how an A/B result was reached. For the comparison's primary
+metric, or the exact key given with `--metric`, `data.table` lists each round's base
+value, candidate value, delta (candidate minus base) and ratio (candidate over base),
+paired as the paired comparison pairs them, so the per-round values average to the
+comparison row's base and candidate (table cells are rounded to 4 decimals;
+`data.comparison` keeps that row's exact values and paired CI). `data.signs` counts the rounds where the candidate
+was better, worse or tied for the metric's direction (`text`, for example `candidate
+faster in 6 of 8 rounds`), and `data.medianDelta` is the median paired delta. Both cover
+every round; the table is paged with `--offset` and `--limit` (default limit 10 for
+this section). `selection.indices` maps each row to its base and candidate run indices
+for `--run`. A capture or saved comparison has no rounds and returns an
+`invalid-options` error, as does `--run` or a `prefix*` metric with this section.
 
 Responses identify selected source indices, available totals, validity and omissions.
 Comparison selections also retain compatibility status and counts of differing or

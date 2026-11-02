@@ -130,6 +130,12 @@ export function reportValidity(report, precomputed = null) {
         { source: "auto", reasons: auto.stability.reasons });
     }
   }
+  if (auto.plausibility?.status === "contended") {
+    const existing = warnings.find(warning => warning.code === "gpu-timing-contended");
+    if (existing) existing.source = "hook+auto";
+    else warn("gpu-timing-contended", "Auto GPU timing exceeds the frame interval while frames are on time (other GPU work or cross-frame overlap); it is not this page's cost.",
+      { source: "auto" });
+  }
 
   const networkIdle = report.timings?.networkIdle;
   if (networkIdle?.status === "budget-exceeded") {

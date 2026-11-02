@@ -500,6 +500,8 @@ function gateRow(key, definition, { base, candidate, paired }, { baseStats, cand
         if (side.auto?.clockSensitive === true && !notes.includes("clock-sensitive")) notes.push("clock-sensitive");
       }
       if (!paired) return closed("separate-capture-gpu");
+      // Timestamps that include other GPU work on most rounds of a side are not a cost difference.
+      if (base.auto?.contended || candidate.auto?.contended) return closed("gpu-contended");
       if (base.auto?.saturated && candidate.auto?.saturated) return closed("gpu-saturated");
       // One side saturated: its value is a floor (the GPU is busy the whole interval), so only the outcome in which
       // the saturated side is the slower one is sound: newly saturated → regression, no longer saturated → improved.

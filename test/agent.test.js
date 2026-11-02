@@ -660,6 +660,32 @@ test("MCP comparison uses saved reports and exposes invalid comparisons as error
   assert.ok(saved.rows.length > 0);
 });
 
+test("MCP inspects A/B rounds with a whole-A/B default page and rejects captures", async t => {
+  const fixture = await mcpFixture(t, () => { throw new Error("Inspection must not launch Chrome"); });
+  const round = gpuMs => measuredReport({ inPage: { samples: [{ elapsedMs: 100, measurement: { fps: 60, gpuMs } }] } });
+  const gpuMs = [10, 8, 9.5, 12, 11, 9, 8, 13];
+  const artifact = {
+    comparison: { rows: [{ key: "custom.gpuMs.mean", unit: "ms", direction: "lower" }], primary: { key: "custom.gpuMs.mean" } },
+    runs: gpuMs.map((value, sequence) => ({ round: Math.floor(sequence / 2), sequence, variant: ["base", "candidate", "candidate", "base"][sequence % 4], report: round(value) }))
+  };
+  const abPath = path.join(fixture.reportDirectory, "ab.json");
+  const capturePath = path.join(fixture.reportDirectory, "capture.json");
+  await writeFile(abPath, JSON.stringify(artifact));
+  await writeFile(capturePath, JSON.stringify(round(10)));
+  send(fixture.input, 1, "inspect_webgpu_report", { reportPath: abPath, section: "rounds" });
+  send(fixture.input, 2, "inspect_webgpu_report", { reportPath: capturePath, section: "rounds" });
+  await fixture.server.close();
+  const { inspectReport } = await import("../src/inspect.js");
+  const rounds = fixture.messages.find(message => message.id === 1).result;
+  assert.equal(rounds.isError, false);
+  assert.deepEqual(rounds.structuredContent, { reportPath: abPath, ...inspectReport(artifact, { section: "rounds", limit: 10 }) });
+  assert.deepEqual(rounds.structuredContent.data.table.rows.map(cells => cells.slice(0, 3)), [[0, 10, 8], [1, 12, 9.5], [2, 11, 9], [3, 13, 8]]);
+  assert.equal(rounds.structuredContent.data.signs.text, "candidate faster in 4 of 4 rounds");
+  const rejected = fixture.messages.find(message => message.id === 2).result;
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0].text, /requires an A\/B artifact/);
+});
+
 test("MCP inspects saved metrics, gpu, and cpu sections without launching Chrome or inlining full captures", async t => {
   const fixture = await mcpFixture(t, () => { throw new Error("Inspection must not launch Chrome"); });
   const reportPath = path.join(fixture.reportDirectory, "large.json");

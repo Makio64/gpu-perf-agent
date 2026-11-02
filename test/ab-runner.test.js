@@ -183,6 +183,37 @@ test('aggregates carry what paired gating needs: refresh state, bottleneck, work
   assert.equal(reportValidity(aggregate).valid, true);
 });
 
+test('aggregated auto GPU keeps a contended round as contended, saturation first', async () => {
+  const { readFileSync } = await import('node:fs');
+  // report-saturated.json with auto GPU scaled to a pooled p50 of `ms`; frames stay on time at 60 Hz.
+  const round = ms => {
+    const report = JSON.parse(readFileSync(new URL('./fixtures/v3/report-saturated.json', import.meta.url), 'utf8'));
+    const scale = ms * 1e6 / report.inPage.summary.autoGpu.frameNs.p50;
+    for (const frameNs of [report.inPage.summary.autoGpu.frameNs, ...report.inPage.samples.map(sample => sample.autoGpu.frameNs)]) {
+      for (const key of ['p50', 'p95', 'mean', 'min', 'max']) frameNs[key] *= scale;
+    }
+    return report;
+  };
+  const contended = aggregateReports([round(26.5), round(5)]).autoGpu;
+  assert.deepEqual([contended.plausibility.status, contended.saturated], ['contended', false]);
+  // Saturation (a strict majority of rounds) wins over a contended round; one saturated round of two does not.
+  const saturated = aggregateReports([round(26.5), round(17.35), round(17.35)]).autoGpu;
+  assert.deepEqual([saturated.plausibility.status, saturated.saturated], ['saturated', true]);
+  const minority = aggregateReports([round(26.5), round(17.35)]).autoGpu;
+  assert.deepEqual([minority.plausibility.status, minority.saturated], ['contended', false]);
+
+  // A side contended in most rounds is flagged and cannot gate the paired auto-GPU row, in either direction.
+  const contendedSide = aggregateReports([round(26.5), round(28), round(30), round(27)]);
+  assert.deepEqual([contendedSide.autoGpu.contended, contendedSide.autoGpu.saturated, contendedSide.autoGpu.plausibility.contendedRounds], [true, false, 4]);
+  const clean = aggregateReports([round(5), round(5.1), round(4.9), round(5)]);
+  assert.equal(clean.autoGpu.contended, false);
+  for (const [base, candidate] of [[contendedSide, clean], [clean, contendedSide]]) {
+    const row = compareReports(base, candidate, { paired: true }).rows.find(item => item.key === 'health.autoGpuFrameMs.p50');
+    assert.equal(row.status, 'unverified');
+    assert.ok(row.reasons.includes('gpu-contended'), JSON.stringify(row.reasons));
+  }
+});
+
 test('runABComparison uses a passed harness without launching or closing it, with ab defaults', async () => {
   const { readFileSync } = await import('node:fs');
   const { runABComparison } = await import('../src/ab-runner.js');
@@ -242,4 +273,43 @@ test('aggregated rounds never append GPU timing issues twice', () => {
   for (const validity of aggregate.roundValidity) {
     assert.equal(validity.issues.filter(issue => issue.code === 'invalid-gpu-timing').length, 1);
   }
+});
+
+test('a side is auto-GPU saturated only when most of its rounds are; one unstable round still marks it', async () => {
+  const { readFileSync } = await import('node:fs');
+  const capture = JSON.parse(readFileSync(new URL('./fixtures/v3/report-capture.json', import.meta.url), 'utf8'));
+  // 8.41 ms of GPU per frame at 60 Hz; × 1.9 or more reaches 0.9 × 16.67 ms and saturates that round.
+  const round = (scale, p95Scale = scale) => {
+    const report = structuredClone(capture);
+    for (const sample of report.inPage.samples) for (const key of ['p50', 'p95', 'mean', 'min', 'max']) sample.autoGpu.frameNs[key] *= scale;
+    for (const key of ['p50', 'mean', 'min', 'max']) report.inPage.summary.autoGpu.frameNs[key] *= scale;
+    report.inPage.summary.autoGpu.frameNs.p95 *= p95Scale;
+    return report;
+  };
+  const side = scales => aggregateReports(scales.map(scale => round(scale)));
+  const autoRow = (base, candidate) => compareReports(side(base), side(candidate), { paired: true }).rows
+    .find(row => row.key === 'health.autoGpuFrameMs.p50');
+
+  const summary = scales => [side(scales).autoGpu.saturated, side(scales).autoGpu.plausibility.status];
+  assert.deepEqual(summary([2.2, 1, 1, 1]), [false, 'ok'], 'one contended round');
+  assert.deepEqual(summary([2.2, 1, 2.2, 1]), [false, 'ok'], 'an even split is not a majority');
+  assert.deepEqual(summary([2.2, 2.2, 1, 2.2]), [true, 'saturated']);
+  // Saturated rounds still report their implausible samples (6 per saturated round here).
+  assert.equal(side([2.2, 1, 1, 1]).autoGpu.plausibility.implausibleSamples, 6);
+
+  // paris ab2: one contended base round and two contended candidate rounds out of 8 used to close the gate
+  // (unverified, gpu-saturated); the paired CI now decides.
+  const contended = autoRow([1, 1, 1.9, 1, 1, 1, 1, 1], [1, 1, 2.9, 2.5, 1, 1, 1, 1]);
+  assert.deepEqual([contended.status, contended.gated, contended.reasons], ['inconclusive', true, []]);
+  assert.ok(!contended.notes.some(note => note.endsWith('-saturated')));
+  // A side saturated in most rounds still gates only toward itself being slower.
+  const relieved = autoRow([2.2, 2.2, 2.2, 1], [0.5, 0.5, 0.5, 0.5]);
+  assert.deepEqual([relieved.status, relieved.gated, relieved.notes.includes('base-saturated')], ['improved', true, true]);
+  const worse = autoRow([0.5, 0.5, 0.5, 0.5], [2.2, 1, 2.2, 2.2]);
+  assert.deepEqual([worse.status, worse.notes.includes('candidate-saturated')], ['regression', true]);
+
+  // Instability is a note, never a gate: one round with a wide per-frame tail marks the side unstable.
+  const unstable = aggregateReports([round(1, 2), round(1), round(1), round(1)]);
+  assert.equal(unstable.autoGpu.stability.status, 'unstable');
+  assert.deepEqual(unstable.autoGpu.stability.reasons, ['within-run-spread']);
 });

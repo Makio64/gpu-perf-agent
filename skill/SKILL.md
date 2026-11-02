@@ -12,11 +12,14 @@ or display-capped FPS do not prove a GPU speedup.
 ## Setup
 
 - Needs Node 22+ and Chrome/Chromium. Run `npx gpu-perf-agent <command>` from the project
-  being profiled; a version pinned in that project wins over npx latest. Inside the
-  tool's own checkout use `node src/cli.js` instead. Keep one tool version per comparison.
-- Check the version once: `npx gpu-perf-agent --version`. 2.2+ prints `gpu-perf-agent 2.2.x`.
-  An error or the help text means an older release: use only the steps marked
-  *(all versions)* and read "Older releases" in [transports.md](references/transports.md).
+  being profiled. Inside the tool's own checkout use `node src/cli.js` instead. Keep one
+  tool version per comparison.
+- Check the version once: `npx gpu-perf-agent --version`. 2.2+ prints `gpu-perf-agent 2.2.x`
+  or later. An error or the help text means an older release is installed, usually a project
+  pin (it has no automatic GPU timing, and 1.x has no `ab`): run `npx gpu-perf-agent@latest`
+  for the whole campaign instead. It does not modify the project, so leave any pin alone and
+  mention it in the report. Only if 2.2+ cannot run, use the steps marked *(all versions)* and read "Older
+  releases" in [transports.md](references/transports.md).
 - Target the URL the app's dev server prints (usually `http://localhost:5173`). If none
   is running, start the project's dev script in the background and wait until the URL
   responds. A standalone HTML page can use `--file page.html --file-root .`; bundled
@@ -49,8 +52,14 @@ and automatic per-pass GPU timing, takes 6 x 250 ms samples after 2 warmups, and
 warm background Chrome. Trust the capture only if the first line is not `INVALID`,
 `passes/f` or `draws/f` on the `Frame` line is non-zero (the profiler's own frame callbacks
 keep running even when the app draws nothing), and the screenshot shows the intended
-scene. Hold input, seed, camera, viewport, pixel ratio, quality and browser fixed for
-every capture.
+scene. A loader or intro animation draws too: wait for the real scene with
+`--wait-condition` (for example the loader element gone plus the intro's duration).
+
+Hold input, seed, camera, viewport, pixel ratio, quality and browser fixed for every
+capture. When the user names a device or display, capture at its CSS viewport and pixel
+ratio on every capture and `ab` (14-inch MacBook Pro: `--viewport 1512x982
+--device-scale-factor 2`). The default 1280x720 at pixel ratio 1 can understate fill-rate
+cost several-fold and hide a GPU bottleneck behind `EXCELLENT`.
 
 **2. Keep a runnable baseline.** `ab` loads baseline and candidate side by side, so save
 the unmodified version before editing. Single HTML file: `cp index.html index.base.html`.
@@ -61,8 +70,13 @@ is possible, say so in the report instead of claiming a GPU gain.
 
 **3. Diagnose.** Read the digest (see "Reading the output").
 
-- No cost bottleneck: the verdict is `EXCELLENT`, or `vsync-capped` with a low GPU % and no
-  `Hitch:` line. Go to step 7 and report the headroom. If the user reported jank anyway,
+- No cost bottleneck: `EXCELLENT` or `vsync-capped`, with GPU under about 50% of the frame
+  budget and no `Hitch:` line. If `Bound:` shows `GPU <x> ms (untrusted)` without a %,
+  divide by the budget yourself (16.7 ms at 60 Hz), unless `Trust:` says `contended`: then
+  stop other GPU work and recapture first. Headless Chrome paces at 60 Hz, so at 50% or more
+  a 120 Hz display (MacBook Pro, ProMotion) is likely to miss frames: treat the GPU as the
+  limit and use `--metric health.autoGpuFrameMs.p50`. With no cost bottleneck, go to
+  step 7 and report the headroom. If the user reported jank anyway,
   follow the jank item in Troubleshooting first. If they still want a change, make one,
   confirm it with `ab`, and report its absolute effect against the frame budget.
 - Otherwise pick the primary metric. The `Bound:` line ends with `→ primary <metric>` and
@@ -97,12 +111,15 @@ npx gpu-perf-agent agent --url http://localhost:5173 --out reports/cand.json
 npx gpu-perf-agent agent --base reports/base.json --candidate reports/cand.json
 ```
 
-2.2+ shortcut: `agent --url <url> --base reports/base.json --out reports/cand.json` captures
-and compares in one call. It reuses the baseline's sampling, `--api`, viewport, pixel
-ratio, `--wait-until`/`--wait-condition`, sampling mode and instrumentation; repeat every
-other flag yourself (`--wait-for-hook`, `--timeout`, `--ready-timeout`, `--trace`, `--gc`,
-`--deep-memory`, `--adaptive`, `--context`, `--headful`, `--slow-frame-threshold`). Its
-output starts with the capture digest; the comparison status is the line after `vs <base>:`.
+2.2+ shortcut: `agent --url <url> --base reports/base.json --metric <step 3 metric> --out
+reports/cand.json` captures and compares in one call. It reuses the baseline's sampling,
+`--api`, viewport, pixel ratio, `--wait-until`/`--wait-condition`, sampling mode and
+instrumentation; repeat every other flag yourself (`--metric`, `--wait-for-hook`,
+`--timeout`, `--ready-timeout`, `--chromium-arg`, `--trace`, `--gc`, `--deep-memory`,
+`--adaptive`, `--context`, `--headful`, `--slow-frame-threshold`). Without `--metric` the
+screen gates on the baseline's `→ primary`. Its output starts with the capture digest; the
+comparison status is the line after `vs <base>:`. On Apple GPUs a single baseline capture
+can be a slow-clock outlier: if every candidate screens 30% or more better, go to `ab`.
 
 **6. Confirm with paired A/B** *(roughly 2-8 s per round)*
 
@@ -115,10 +132,12 @@ npx gpu-perf-agent ab --base-url http://localhost:5174 --candidate-url http://lo
 deltas trustworthy; separate captures can differ just because GPU clocks changed. Use at
 least 4 rounds (the default) and the same readiness, `--api`, viewport, `--metric` and
 `--sampling-mode` flags as the baseline. 2.2+ enables instrumentation and GPU timing in `ab`
-by default. The `Next: confirm with ab ...` line printed after screening copies your
-readiness, `--file-root`, sampling-mode, viewport and pixel-ratio flags. After an in-place
-edit it prints `<baseline-url>` or `<baseline-copy.html>` for the baseline: replace that with
-your baseline copy, and check its `--metric`.
+by default. Before `ab`, stop other GPU work (other browsers, other profiling agents,
+headless Chromes your own scripts started); on a busy machine add `--samples 3` so a round
+is not a single 250 ms window. The `Next: confirm with ab ...` line printed after screening
+copies the capture flags. After an in-place edit it prints `<baseline-url>` or
+`<baseline-copy.html>` for the baseline: replace that with your baseline copy, and check
+that it carries your `--metric`, `--chromium-arg` and timeout flags.
 
 **7. Stop, report, clean up.** See the last section.
 
@@ -131,9 +150,9 @@ Capture digest:
 | `<VERDICT> — reason` | `INVALID` means fix the capture before anything else |
 | `Bound:` | Limiting side and refresh rate, GPU ms and % of the frame budget, CPU ms/frame, `→ primary <metric>` |
 | `Frame ... \| GPU p50 ... \| passes/f, draws/f \| VRAM \| heap` | Frame time and p95; GPU busy time per frame (overlapping passes counted once); work per frame; declared GPU allocations rounded to MiB (an estimate, not residency); JS heap growth |
-| `Passes (excl p50):` | Most expensive passes, each with its own time and source location (WebGL2 shows one `gl-frame` pass) |
+| `Passes (excl p50):` | Most expensive passes, each with its own time and source location (WebGL2 shows one `gl-frame` pass). Before editing, confirm which code a pass belongs to, for example by turning the effect off with an app flag: 2.2.0 can label an unlabelled pass with the site of an earlier init-time pass |
 | `CPU:` / `Hitch:` | Hottest function and its caller / worst slow frame |
-| `Trust:` | Validity and GPU stability per side; `unstable` or `clock-sensitive` GPU means confirm GPU deltas with `ab`. In comparisons, `base invalid: <code>`, `cand invalid: <code>` or `comparison invalid: <code>` says why the status is `INVALID` |
+| `Trust:` | Validity and GPU stability per side; `unstable` or `clock-sensitive` GPU means confirm GPU deltas with `ab`; `contended` GPU means the timestamps include other GPU work (see measurement.md). In comparisons, `base invalid: <code>`, `cand invalid: <code>` or `comparison invalid: <code>` says why the status is `INVALID` |
 | `Next:` / `Report:` | Suggested step (a hypothesis) / saved report path |
 
 Comparison output adds `Matched baseline:` (flags inherited from `--base`),
@@ -143,12 +162,15 @@ dispatches or passes changed by more than 10%: verify output before keeping),
 `Not gated:` (changed metrics that do not decide the status; list them with
 `inspect --report <cand.compare.json> --section metrics --changed`) and `Saved:`. In `ab`
 the paired confidence interval on the status line outranks the `Trust:` wording.
+`IMPROVED` and `REGRESSION` need the whole interval beyond ±boundary (by default 5% of the
+baseline), not just past zero: an interval that excludes zero but not the boundary is a
+likely but small effect, so report it that way.
 
 | Status | Exit | Do this |
 | --- | --- | --- |
 | `IMPROVED` | 0 | From `ab`: keep. From a separate screen: confirm with `ab` first |
-| `UNCHANGED` / `INCONCLUSIVE` | 0 | No proven effect. Decide before looking further whether to run `ab --rounds 8` once more or revert, and report both runs. Per-round values: `inspect --report <ab.json> --run <i> --section gpu`. For tiny GPU loads use a warm timing hook |
-| `UNVERIFIED (screen: better\|same\|worse)` | 0 | Separate captures cannot prove this metric (GPU clock changes, light CPU load, vsync pinning, too few samples). Confirm with `ab`. Revert on `worse` unless the change was expected to help |
+| `UNCHANGED` / `INCONCLUSIVE` | 0 | No proven effect. Decide before looking further whether to run `ab --rounds 8` once more or revert, and report both runs. Per-round values: `inspect --report <ab.json> --section rounds` (2.3+) or `--run <i> --section gpu`. For tiny GPU loads use a warm timing hook |
+| `UNVERIFIED (screen: better\|same\|worse)` | 0 | From a separate screen: these captures cannot prove this metric (GPU clock changes, light CPU load, vsync pinning, too few samples); confirm with `ab`. From `ab` (reason at the end of the status line in 2.3+, or the row's `reasons` in the ab JSON): `gpu-contended` (2.3+) means other GPU work inflated a side's timestamps; `gpu-saturated` means a side's GPU time sat near the frame interval in most rounds (in 2.2.0, any round, often from other GPU work); `vsync-pinned` means a frame-time primary, so pass `--metric`. Stop other GPU users, rerun, and meanwhile treat it as `INCONCLUSIVE`. Revert on `worse` unless the change was expected to help |
 | `DIFFERENT-WORK` | 0 | The primary improved but new GPU errors appeared or the work collapsed (draws/dispatches near zero): check output; not a like-for-like speedup |
 | `REGRESSION` | 1 | Revert or fix; also returned when a budget fails |
 | `INVALID` / `MISMATCH` | 2 | Fix the capture. For MISMATCH recapture with the flags the `Mismatch:` line names; use `--allow-mismatch` only if the user accepts the difference, and say so |
@@ -166,8 +188,11 @@ threshold as well as for CLI errors; see "Older releases" in transports.md.
 - `no-gpu-work`, or 0 passes and draws: the page is not rendering while sampled. Use
   `--wait-for-hook` if the app defines `globalThis.__gpuReportBench` (2.2+ gives up after
   `--wait-for-hook-timeout`, default 15 s), or
-  `--wait-condition 'window.ready === true'` with a real readiness signal; raise
-  `--ready-timeout`; add `--wait-until domcontentloaded` when the page keeps requests open.
+  `--wait-condition 'window.ready === true'` with a real readiness signal (it fails after
+  `--wait-condition-timeout`: 20 s, or `--timeout` when given; `--ready-timeout` only
+  bounds the wait for the first GPU work); add `--wait-until domcontentloaded` when the
+  page keeps requests open.
+- `capture-cleanup-failed`: rerun the same command once; if it repeats with `agent` or `run`, add `--no-daemon`.
 - Page errors (`runtime-errors`, `critical-resource-failed`): `inspect --report <r> --section errors`.
 - User reports jank but the capture is clean: headless Chrome paces at 60 Hz. Recapture
   with `--headful --preset confirm` to use the real display's refresh rate (shown on the

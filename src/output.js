@@ -293,7 +293,7 @@ export function formatAgentReport(report, { out, cwd = process.cwd() } = {}) {
   const captureLine = formatCaptureAnomalies(report?.timings);
   if (captureLine) lines.push(captureLine);
 
-  // Line 8: Trust: <valid|invalid (N issues)>[; <warnings summary>][; GPU clock-sensitive: confirm GPU deltas with ab][; GPU unstable within run][; instrumentation overhead]
+  // Line 8: Trust: <valid|invalid (N issues)>[; <warnings summary>][; GPU clock-sensitive: confirm GPU deltas with ab][; GPU contended (…)|GPU unstable within run][; instrumentation overhead]
   const trustParts = [];
   if (!valid) {
     const n = issues.length || 1;
@@ -317,7 +317,9 @@ export function formatAgentReport(report, { out, cwd = process.cwd() } = {}) {
       trustParts.push("instrumentation overhead (use --no-auto-instrument)");
     }
     const stab = gpu.stability;
-    if (stab?.status === "unstable") {
+    if (gpu.source === "auto" && gpu.plausibility?.status === "contended") {
+      trustParts.push("GPU contended (timestamps exceed the frame interval while frames are on time)");
+    } else if (stab?.status === "unstable") {
       trustParts.push("GPU unstable within run");
     } else if (!hasOverhead && (stab?.clockSensitive || gpu.source === "auto")) {
       trustParts.push("GPU clock-sensitive: confirm GPU deltas with ab");
@@ -338,6 +340,8 @@ export function formatAgentReport(report, { out, cwd = process.cwd() } = {}) {
     } else {
       nextText = "Inspect report errors (inspect <report> --section errors).";
     }
+  } else if (gpu.source === "auto" && gpu.plausibility?.status === "contended") {
+    nextText = "Stop other GPU work (other browsers, profiling agents, leftover headless Chrome) and recapture; this GPU timing is not the page's cost.";
   } else if (s.verdict === "excellent") {
     nextText = "No action needed; use this report as a baseline (compare --base <report> or ab).";
   } else {
@@ -382,6 +386,23 @@ function shellArg(value) {
   return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replace(/'/g, "'\\''")}'`;
 }
 
+// Reports record Chrome's whole launch argv as options.chromiumArgs. These entries are the
+// runners' own (chromiumArgs() and launchChromeForCDP() in fast-cdp-runner.js, runner.js);
+// the rest came from --chromium-arg.
+const RUNNER_CHROMIUM_ARGS = new Set([
+  "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+  "--enable-precise-memory-info", "--enable-unsafe-webgpu", "--enable-dawn-features=allow_unsafe_apis",
+  "--js-flags=--expose-gc", "--no-first-run", "--headless=new", "--remote-debugging-pipe", "about:blank"
+]);
+const RUNNER_CHROMIUM_ARG_PREFIXES = ["--user-data-dir=", "--window-size="];
+
+function userChromiumArgs(args) {
+  if (!Array.isArray(args)) return [];
+  // --angle's --use-angle=<angle> is kept: ab has no --angle, so it reproduces the backend as a --chromium-arg.
+  return args.filter((arg) => typeof arg === "string" && arg
+    && !RUNNER_CHROMIUM_ARGS.has(arg) && !RUNNER_CHROMIUM_ARG_PREFIXES.some((prefix) => arg.startsWith(prefix)));
+}
+
 /** The baseline's capture flags that change what `ab` measures (non-default values only). */
 function copiedAbFlags(baseOptions = {}, cwd = process.cwd()) {
   if (!baseOptions || typeof baseOptions !== "object") return "";
@@ -397,12 +418,27 @@ function copiedAbFlags(baseOptions = {}, cwd = process.cwd()) {
   if (baseOptions.hookName && baseOptions.hookName !== "__gpuReportBench") flags.push(`--hook-name ${shellArg(baseOptions.hookName)}`);
   if (baseOptions.waitForHook === true && baseOptions.samplingMode !== "hook") flags.push("--wait-for-hook");
   if (baseOptions.waitUntil && baseOptions.waitUntil !== "networkidle") flags.push(`--wait-until ${baseOptions.waitUntil}`);
-  if (baseOptions.waitCondition) flags.push(`--wait-condition ${shellArg(baseOptions.waitCondition)}`);
+  // Timeout defaults as normalizeOptions() sets them; an explicit --timeout also sets the condition timeout.
+  const timeoutMs = Number(baseOptions.timeoutMs);
+  const customTimeout = baseOptions.timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs !== 60000;
+  if (baseOptions.waitCondition) {
+    flags.push(`--wait-condition ${shellArg(baseOptions.waitCondition)}`);
+    const conditionMs = Number(baseOptions.waitConditionTimeoutMs);
+    if (baseOptions.waitConditionTimeoutMs != null && Number.isFinite(conditionMs) && conditionMs !== (customTimeout ? timeoutMs : 20000)) {
+      flags.push(`--wait-condition-timeout ${conditionMs}`);
+    }
+  }
+  const readyMs = Number(baseOptions.readyTimeoutMs);
+  if (baseOptions.readyTimeoutMs != null && Number.isFinite(readyMs) && readyMs !== 3000) flags.push(`--ready-timeout ${readyMs}`);
+  if (customTimeout) flags.push(`--timeout ${timeoutMs}`);
   const viewport = baseOptions.viewport?.width && baseOptions.viewport?.height
     ? `${baseOptions.viewport.width}x${baseOptions.viewport.height}` : baseOptions.viewport;
   if (typeof viewport === "string" && viewport !== "1280x720") flags.push(`--viewport ${viewport}`);
   const dpr = Number(baseOptions.deviceScaleFactor);
   if (baseOptions.deviceScaleFactor != null && Number.isFinite(dpr) && dpr !== 1) flags.push(`--device-scale-factor ${dpr}`);
+  if (baseOptions.headful === true) flags.push("--headful");
+  // `=` keeps parseArgs from reading a leading "--" value as another flag.
+  for (const arg of userChromiumArgs(baseOptions.chromiumArgs)) flags.push(`--chromium-arg=${shellArg(arg)}`);
   return flags.length ? ` ${flags.join(" ")}` : "";
 }
 
@@ -410,7 +446,7 @@ function copiedAbFlags(baseOptions = {}, cwd = process.cwd()) {
 function gpuTrustText(cmp, mode) {
   const sideEvidence = (side) => {
     const auto = cmp.gpuTiming?.auto?.[side];
-    if (auto) return { status: auto.stability?.status ?? "unknown", clockSensitive: auto.clockSensitive ?? auto.stability?.clockSensitive };
+    if (auto) return { status: auto.stability?.status ?? "unknown", clockSensitive: auto.clockSensitive ?? auto.stability?.clockSensitive, contended: auto.contended === true || auto.plausibility?.status === "contended" };
     const hook = cmp.gpuTiming?.[side];
     if (hook?.status === "single-scope") return { status: hook.stability?.status ?? "unknown", clockSensitive: hook.stability?.clockSensitive };
     return null;
@@ -418,6 +454,8 @@ function gpuTrustText(cmp, mode) {
   const sides = [["base", sideEvidence("base")], ["cand", sideEvidence("candidate")]].filter(([, evidence]) => evidence);
   if (sides.length === 0) return null;
   const named = (list) => (list.length === 2 ? "both sides" : list.map(([name]) => name).join(""));
+  const contended = sides.filter(([, evidence]) => evidence.contended);
+  if (contended.length) return `GPU contended ${named(contended)}`;
   const unstable = sides.filter(([, evidence]) => evidence.status === "unstable");
   if (unstable.length) return `GPU unstable ${named(unstable)}`;
   // Paired rounds share one browser and alternate sides, which is what controls GPU clocks.
@@ -448,7 +486,7 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
 
   const lines = [];
 
-  // Line 1: <STATUS>[ (screen: <worse|better|same>)] — primary <key> <base> → <cand> <unit> (<±%>[, 95% CI <lo>..<hi> <unit>]; <paired|separate>[, <unverified reason / N rounds / warm>])[ (primary from base bottleneck)]
+  // Line 1: <STATUS>[ (screen: <worse|better|same>)] — primary <key> <base> → <cand> <unit> (<±%>[, 95% CI <lo>..<hi> <unit>]; <paired|separate>[, <unverified reason / N rounds[, <row unverified reason / needs CI beyond ±<boundary> <unit>>] / warm>])[ (primary from base bottleneck)]
   const screenSuffix = cs.status === "unverified" && pRow?.screen ? ` (screen: ${pRow.screen})` : "";
   if (pRow && Number.isFinite(pRow.base) && Number.isFinite(pRow.candidate)) {
     const unit = pRow.unit ? ` ${pRow.unit}` : "";
@@ -466,6 +504,16 @@ export function formatAgentComparison(result, { out, cwd = process.cwd(), baseOp
     } else if (mode === "paired") {
       const rounds = pRow.baseStats?.count ?? pRow.candidateStats?.count ?? result?.rounds ?? null;
       if (rounds) modeDetail = `, ${rounds} rounds`;
+      // Say why the paired CI did not decide: the gate that closed, or the boundary a
+      // zero-excluding CI still has to clear (IMPROVED/REGRESSION need it beyond ±boundary).
+      if (pRow.status === "unverified" && pRow.reasons?.[0]) {
+        modeDetail += `, ${pRow.reasons[0]}`;
+      } else if (pRow.status === "inconclusive" && hasCi && Number.isFinite(pRow.boundary)) {
+        const { low, high } = pRow.confidence95;
+        const excludesZero = low > 0 || high < 0;
+        const clearsBoundary = low > pRow.boundary || high < -pRow.boundary;
+        if (excludesZero && !clearsBoundary) modeDetail += `, needs CI beyond ±${fmtSmart(pRow.boundary, 2)}${unit}`;
+      }
     } else if (pRow.status === "unverified" || cs.status === "unverified") {
       const reason = pRow.reasons?.[0] || cs.reasons?.[0] || "auto GPU is clock-sensitive across separate Chrome launches";
       modeDetail = `, ${reason}`;

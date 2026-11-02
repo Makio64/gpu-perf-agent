@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { inspectReport, validateInspectOptions, INSPECT_MAX_BYTES, INSPECT_SECTIONS } from '../src/inspect.js';
 import { compareReports, reportEnvironment, reportMetrics } from '../src/compare.js';
+import { runABComparison } from '../src/ab-runner.js';
 
 function capture() {
   return {
@@ -316,7 +317,7 @@ test('overview retains invalidity even when issue evidence needs clipping', () =
   assert.deepEqual(result.validity, { valid: false, issueCount: 1000, savedValid: false, currentValid: true });
   assert.ok(result.omissions.items > 0);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= INSPECT_MAX_BYTES);
-  assert.equal(INSPECT_SECTIONS.length, 9);
+  assert.equal(INSPECT_SECTIONS.length, 10);
 });
 
 test('gpu and cpu sections, sample table projection, raw sample mode, and prefix/changed metrics', () => {
@@ -366,4 +367,135 @@ test('gpu and cpu sections, sample table projection, raw sample mode, and prefix
   assert.ok(changedMetrics.data.rows.every(r => r.status !== 'pass' && r.status !== 'unchanged'));
   const prefixMetrics = inspectReport(cmp, { section: 'metrics', metric: 'custom.*' });
   assert.equal(prefixMetrics.data.rows.length, 3);
+});
+
+// One single-sample capture per A/B run; `custom.gpuMs.mean` is the explicit primary.
+function abRound(gpuMs, fps) {
+  return {
+    inPage: { samples: [{ elapsedMs: 100, measurement: { fps, gpuMs } }], summary: { fps: { mean: fps } } },
+    options: { durationMs: 100, runner: 'fast-cdp', samples: 1, viewport: '320x180', warmup: 1 },
+    summary: { verdict: 'good', warnings: [] },
+  };
+}
+
+// A real ab artifact, as saved: runABComparison on a stub harness, then a JSON round trip.
+async function abArtifact(rounds) {
+  const queue = { base: rounds.map(round => round.base), candidate: rounds.map(round => round.candidate) };
+  const harness = {
+    async run(options) { return abRound(...queue[options.url.endsWith('a.html') ? 'base' : 'candidate'].shift()); },
+    async close() {},
+  };
+  const result = await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: rounds.length,
+    primaryMetric: 'custom.gpuMs.mean' }, { harness });
+  return JSON.parse(JSON.stringify(result));
+}
+
+test('rounds section validates its selectors and defaults to a whole-A/B page', () => {
+  assert.deepEqual(validateInspectOptions({ section: 'rounds' }), { section: 'rounds', offset: 0, limit: 10 });
+  assert.deepEqual(validateInspectOptions({ section: 'rounds', metric: 'frame.fps.mean', offset: 2, limit: 4 }),
+    { section: 'rounds', metric: 'frame.fps.mean', offset: 2, limit: 4 });
+  assert.equal(validateInspectOptions({ section: 'metrics' }).limit, 3);
+  assert.ok(INSPECT_SECTIONS.includes('rounds'));
+  for (const [options, message] of [
+    [{ section: 'rounds', runIndex: 0 }, /omit runIndex/],
+    [{ section: 'rounds', metric: 'frame.*' }, /exact metric key, not a prefix/],
+  ]) {
+    assert.throws(() => validateInspectOptions(options), error => error instanceof TypeError && error.code === 'invalid-options' && message.test(error.message), JSON.stringify(options));
+  }
+  assert.throws(() => validateInspectOptions({ section: 'trace', metric: 'frame.fps.mean' }), /metric requires section "metrics" or "rounds"/);
+  assert.throws(() => validateInspectOptions({ section: 'rounds', limit: 11 }), TypeError);
+});
+
+test('rounds section pairs each A/B round for the primary metric with sign count and median delta', async () => {
+  // [gpuMs, fps] per side and round; base and candidate run in ABBA order.
+  const artifact = await abArtifact([
+    { base: [10, 60], candidate: [8, 61] },
+    { base: [12, 59], candidate: [12.5, 58] },
+    { base: [11, 60], candidate: [9, 60] },
+    { base: [13, 58], candidate: [10, 59] },
+  ]);
+  const before = structuredClone(artifact);
+  const view = inspectReport(artifact, { section: 'rounds' });
+  assert.deepEqual(artifact, before);
+  assert.equal(view.source.kind, 'ab');
+  assert.equal(view.totals.rounds, 4);
+  assert.equal(view.totals.runs, 8);
+  assert.equal(view.omissions.items, 0);
+  // ABBA: round 1 ran the candidate first, so its base is run 3 and its candidate run 2.
+  assert.deepEqual(view.selection.indices, [
+    { source: 'rounds', index: 0, runs: { base: 0, candidate: 1 } },
+    { source: 'rounds', index: 1, runs: { base: 3, candidate: 2 } },
+    { source: 'rounds', index: 2, runs: { base: 4, candidate: 5 } },
+    { source: 'rounds', index: 3, runs: { base: 7, candidate: 6 } },
+  ]);
+  const { data } = view;
+  assert.equal(data.metric, 'custom.gpuMs.mean');
+  assert.equal(data.metric, artifact.comparison.primary.key);
+  assert.equal(data.primary, true);
+  assert.equal(data.present, true);
+  assert.equal(data.unit, 'ms');
+  assert.equal(data.direction, 'lower');
+  assert.deepEqual(data.table.cols, ['round', 'base', 'candidate', 'delta', 'ratio']);
+  assert.deepEqual(data.table.rows, [[0, 10, 8, -2, 0.8], [1, 12, 12.5, 0.5, 1.0417], [2, 11, 9, -2, 0.8182], [3, 13, 10, -3, 0.7692]]);
+  assert.deepEqual(data.signs, { pairs: 4, candidateBetter: 3, candidateWorse: 1, tied: 0, text: 'candidate faster in 3 of 4 rounds' });
+  assert.equal(data.medianDelta, -2);
+  // Per-round values are the ones the paired comparison averaged.
+  const row = artifact.comparison.rows.find(item => item.key === data.metric);
+  const mean = values => values.reduce((total, value) => total + value, 0) / values.length;
+  assert.equal(mean(data.table.rows.map(cells => cells[1])), row.base);
+  assert.equal(mean(data.table.rows.map(cells => cells[2])), row.candidate);
+  assert.deepEqual(data.comparison, { base: row.base, candidate: row.candidate, delta: row.delta, deltaPercent: row.deltaPercent,
+    status: row.status, evidence: 'paired-samples', confidence95: row.confidence95 });
+
+  // A higher-is-better metric counts the candidate faster when it is higher; equal rounds are ties.
+  const fps = inspectReport(artifact, { section: 'rounds', metric: 'frame.fps.mean' }).data;
+  assert.equal(fps.primary, false);
+  assert.equal(fps.direction, 'higher');
+  assert.deepEqual(fps.table.rows.map(cells => cells[3]), [1, -1, 0, 1]);
+  assert.deepEqual(fps.signs, { pairs: 4, candidateBetter: 2, candidateWorse: 1, tied: 1, text: 'candidate faster in 2 of 4 rounds' });
+  assert.equal(fps.medianDelta, 0.5);
+});
+
+test('rounds pages stay bounded while the sign count and median cover every round', async () => {
+  const artifact = await abArtifact(Array.from({ length: 13 }, (_, round) => ({ base: [10 + round, 60], candidate: [round % 3 ? 9 + round : 12 + round, 60] })));
+  const first = inspectReport(artifact, { section: 'rounds' });
+  assert.equal(first.totals.rounds, 13);
+  assert.equal(first.data.table.rows.length, 10);
+  assert.equal(first.omissions.items, 3);
+  assert.deepEqual(first.data.signs, { pairs: 13, candidateBetter: 8, candidateWorse: 5, tied: 0, text: 'candidate faster in 8 of 13 rounds' });
+  assert.equal(first.data.medianDelta, -1);
+  assert.ok(Buffer.byteLength(JSON.stringify(first)) <= INSPECT_MAX_BYTES);
+  const last = inspectReport(artifact, { section: 'rounds', offset: 10, limit: 2 });
+  assert.deepEqual(last.data.table.rows.map(cells => cells[0]), [10, 11]);
+  assert.deepEqual(last.selection.indices.map(entry => entry.index), [10, 11]);
+  assert.equal(last.omissions.items, 11);
+  assert.deepEqual(last.data.signs, first.data.signs);
+  assert.throws(() => inspectReport(artifact, { section: 'rounds', offset: 14 }), RangeError);
+});
+
+test('rounds section rejects non-A/B reports as invalid options and keeps unmeasured metrics distinct', async () => {
+  for (const report of [capture(), comparison(), { runs: null, rows: [] }]) {
+    assert.throws(() => inspectReport(report, { section: 'rounds' }),
+      error => error instanceof TypeError && error.code === 'invalid-options' && /requires an A\/B artifact/.test(error.message));
+  }
+  const artifact = await abArtifact([{ base: [10, 60], candidate: [9, 60] }, { base: [11, 60], candidate: [10, 60] }]);
+  const absent = inspectReport(artifact, { section: 'rounds', metric: 'custom.absent.mean' });
+  assert.equal(absent.totals.rounds, 2);
+  assert.deepEqual(absent.selection.indices, []);
+  assert.equal(absent.omissions.items, 0);
+  assert.deepEqual(absent.data, { metric: 'custom.absent.mean', primary: false, present: false, unit: null, direction: null,
+    signs: { pairs: 0, candidateBetter: null, candidateWorse: null, tied: 0, text: null }, medianDelta: null, comparison: null,
+    table: { cols: ['round', 'base', 'candidate', 'delta', 'ratio'], rows: [] } });
+
+  // Without a comparison row the direction is unknown: deltas, but no better/worse verdict.
+  // A non-time unit says "better", not "faster".
+  const noPrimary = structuredClone(artifact);
+  noPrimary.comparison.primary = null;
+  noPrimary.comparison.rows = noPrimary.comparison.rows.filter(row => row.key !== 'custom.gpuMs.mean');
+  assert.throws(() => inspectReport(noPrimary, { section: 'rounds' }), error => error.code === 'invalid-options' && /pass metric/.test(error.message));
+  const unknown = inspectReport(noPrimary, { section: 'rounds', metric: 'custom.gpuMs.mean' }).data;
+  assert.deepEqual(unknown.table.rows.map(cells => cells[3]), [-1, -1]);
+  assert.deepEqual(unknown.signs, { pairs: 2, candidateBetter: null, candidateWorse: null, tied: 0, text: null });
+  noPrimary.comparison.rows.push({ key: 'custom.gpuMs.mean', unit: 'count', direction: 'lower' });
+  assert.equal(inspectReport(noPrimary, { section: 'rounds', metric: 'custom.gpuMs.mean' }).data.signs.text, 'candidate better in 2 of 2 rounds');
 });

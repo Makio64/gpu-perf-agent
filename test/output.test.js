@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +15,7 @@ import {
   normalizeCliError
 } from "../src/output.js";
 import { compareReports } from "../src/compare.js";
+import { finalizeReport } from "../src/analysis.js";
 
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 
@@ -378,8 +380,110 @@ test("Next: confirm with ab uses a baseline placeholder after an in-place edit a
       + " --file-root . --sampling-mode hook --wait-until load --wait-condition 'window.ready === true' --viewport 800x600 --device-scale-factor 2");
   // Defaults copy nothing; --wait-for-hook only outside hook mode, where it is not implied.
   assert.equal(nextOf({ baseFile: "/work/app/base.html", candidateFile: "/work/app/index.html" }, {
-    baseOptions: { autoInstrument: true, gpuTiming: true, api: "auto", samplingMode: "frames", waitForHook: true, waitUntil: "networkidle", viewport: "1280x720", deviceScaleFactor: 1 }
+    baseOptions: {
+      autoInstrument: true, gpuTiming: true, api: "auto", samplingMode: "frames", waitForHook: true, waitUntil: "networkidle", viewport: "1280x720", deviceScaleFactor: 1,
+      readyTimeoutMs: 3000, timeoutMs: 60000, waitConditionTimeoutMs: 20000, headful: false, chromiumArgs: runnerLaunchArgv()
+    }
   }), "Next: confirm with ab --base-file base.html --candidate-file index.html --metric health.autoGpuFrameMs.p50 --wait-for-hook");
+});
+
+/** Chrome's launch argv as a fast-runner report records it in options.chromiumArgs. */
+function runnerLaunchArgv(userArgs = [], { headful = false, angle = null } = {}) {
+  return [
+    ...(headful ? [] : ["--headless=new"]),
+    "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+    "--enable-precise-memory-info", "--enable-unsafe-webgpu", "--enable-dawn-features=allow_unsafe_apis", "--js-flags=--expose-gc", "--no-first-run",
+    ...(angle ? [`--use-angle=${angle}`] : []),
+    ...userArgs,
+    "--user-data-dir=/var/folders/5y/abc/T/webgpu-report-cdp-Dgy6in", "--remote-debugging-pipe", "--window-size=1280,720", "about:blank"
+  ];
+}
+
+test("Next: confirm with ab copies the baseline's chromium args, timeouts and headful mode", () => {
+  const unverified = {
+    mode: "separate",
+    baseUrl: "https://localhost:3012/",
+    candidateUrl: "https://localhost:3011/",
+    primary: { key: "health.autoGpuFrameMs.p50", selection: "bottleneck", row: { key: "health.autoGpuFrameMs.p50", base: 26.5, candidate: 8.76, unit: "ms", status: "unverified", reasons: ["separate-capture-gpu"] } },
+    rows: [],
+    validity: { valid: true, issues: [] }
+  };
+  const command = "Next: confirm with ab --base-url https://localhost:3012/ --candidate-url https://localhost:3011/ --metric health.autoGpuFrameMs.p50";
+  const copied = (baseOptions) => {
+    const next = formatAgentComparison(unverified, { cwd: "/work/app", baseOptions }).split("\n").find((line) => line.startsWith("Next:"));
+    assert.ok(next.startsWith(command), next);
+    return next.slice(command.length);
+  };
+
+  // Cyprus trial: the self-signed HTTPS flag and the readiness timeout reach the ab command; the runner's own launch flags do not.
+  assert.equal(copied({ chromiumArgs: runnerLaunchArgv(["--ignore-certificate-errors"]), readyTimeoutMs: 60000, headful: false, waitCondition: "window.__appReady === true" }),
+    " --wait-condition 'window.__appReady === true' --ready-timeout 60000 --chromium-arg=--ignore-certificate-errors");
+  // An explicit --timeout also sets the condition timeout, so only --timeout is copied; a separate condition timeout is copied too.
+  assert.equal(copied({ timeoutMs: 90000, waitConditionTimeoutMs: 90000, waitCondition: "ready()" }), " --wait-condition 'ready()' --timeout 90000");
+  assert.equal(copied({ timeoutMs: 60000, waitConditionTimeoutMs: 45000, waitCondition: "ready" }), " --wait-condition ready --wait-condition-timeout 45000");
+  assert.equal(copied({ timeoutMs: 90000, waitConditionTimeoutMs: 30000, waitCondition: "ready" }), " --wait-condition ready --wait-condition-timeout 30000 --timeout 90000");
+  // Without --wait-condition its timeout has no effect.
+  assert.equal(copied({ waitConditionTimeoutMs: 45000 }), "");
+  // Headful drops --headless=new from the argv; --use-angle from --angle is kept as a --chromium-arg (ab has no
+  // --angle), so the confirmation runs on the same WebGL backend; args are shell-quoted.
+  assert.equal(copied({
+    headful: true, angle: "metal",
+    chromiumArgs: runnerLaunchArgv(["--enable-features=Vulkan,WebGPUDeveloperFeatures", "--user-agent=Bench bot"], { headful: true, angle: "metal" })
+  }), " --headful --chromium-arg=--use-angle=metal --chromium-arg=--enable-features=Vulkan,WebGPUDeveloperFeatures --chromium-arg='--user-agent=Bench bot'");
+  assert.equal(copied({ chromiumArgs: runnerLaunchArgv(["--use-angle=swiftshader"]) }), " --chromium-arg=--use-angle=swiftshader");
+  // Attached browsers record no launch argv.
+  assert.equal(copied({ chromiumArgs: [], readyTimeoutMs: 3000, timeoutMs: 60000, headful: false }), "");
+
+  // Every copied flag is one ab accepts.
+  const flags = copied({
+    fileRoot: "/work/app", autoInstrument: false, gpuTiming: false, api: "webgpu", samplingMode: "hook", hookName: "bench", waitUntil: "load",
+    waitCondition: "ready", waitConditionTimeoutMs: 45000, readyTimeoutMs: 60000, timeoutMs: 90000, viewport: "800x600", deviceScaleFactor: 2,
+    headful: true, chromiumArgs: ["--ignore-certificate-errors"]
+  });
+  const names = [...flags.matchAll(/(?:^| )--([a-z][a-z-]*)/g)].map((match) => match[1]);
+  assert.equal(names.length, 15);
+  const abHelp = spawnSync(process.execPath, [path.join(root, "src/cli.js"), "ab", "--help"], { encoding: "utf8" }).stdout;
+  for (const name of names) assert.match(abHelp, new RegExp(`^  --${name} `, "m"), `ab does not accept --${name}`);
+});
+
+test("paired comparison status line names the unverified reason and the boundary an inconclusive CI must clear", async () => {
+  const fixture = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  const withPrimary = (row) => ({ ...fixture, status: row.status, primary: { ...fixture.primary, row: { ...fixture.primary.row, ...row } } });
+  const statusLine = (result) => formatAgentComparison(result).split("\n")[0];
+  const stats = { count: 8 };
+
+  // Paris ab1-r8: a saturated side closed the gate; the reason was only in the JSON.
+  const saturated = withPrimary({
+    base: 12.35, candidate: 10.39, deltaPercent: -15.8, status: "unverified", gated: false, screen: "better", reasons: ["gpu-saturated"],
+    confidence95: { low: -4.174556906539237, high: 0.2700949065392382, method: "paired-t" }, boundary: 0.61731376875, baseStats: stats, candidateStats: stats
+  });
+  assert.equal(statusLine(saturated),
+    "UNVERIFIED (screen: better) — primary health.autoGpuFrameMs.p50 12.35 → 10.39 ms (-15.8%, 95% CI -4.17..+0.27 ms; paired, 8 rounds, gpu-saturated) (primary from base bottleneck)");
+
+  // Paris ab3-tradeoff: the CI excludes zero but not the 5% boundary.
+  const short = withPrimary({
+    base: 10.48, candidate: 8.35, deltaPercent: -20.4, status: "inconclusive",
+    confidence95: { low: -4.1518882012941845, high: -0.11721529870581548, method: "paired-t" }, boundary: 0.52424226875, baseStats: stats, candidateStats: stats
+  });
+  assert.equal(statusLine(short),
+    "INCONCLUSIVE — primary health.autoGpuFrameMs.p50 10.48 → 8.35 ms (-20.4%, 95% CI -4.15..-0.12 ms; paired, 8 rounds, needs CI beyond ±0.52 ms) (primary from base bottleneck)");
+  // A regression whose CI stays inside the boundary on the positive side.
+  assert.match(statusLine(withPrimary({ base: 10, candidate: 11, deltaPercent: 10, status: "inconclusive", confidence95: { low: 0.2, high: 1.8 }, boundary: 0.5 })),
+    /; paired, 4 rounds, needs CI beyond ±0\.5 ms\)/);
+
+  // Paris ab1-clean: a CI that crosses zero speaks for itself.
+  const crossing = withPrimary({
+    base: 10.56, candidate: 8.87, deltaPercent: -16, status: "inconclusive",
+    confidence95: { low: -8.463364406425196, high: 5.083812906425195, method: "paired-t" }, boundary: 0.5279877625
+  });
+  assert.match(statusLine(crossing), /; paired, 4 rounds\) \(primary from base bottleneck\)$/);
+  // Decided rows are unchanged.
+  assert.match(statusLine(fixture), /; paired, 4 rounds\) \(primary from base bottleneck\)$/);
+
+  for (const result of [saturated, short]) {
+    const digest = formatAgentComparison(result, { out: "reports/ab-1.json" });
+    assert.ok(approxTokens(digest) <= 140, `expected <=140 tokens, got ${approxTokens(digest)}`);
+  }
 });
 
 test("capture Bound line gives no GPU share when the classifier left GPU time untrusted", async () => {
@@ -391,6 +495,32 @@ test("capture Bound line gives no GPU share when the classifier left GPU time un
   delete capture.summary.bottleneck.gpuMs;
   capture.summary.bottleneck.gpuShare = 0.505;
   assert.match(formatAgentReport(capture), /^Bound: vsync-capped 60 Hz; GPU 8\.41 ms \(51% of 16\.67 ms\)/m);
+});
+
+test("capture Trust line flags contended auto GPU instead of saturation", async () => {
+  // report-saturated.json with auto GPU scaled to 26.5 ms while every frame lands at 60 Hz (cyprus base2).
+  const report = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/report-saturated.json"), "utf8"));
+  const scale = 26.5e6 / report.inPage.summary.autoGpu.frameNs.p50;
+  for (const frameNs of [report.inPage.summary.autoGpu.frameNs, ...report.inPage.samples.map((sample) => sample.autoGpu.frameNs)]) {
+    for (const key of ["p50", "p95", "mean", "min", "max"]) frameNs[key] *= scale;
+  }
+  const lines = formatAgentReport(finalizeReport(report)).split("\n");
+  assert.equal(lines.find((line) => line.startsWith("Bound:")),
+    "Bound: vsync-capped 60 Hz; GPU 26.5 ms (untrusted), CPU 1.3 ms/frame → primary health.cpuMsPerFrame");
+  assert.equal(lines.find((line) => line.startsWith("Trust:")),
+    "Trust: valid; GPU contended (timestamps exceed the frame interval while frames are on time)");
+  assert.doesNotMatch(lines.join("\n"), /saturated|clock-sensitive/);
+  // A contended capture is not offered as a baseline.
+  assert.match(lines.find((line) => line.startsWith("Next:")), /^Next: Stop other GPU work .* and recapture/);
+  // A comparison with a contended side says so on its Trust line.
+  const contendedAuto = { stability: { status: "stable" }, clockSensitive: true, contended: true, plausibility: { status: "contended" } };
+  const comparison = JSON.parse(await readFile(path.join(root, "test/fixtures/v3/comparison.json"), "utf8"));
+  comparison.gpuTiming = { ...comparison.gpuTiming, auto: { base: contendedAuto, candidate: { stability: { status: "stable" }, clockSensitive: true } } };
+  assert.match(formatAgentComparison(comparison), /^Trust: .*GPU contended base$/m);
+  // A contended hook (no auto timing) keeps its own wording.
+  const hook = { summary: { verdict: "excellent", bottleneck: { class: "vsync-capped", hz: 60 },
+    gpu: { source: "hook", frameMsP50: 3, provenance: "warm", stability: { status: "stable" }, plausibility: { status: "contended" } } } };
+  assert.doesNotMatch(formatAgentReport(hook), /GPU contended/);
 });
 
 test("normalizeCliError infers codes from the message, not from stack frame URLs", () => {

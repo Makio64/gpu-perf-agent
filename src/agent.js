@@ -944,7 +944,7 @@ async function runInspect(args) {
   const { inspectReport, validateInspectOptions, INSPECT_SECTIONS } = await import("./inspect.js");
   const { reportPath, ...requested } = args;
   const section = requested.section ?? "overview";
-  const limit = requested.limit ?? 2;
+  const limit = requested.limit ?? (section === "rounds" ? 10 : 2);
   const offset = requested.offset ?? 0;
 
   if (!INSPECT_SECTIONS.includes(section) && (section === "gpu" || section === "cpu")) {

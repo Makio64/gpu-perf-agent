@@ -1,7 +1,10 @@
+import { aggregateReports } from './ab-runner.js';
 import { reportEnvironment, reportMetrics } from './compare.js';
+import { invalidOption } from './options.js';
+import { median } from './stats.js';
 import { pageErrorCounts, reportValidity } from './validity.js';
 
-export const INSPECT_SECTIONS = Object.freeze(['overview', 'metrics', 'samples', 'errors', 'environment', 'instrumentation', 'trace', 'gpu', 'cpu']);
+export const INSPECT_SECTIONS = Object.freeze(['overview', 'metrics', 'samples', 'errors', 'environment', 'instrumentation', 'trace', 'gpu', 'cpu', 'rounds']);
 export const INSPECT_MAX_BYTES = 16 * 1024;
 
 /** Validate selectors before reading an artifact. This API does not perform I/O. */
@@ -12,7 +15,8 @@ export function validateInspectOptions(options = {}) {
       throw new TypeError(`Unknown inspection option: ${key}.`);
     }
   }
-  const { section = 'overview', metric, offset = 0, limit = 3, runIndex, raw, changed } = options;
+  // A round row is five numbers, so one default page holds a whole 4-10 round A/B.
+  const { section = 'overview', metric, offset = 0, limit = section === 'rounds' ? 10 : 3, runIndex, raw, changed } = options;
   if (!INSPECT_SECTIONS.includes(section)) throw new TypeError(`section must be one of ${INSPECT_SECTIONS.join(', ')}.`);
   integer(offset, 'offset', 0, Number.MAX_SAFE_INTEGER);
   integer(limit, 'limit', 1, 10);
@@ -21,10 +25,15 @@ export function validateInspectOptions(options = {}) {
   if (changed !== undefined && typeof changed !== 'boolean') throw new TypeError('changed must be a boolean.');
   if (metric !== undefined) {
     if (typeof metric !== 'string' || !metric.trim() || metric.length > 1024) throw new TypeError('metric must be a non-empty exact key of at most 1024 characters.');
-    if (section !== 'metrics') throw new TypeError('metric requires section "metrics".');
-    if (offset !== 0) throw new TypeError('An exact metric selection requires offset 0.');
+    if (section === 'rounds') {
+      if (metric.endsWith('*')) throw invalidOption('section "rounds" takes one exact metric key, not a prefix.');
+    } else {
+      if (section !== 'metrics') throw new TypeError('metric requires section "metrics" or "rounds".');
+      if (offset !== 0) throw new TypeError('An exact metric selection requires offset 0.');
+    }
   }
-  if (offset !== 0 && !['metrics', 'samples', 'errors'].includes(section)) throw new TypeError('offset requires metrics, samples, or errors.');
+  if (section === 'rounds' && runIndex !== undefined) throw invalidOption('section "rounds" pairs every A/B round; omit runIndex.');
+  if (offset !== 0 && !['metrics', 'samples', 'errors', 'rounds'].includes(section)) throw new TypeError('offset requires metrics, samples, errors, or rounds.');
   return {
     section,
     ...(metric === undefined ? {} : { metric }),
@@ -41,6 +50,8 @@ export function inspectReport(artifact, options = {}) {
   const selected = validateInspectOptions(options);
   object(artifact, 'Report');
   const runs = Array.isArray(artifact.runs) ? artifact.runs : null;
+  // Only an ab artifact keeps each round; compare and capture reports hold one value per side.
+  if (selected.section === 'rounds' && !runs) throw invalidOption('section "rounds" requires an A/B artifact saved by gpu-perf-agent ab; this report has no runs.');
   let report = artifact;
   let path = '$';
   let run;
@@ -52,11 +63,11 @@ export function inspectReport(artifact, options = {}) {
     path = `runs[${selected.runIndex}].report`;
   }
   const comparison = Array.isArray(report.rows) ? report : Array.isArray(report.comparison?.rows) ? report.comparison : null;
-  if (comparison && !['overview', 'metrics', 'environment'].includes(selected.section)) {
+  if (comparison && !['overview', 'metrics', 'environment', 'rounds'].includes(selected.section)) {
     throw new TypeError(`${selected.section} requires a capture report; select runIndex for an A/B artifact.`);
   }
   // An A/B artifact with no comparison must not masquerade as an empty capture.
-  if (runs && selected.runIndex === undefined && !comparison) throw new TypeError('A/B artifact has no comparison; select runIndex.');
+  if (runs && selected.runIndex === undefined && !comparison) throw new TypeError(selected.section === 'rounds' ? 'A/B artifact has no comparison.' : 'A/B artifact has no comparison; select runIndex.');
 
   const samples = Array.isArray(report.inPage?.samples) ? report.inPage.samples : null;
   const captureStatus = comparison ? null : captureValidity(report);
@@ -189,6 +200,44 @@ export function inspectReport(artifact, options = {}) {
       autoGpu: slimStatsTree(autoGpu),
       hookGpu
     };
+  } else if (selected.section === 'rounds') {
+    const key = selected.metric ?? comparison.primary?.key;
+    if (typeof key !== 'string' || !key) throw invalidOption('The A/B comparison has no primary metric; pass metric to select one.');
+    const row = comparison.rows.find(item => item?.key === key) ?? null;
+    const direction = row?.direction === 'lower' || row?.direction === 'higher' ? row.direction : null;
+    const pairs = roundPairs(runs, key);
+    const present = pairs.some(pair => pair.base !== null || pair.candidate !== null);
+    // A metric neither side measured has no rounds worth paging through.
+    const indices = present ? pageIndices(pairs.length, selected) : [];
+    result.totals.rounds = pairs.length;
+    result.selection.indices = indices.map(index => ({ source: 'rounds', index, runs: pairs[index].runs }));
+    if (present) result.omissions.items += pairs.length - indices.length;
+    // The sign count and median cover every paired round, whatever page is shown.
+    const deltas = pairs.map(pair => pair.delta).filter(Number.isFinite);
+    const tied = deltas.filter(delta => delta === 0).length;
+    const better = direction ? deltas.filter(delta => direction === 'lower' ? delta < 0 : delta > 0).length : null;
+    const word = ['ms', 'ns', 'fps'].includes(row?.unit) ? 'faster' : 'better';
+    data = {
+      metric: key,
+      primary: key === comparison.primary?.key,
+      present,
+      unit: row?.unit ?? null,
+      direction,
+      signs: {
+        pairs: deltas.length,
+        candidateBetter: better,
+        candidateWorse: direction ? deltas.length - better - tied : null,
+        tied,
+        text: direction && deltas.length ? `candidate ${word} in ${better} of ${deltas.length} rounds` : null,
+      },
+      medianDelta: roundNum(median(deltas), 4),
+      comparison: row && { base: row.base ?? null, candidate: row.candidate ?? null, delta: row.delta ?? null, deltaPercent: row.deltaPercent ?? null,
+        status: row.status ?? null, evidence: row.evidence ?? null, confidence95: row.confidence95 ?? null },
+      table: {
+        cols: ['round', 'base', 'candidate', 'delta', 'ratio'],
+        rows: indices.map(index => [pairs[index].round, ...['base', 'candidate', 'delta', 'ratio'].map(field => roundNum(pairs[index][field], 4))])
+      }
+    };
   } else if (selected.section === 'cpu') {
     const cpuProfile = report.cpuProfile ?? null;
     const cpuMsPerFrame = report.summary?.cpuMsPerFrame ?? null;
@@ -216,6 +265,38 @@ function roundNum(value, digits = 2) {
   if (!Number.isFinite(value)) return null;
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
+}
+
+/**
+ * One metric's per-round values, paired the way the paired comparison pairs them:
+ * the i-th base run with the i-th candidate run. Each side goes through
+ * aggregateReports, so a round's value is the one its comparison row averaged.
+ */
+function roundPairs(runs, key) {
+  const indices = { base: [], candidate: [] };
+  runs.forEach((entry, index) => {
+    if (entry?.variant !== 'base' && entry?.variant !== 'candidate') return;
+    object(entry.report, `A/B run ${index} report`);
+    indices[entry.variant].push(index);
+  });
+  if (!indices.base.length || !indices.candidate.length) throw new TypeError('A/B artifact needs base and candidate runs.');
+  const values = {};
+  for (const [variant, list] of Object.entries(indices)) {
+    values[variant] = aggregateReports(list.map(index => runs[index].report)).metricSamples[key] ?? [];
+  }
+  return Array.from({ length: Math.min(indices.base.length, indices.candidate.length) }, (_, index) => {
+    const base = Number.isFinite(values.base[index]) ? values.base[index] : null;
+    const candidate = Number.isFinite(values.candidate[index]) ? values.candidate[index] : null;
+    const paired = base !== null && candidate !== null;
+    return {
+      round: runs[indices.base[index]].round ?? index,
+      runs: { base: indices.base[index], candidate: indices.candidate[index] },
+      base,
+      candidate,
+      delta: paired ? candidate - base : null,
+      ratio: paired && base !== 0 ? candidate / base : null
+    };
+  });
 }
 
 function slimSample(sample) {

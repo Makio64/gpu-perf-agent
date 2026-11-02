@@ -211,12 +211,21 @@ function aggregateSummaryFields(reports) {
   };
 }
 
-// Auto GPU gating state across rounds: saturated or unstable in any round counts for the side.
+// Auto GPU gating state across rounds. Saturated needs a strict majority of rounds (the rule gpuTimingPlausibility
+// applies to samples; an even split is not saturated): one contended round must not close the paired gate, its
+// spread already widens the CI. Unstable in any round counts for the side, as in aggregateGpuTimingEvidence: it
+// only adds a note and never closes the gate. A contended round (not saturated) stays visible in plausibility so
+// the aggregate does not read 'ok'.
 function aggregateAutoGpu(reports) {
   const rounds = reports.map(report => report.autoGpu ?? collectAutoGpuEvidence(report)).filter(item => item.status !== "unavailable");
   if (!rounds.length) return null;
   const metadata = rounds.map(item => item.provenance ? gpuTimingMetadata(item) : item);
   const unstable = metadata.find(item => item.stability?.status === "unstable");
+  const saturatedRounds = metadata.filter(item => item.saturated === true).length;
+  const contendedRounds = metadata.filter(item => item.plausibility?.status === "contended").length;
+  const saturated = saturatedRounds * 2 > metadata.length;
+  // Contended rounds are not this page's cost: a side that is contended (or saturated) in most rounds cannot gate.
+  const contended = !saturated && (saturatedRounds + contendedRounds) * 2 > metadata.length;
   return {
     status: metadata.every(item => item.status === "ok") ? "ok" : metadata.find(item => item.status !== "ok").status,
     source: metadata[0].source ?? null,
@@ -225,9 +234,11 @@ function aggregateAutoGpu(reports) {
     partialFrames: metadata.reduce((total, item) => total + (item.partialFrames || 0), 0),
     provenance: "auto.frame-busy",
     stability: unstable?.stability ?? metadata[0].stability ?? null,
-    plausibility: { status: metadata.some(item => item.saturated) ? "saturated" : "ok",
-      implausibleSamples: metadata.reduce((total, item) => total + (item.plausibility?.implausibleSamples || 0), 0) },
-    saturated: metadata.some(item => item.saturated === true),
+    plausibility: { status: saturated ? "saturated"
+      : metadata.some(item => item.plausibility?.status === "contended") ? "contended" : "ok",
+      implausibleSamples: metadata.reduce((total, item) => total + (item.plausibility?.implausibleSamples || 0), 0), contendedRounds },
+    saturated,
+    contended,
     clockSensitive: metadata.some(item => item.clockSensitive === true) ? true : metadata.every(item => item.clockSensitive === false) ? false : null
   };
 }

@@ -288,6 +288,8 @@ function reportOptions(options, launchArgs) {
     cdpAttached: false,
     gpuTiming: options.gpuTiming !== false,
     readyTimeoutMs: Number(options.readyTimeoutMs ?? 3000),
+    timeoutMs: Number(options.timeoutMs ?? 60000),
+    waitConditionTimeoutMs: options.waitConditionTimeoutMs ?? null,
     allowIdle: Boolean(options.allowIdle),
     networkIdleBudgetMs: Number(options.networkIdleBudgetMs ?? 10000),
     cpuProfile: options.cpuProfile ?? "auto",

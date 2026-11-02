@@ -72,6 +72,37 @@ test("w-gpu-heavy (saturated at 60 FPS) is gpu-bound, needs work for gpu-near-bu
   assert.deepEqual(summary.recommendations[0].id, "gpu-near-budget");
 });
 
+// report-saturated.json with every auto frame time scaled to a pooled p50 of `ms` (frames stay on time at 60 Hz).
+const autoGpuAt = ms => {
+  const report = fixture("report-saturated.json");
+  const scale = ms * 1e6 / report.inPage.summary.autoGpu.frameNs.p50;
+  const scaleNs = frameNs => { for (const key of ["p50", "p95", "mean", "min", "max"]) frameNs[key] *= scale; };
+  scaleNs(report.inPage.summary.autoGpu.frameNs);
+  for (const sample of report.inPage.samples) scaleNs(sample.autoGpu.frameNs);
+  return report;
+};
+
+test("contended auto GPU (26.5 ms at a steady 60 fps, cyprus base2) is untrusted: neither gpu-bound nor saturated", () => {
+  const { summary } = analyzeReport(autoGpuAt(26.5));
+  assert.equal(summary.gpu.plausibility.status, "contended");
+  assert.equal(summary.gpu.frameMsP50, 26.5, "the measured value stays visible");
+  assert.equal(summary.bottleneck.class, "vsync-capped");
+  assert.equal(summary.bottleneck.gpuSaturated, false);
+  assert.equal(summary.bottleneck.gpuMs, null);
+  assert.equal(summary.bottleneck.gpuSource, null);
+  assert.equal(summary.bottleneck.gpuShare, null);
+  assert.match(summary.bottleneck.reason, /GPU headroom unknown/);
+  assert.ok(!codes(summary).includes("gpu-near-budget"));
+  // The same GPU time with frames missing vsync is a GPU-bound page: saturated, as before.
+  const late = autoGpuAt(26.5);
+  late.inPage.summary.frameDeltasMs = late.inPage.summary.frameDeltasMs.map((value, index) => index % 3 ? value : 33.3);
+  const bound = analyzeReport(late).summary;
+  assert.equal(bound.gpu.plausibility.status, "saturated");
+  assert.equal(bound.bottleneck.class, "gpu-bound");
+  assert.equal(bound.bottleneck.gpuSaturated, true);
+  assert.match(bound.bottleneck.reason, /GPU ≥ budget \(saturated\)/);
+});
+
 test("a healthy page with startup sync pipelines stays excellent; the pipelines are info only", () => {
   const { summary } = analyzeReport(fixture("report-capture.json"));
   assert.equal(summary.verdict, "excellent");

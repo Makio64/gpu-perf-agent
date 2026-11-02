@@ -103,6 +103,44 @@ test("inspect CLI returns bounded selected evidence with relative reportPath and
   }
 });
 
+test("inspect --section rounds pairs saved A/B rounds and rejects other reports as invalid options", async () => {
+  const { inspectReport } = await import("../src/inspect.js");
+  const { runABComparison } = await import("../src/ab-runner.js");
+  const directory = await mkdtemp(path.join(tmpdir(), "gpu-inspect-rounds-"));
+  try {
+    const values = { base: [10, 12, 11, 13], candidate: [8, 12.5, 9, 10] };
+    const harness = {
+      async run(options) {
+        const gpuMs = values[options.url.endsWith("a.html") ? "base" : "candidate"].shift();
+        return { inPage: { samples: [{ elapsedMs: 100, measurement: { fps: 60, gpuMs } }], summary: { fps: { mean: 60 } } },
+          options: { durationMs: 100, runner: "fast-cdp", samples: 1, viewport: "320x180", warmup: 1 }, summary: { verdict: "good", warnings: [] } };
+      },
+      async close() {}
+    };
+    const artifact = JSON.parse(JSON.stringify(await runABComparison({ base: "http://127.0.0.1:1/a.html", candidate: "http://127.0.0.1:1/b.html",
+      rounds: 4, primaryMetric: "custom.gpuMs.mean" }, { harness })));
+    const abPath = path.join(directory, "ab.json");
+    await writeFile(abPath, JSON.stringify(artifact));
+    const result = spawnSync(process.execPath, [cli, "inspect", "--report", abPath, "--section", "rounds"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output, { reportPath: abPath, ...inspectReport(artifact, { section: "rounds" }) });
+    assert.equal(output.data.table.rows.length, 4);
+    assert.equal(output.data.signs.text, "candidate faster in 3 of 4 rounds");
+    assert.equal(output.data.medianDelta, -2);
+
+    const capturePath = path.join(directory, "capture.json");
+    await writeFile(capturePath, JSON.stringify(artifact.runs[0].report));
+    for (const args of [["--report", capturePath, "--section", "rounds"], ["--report", abPath, "--section", "rounds", "--run", "0"]]) {
+      const invalid = spawnSync(process.execPath, [cli, "inspect", ...args], { encoding: "utf8" });
+      assert.equal(invalid.status, 3);
+      assert.equal(JSON.parse(invalid.stdout).error.code, "invalid-options");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("unknown commands and invalid sampling values return JSON with exit 3 without launching Chrome", () => {
   for (const args of [
     ["oops"],

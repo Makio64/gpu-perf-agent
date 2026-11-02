@@ -591,7 +591,8 @@ export function installAutoInstrumentation(options = {}) {
 
   function patchSetPipeline(pass) {
     if (!config.gpuTiming) return;
-    // One identity comparison per call; the label is read only for a pass key's first pass.
+    // One identity comparison per call; the label is read only for a pass key's first timed pass (an ordinal
+    // key's again in steady state).
     replaceMethod(pass, "setPipeline", (original) => function gpuPerfSetPipeline(pipeline) {
       if (this === timing.pipelinePass) {
         timing.pipelinePass = null;
@@ -1218,7 +1219,8 @@ export function installAutoInstrumentation(options = {}) {
     }
   }
 
-  // Call sites: one stack parse, only on a pass key's first occurrence or an unlabelled creation call.
+  // Call sites: one stack parse, only on a pass key's first occurrence (an ordinal key's first again in steady
+  // state) or an unlabelled creation call.
   function callSite() {
     let stack = "";
     const limit = Error.stackTraceLimit;
@@ -1273,6 +1275,9 @@ export function installAutoInstrumentation(options = {}) {
   }
 
   // Pass keys: descriptor.label, else `${type}#${ordinalWithinFrame}`. At most 64 keys own duration rings.
+  // An ordinal is a position in the frame, not a pass: init-time passes (PMREM, intro scenes) take the ordinals
+  // that steady-state passes reuse later. beginSteadyState() marks ordinal keys stale, and the next pass at the
+  // ordinal reads its site and pipeline again: one stack parse per key, from a measured frame.
   function passKeyIndex(type, label, ordinal) {
     if (label) {
       let index = timing.labelKeys.get(label);
@@ -1287,6 +1292,14 @@ export function installAutoInstrumentation(options = {}) {
     if (index === undefined) {
       index = createPassKey(`${type}#${ordinal}`, type, null, true);
       if (ordinal < 256) cache[ordinal] = index;
+    } else if (index >= 0 && timing.passKeys[index].stale) {
+      const key = timing.passKeys[index];
+      const where = config.callSites ? callSite() : null;
+      key.appSite = where?.appSite ?? null;
+      key.site = where?.site ?? null;
+      // Read again by this pass's first setPipeline when the pass is timed (timedPassDescriptor).
+      key.pipeline = undefined;
+      key.stale = false;
     }
     return index;
   }
@@ -1302,6 +1315,7 @@ export function installAutoInstrumentation(options = {}) {
       label,
       pipeline: undefined,
       site: where?.site ?? null,
+      stale: false,
       tag: new Int32Array(PASS_FRAMES).fill(-1),
       type
     });
@@ -2385,9 +2399,13 @@ export function installAutoInstrumentation(options = {}) {
 
   const instrumentation = {
     // Called by collectInPage after warmup: per-pass rings stay as allocated, and churn call-site sampling starts.
+    // Ordinal pass keys go stale so that their site and pipeline come from the measured frames (passKeyIndex).
     beginSteadyState() {
       timing.steadyState = true;
       churn.active = config.callSites;
+      for (const cache of [timing.ordinalKeys.render, timing.ordinalKeys.compute]) {
+        for (const index of cache) if (index >= 0) timing.passKeys[index].stale = true;
+      }
     },
     counters: counterValues,
     frames: {
