@@ -9,7 +9,7 @@ import test from "node:test";
 const root = path.resolve(new URL("..", import.meta.url).pathname);
 const cli = path.join(root, "src", "cli.js");
 
-test("package exposes gpu-perf-agent and compatibility binaries, and --version prints 2.2.0", async () => {
+test("package exposes gpu-perf-agent and compatibility binaries, and --version prints 2.3.0", async () => {
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.name, "gpu-perf-agent");
   assert.equal(pkg.bin["gpu-perf-agent"], "./src/cli.js");
@@ -18,7 +18,7 @@ test("package exposes gpu-perf-agent and compatibility binaries, and --version p
   for (const flag of ["--version", "-v"]) {
     const res = spawnSync(process.execPath, [cli, flag], { cwd: root, encoding: "utf8" });
     assert.equal(res.status, 0);
-    assert.equal(res.stdout.trim(), "gpu-perf-agent 2.2.0");
+    assert.equal(res.stdout.trim(), "gpu-perf-agent 2.3.0");
   }
 });
 

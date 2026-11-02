@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { requestJson } from "./http-client.js";
 import { processAlive } from "./measure-lock.js";
 
-const TOOL_VERSION = "2.2.0";
+const TOOL_VERSION = "2.3.0";
 
 const SRC_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));

@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.2.0" });
+const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.3.0" });
 
 function relPath(targetPath, cwd = process.cwd()) {
   if (!targetPath || typeof targetPath !== "string") return "";

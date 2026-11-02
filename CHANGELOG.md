@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.3.0
+
+Driven by running the agent skill end to end on two real WebGPU three.js projects.
+
+- **Clearer A/B verdicts:** the paired status line names why a row did not decide (`gpu-saturated`, `gpu-contended`, `vsync-pinned`) or the boundary an inconclusive CI still has to clear (`needs CI beyond ±0.52 ms`). One contended round no longer closes the auto-GPU gate: a side counts as saturated only when most rounds are.
+- **GPU contention detection:** automatic GPU timing above 1.2x the frame interval while frames stay on time is marked `contended` (other GPU work on the machine). It is untrusted in the bottleneck analysis, flagged on `Trust:` lines, not offered as a baseline, and a side contended in most `ab` rounds cannot gate the comparison.
+- **Accurate pass labels:** unlabelled passes take their source location and pipeline name from the first steady-state pass, not from init-time work such as PMREM or intro scenes.
+- **`inspect --section rounds`** (CLI and MCP): per-round baseline/candidate values, the sign count ("candidate faster in 7 of 8 rounds") and the median paired delta for `ab` artifacts.
+- **Reproducible confirmation command:** the printed `Next: confirm with ab` keeps `--chromium-arg` (including the ANGLE backend), `--wait-condition-timeout`, `--ready-timeout`, `--timeout` and `--headful`; reports now record their timeouts. `capture-cleanup-failed` prints a CLI hint.
+- **Agent skill:** capture at the user's device viewport and pixel ratio, wait past loaders and intros, a GPU-share rule for "no bottleneck", `npx gpu-perf-agent@latest` over old project pins, what `ab` UNVERIFIED/INCONCLUSIVE mean, readiness timeouts, GPU contention, and how to handle many cheap post-processing passes or resolution-bound cost.
+
 ## 2.2.0
 
 - **Schema v3 & automatic per-pass GPU timing:** `installAutoInstrumentation` now includes a 32-slot × 64-pass WebGPU timestamp ring timer (`timestampWrites`) and WebGL2 `EXT_disjoint_timer_query_webgl2` per-frame timer by default (`--no-gpu-timing` opts out). Reports include interval-union `summary.gpu.frameMsP50`, `overlapRatio`, `idleGapRatio`, and top passes by exclusive duration with call-site labels (`summary.gpu.passes`).
