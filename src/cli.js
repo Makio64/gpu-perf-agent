@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.3.0" });
+const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.4.0" });
 
 function relPath(targetPath, cwd = process.cwd()) {
   if (!targetPath || typeof targetPath !== "string") return "";
@@ -207,14 +207,58 @@ const COMMAND_OPTIONS = {
     url: { type: "string", desc: "URL to open." },
     out: { type: "string", desc: "Output .trace path." },
     template: { type: "string", desc: "Instruments template (default: Metal System Trace)." },
-    "time-limit": { type: "string", desc: "Recording duration (default: 15s)." }
+    "time-limit": { type: "string", desc: "Recording duration (default: 15s)." },
+    input: { type: "string", desc: "Existing .trace bundle to summarize or export via xctrace." },
+    xpath: { type: "string", desc: "XPath query to export from --input .trace bundle." },
+    "max-bytes": { type: "string", desc: "Max XML bytes returned by --xpath (default: 32768)." },
+    json: { type: "boolean", desc: "Emit machine-readable JSON output." }
+  },
+  shader: {
+    file: { type: "string", desc: "Shader file (.wgsl, .metal, .glsl) or local HTML file to extract shaders from." },
+    "file-root": { type: "string", desc: "Serve module imports from a sibling project root when --file is HTML." },
+    url: { type: "string", desc: "Live URL to extract compiled WebGPU WGSL + Dawn MSL shaders from." },
+    base: { type: "string", desc: "Baseline shader file for fast offline compiler A/B comparison." },
+    candidate: { type: "string", desc: "Candidate shader file for fast offline compiler A/B comparison." },
+    filter: { type: "string", desc: "Filter extracted live shaders by label or source substring." },
+    "dump-dir": { type: "string", desc: "Directory to save extracted .wgsl and Dawn .metal shader sources." },
+    limit: { type: "string", desc: "Max live shaders to compile-analyze (default: 8)." },
+    "settle-ms": { type: "string", desc: "Wait duration in ms before collecting live shaders (default: 1500)." },
+    "no-compiler": { type: "boolean", desc: "Run fast static hazard analysis only (skip naga / xcrun metal)." },
+    channel: { type: "string", desc: "Chrome channel when extracting live shaders." },
+    "executable-path": { type: "string", desc: "Explicit Chrome binary path when extracting live shaders." },
+    headful: { type: "boolean", desc: "Launch visible browser when extracting live shaders." },
+    out: { type: "string", desc: "Write full shader analysis JSON to file." },
+    json: { type: "boolean", desc: "Emit machine-readable JSON output." }
+  },
+  audit: {
+    url: { type: "string", desc: "Target URL for deep WebGPU structural & TBDR bandwidth audit." },
+    file: { type: "string", desc: "Local HTML file to serve and audit." },
+    "file-root": { type: "string", desc: "Serve module imports from a sibling project root." },
+    "settle-ms": { type: "string", desc: "Steady-state settle window in ms (default: 1500)." },
+    "wait-condition": { type: "string", desc: "JS expression to await before settling." },
+    "wait-condition-timeout": { type: "string", desc: "Timeout in ms for --wait-condition (default: 15000)." },
+    viewport: { type: "string", desc: "Viewport dimensions WIDTHxHEIGHT (default: 1280x720)." },
+    "device-scale-factor": { type: "string", desc: "Device pixel ratio override (default: 1)." },
+    cdp: { type: "string", desc: "Attach to an existing Chrome debugging port or ws:// URL." },
+    channel: { type: "string", desc: "Chrome channel." },
+    "executable-path": { type: "string", desc: "Explicit Chrome binary path." },
+    "chromium-arg": { type: "string", multiple: true, desc: "Additional Chromium launch flag." },
+    headful: { type: "boolean", desc: "Launch a visible browser window." },
+    out: { type: "string", desc: "Write full audit JSON report to file." },
+    json: { type: "boolean", desc: "Emit machine-readable JSON output." }
+  },
+  agx: {
+    "duration-ms": { type: "string", desc: "Sampling window in ms (default: 1500; 0 for instant snapshot)." },
+    "interval-ms": { type: "string", desc: "Polling interval in ms (default: 200)." },
+    out: { type: "string", desc: "Write AGX hardware telemetry JSON to file." },
+    json: { type: "boolean", desc: "Emit machine-readable JSON output." }
   }
 };
 
 const rawArgv = process.argv.slice(2);
 const command = rawArgv[0] || "help";
 const wantsJson = rawArgv.includes("--json") || rawArgv.includes("--json-full") || command === "inspect";
-if (["agent", "run", "ab", "doctor"].includes(command)) installSignalHandlers();
+if (["agent", "run", "ab", "doctor", "audit", "shader"].includes(command)) installSignalHandlers();
 
 try {
   if (command === "--version" || command === "-v" || (rawArgv.includes("--version") && !rawArgv.some((a) => a.startsWith("--url") || a.startsWith("--file")))) {
@@ -244,6 +288,12 @@ try {
     await serveCommand(rawArgv.slice(1));
   } else if (command === "xctrace") {
     await xctraceCommand(rawArgv.slice(1));
+  } else if (command === "shader") {
+    await shaderCommand(rawArgv.slice(1));
+  } else if (command === "audit") {
+    await auditCommand(rawArgv.slice(1));
+  } else if (command === "agx") {
+    await agxCommand(rawArgv.slice(1));
   } else {
     throw Object.assign(new Error(`Unknown command "${command}". Run --help for usage.`), {
       code: "invalid-options",
@@ -802,18 +852,229 @@ async function mcpCommand(args) {
 }
 
 async function xctraceCommand(args) {
-  const { recordMacOSXctrace } = await import("./native/macos-xctrace.js");
+  const {
+    exportMacOSXctraceXpath,
+    recordMacOSXctrace,
+    summarizeMacOSXctrace
+  } = await import("./native/macos-xctrace.js");
   const { values } = parseCommandArgs("xctrace", args);
+
+  if (values.input) {
+    if (values.xpath) {
+      const exported = await exportMacOSXctraceXpath(values.input, values.xpath, {
+        ...(values["max-bytes"] !== undefined ? { maxBytes: numberOption(values["max-bytes"], 32768) } : {})
+      });
+      if (values.out) {
+        const outPath = path.resolve(values.out);
+        await mkdir(path.dirname(outPath), { recursive: true });
+        await writeFile(outPath, values.json ? JSON.stringify(exported, null, 2) : exported.xml);
+      }
+      if (values.json) {
+        console.log(JSON.stringify(exported, null, 2));
+      } else {
+        console.log(exported.xml);
+      }
+      return;
+    }
+
+    const summary = await summarizeMacOSXctrace(values.input);
+    if (values.out) {
+      const outPath = path.resolve(values.out);
+      await mkdir(path.dirname(outPath), { recursive: true });
+      await writeFile(outPath, JSON.stringify(summary, null, 2));
+    }
+    if (values.json) {
+      console.log(JSON.stringify(summary, null, 2));
+    } else if (!summary.ok) {
+      throw Object.assign(new Error(summary.error || "xctrace export failed."), { code: "command-failed" });
+    } else {
+      console.log(`xctrace trace: ${relPath(summary.tracePath)}`);
+      console.log(`Device: ${summary.device?.name || "macOS"} (${summary.device?.model || "Mac"}, ${summary.device?.osVersion || ""})`);
+      console.log(`Duration: ${summary.timing?.durationSeconds ?? "n/a"}s | Tables: ${summary.tableCount} (${summary.gpuTableCount} GPU/Metal)`);
+      for (const tbl of (summary.gpuTables || [])) {
+        console.log(`  [${tbl.schema}] --xpath '${tbl.xpath}'`);
+      }
+    }
+    return;
+  }
 
   const result = await recordMacOSXctrace({
     app: values.app,
     file: values.file,
+    inherit: !values.json,
     out: values.out,
     template: values.template || "Metal System Trace",
     timeLimit: values["time-limit"] || "15s",
     url: values.url
   });
-  console.log(`xctrace output: ${result.output}`);
+  if (values.json) {
+    console.log(JSON.stringify({ ok: true, ...result }, null, 2));
+  } else {
+    console.log(`xctrace output: ${result.output}`);
+    if (result.summaryPath) console.log(`xctrace summary: ${result.summaryPath}`);
+  }
+}
+
+async function shaderCommand(args) {
+  const {
+    analyzeShader,
+    compareShaderAnalyses,
+    extractAndAnalyzePageShaders,
+    formatShaderComparisonDigest,
+    formatShaderDigest
+  } = await import("./shader-analyzer.js");
+  const { values } = parseCommandArgs("shader", args);
+  const skipCompiler = Boolean(values["no-compiler"]);
+
+  // 1. Offline compiler A/B comparison mode: --base <file> --candidate <file>
+  if (values.base || values.candidate) {
+    if (!values.base || !values.candidate) {
+      throw Object.assign(new Error("Pass both --base <shader> and --candidate <shader> for shader comparison."), { code: "invalid-options" });
+    }
+    const basePath = path.resolve(values.base);
+    const candPath = path.resolve(values.candidate);
+    const [baseCode, candCode] = await Promise.all([
+      readFile(basePath, "utf8").catch(() => {
+        throw Object.assign(new Error(`File not found: ${basePath}`), { code: "file-not-found" });
+      }),
+      readFile(candPath, "utf8").catch(() => {
+        throw Object.assign(new Error(`File not found: ${candPath}`), { code: "file-not-found" });
+      })
+    ]);
+    const [baseRes, candRes] = await Promise.all([
+      analyzeShader(baseCode, { filePath: basePath, label: path.basename(basePath), skipCompiler }),
+      analyzeShader(candCode, { filePath: candPath, label: path.basename(candPath), skipCompiler })
+    ]);
+    const comparison = compareShaderAnalyses(baseRes, candRes);
+    const payload = { ok: true, mode: "compare", comparison, base: baseRes, candidate: candRes };
+    if (values.out) {
+      const outPath = path.resolve(values.out);
+      await mkdir(path.dirname(outPath), { recursive: true });
+      await writeFile(outPath, JSON.stringify(payload, null, 2));
+    }
+    if (values.json) {
+      console.log(JSON.stringify(payload, null, 2));
+    } else {
+      console.log(formatShaderComparisonDigest(comparison));
+    }
+    return;
+  }
+
+  // 2. Live URL or local HTML page extraction mode
+  const isHtmlFile = values.file && /\.html?$/i.test(values.file);
+  if (values.url || isHtmlFile) {
+    if (values.url && values.file) {
+      throw Object.assign(new Error("Choose --url or --file, not both."), { code: "invalid-options" });
+    }
+    const extracted = await extractAndAnalyzePageShaders({
+      url: values.url,
+      file: values.file,
+      fileRoot: values["file-root"],
+      filter: values.filter,
+      dumpDir: values["dump-dir"],
+      limit: values.limit !== undefined ? numberOption(values.limit, 8) : 8,
+      settleMs: values["settle-ms"] !== undefined ? numberOption(values["settle-ms"], 1500) : 1500,
+      skipCompiler,
+      channel: values.channel,
+      executablePath: values["executable-path"],
+      headful: Boolean(values.headful)
+    });
+    const payload = { ok: true, mode: "live-extract", ...extracted };
+    if (values.out) {
+      const outPath = path.resolve(values.out);
+      await mkdir(path.dirname(outPath), { recursive: true });
+      await writeFile(outPath, JSON.stringify(payload, null, 2));
+    }
+    if (values.json) {
+      console.log(JSON.stringify(payload, null, 2));
+    } else {
+      console.log(`EXTRACTED SHADERS: ${extracted.analyzedCount}/${extracted.totalShaderModules} analyzed (Dawn MSL dumps: ${extracted.dawnMslDumpCount})${extracted.dumpDir ? ` -> ${relPath(extracted.dumpDir)}` : ""}`);
+      for (const sh of extracted.shaders) {
+        console.log("---");
+        console.log(formatShaderDigest(sh));
+      }
+    }
+    return;
+  }
+
+  // 3. Single offline shader file (.wgsl, .metal, .msl, .glsl, .vert, .frag, .comp)
+  if (!values.file) {
+    throw Object.assign(
+      new Error("Pass --file <shader.wgsl|.metal|.html>, --url <URL>, or --base <A> --candidate <B>."),
+      { code: "invalid-options" }
+    );
+  }
+  const filePath = path.resolve(values.file);
+  const code = await readFile(filePath, "utf8").catch(() => {
+    throw Object.assign(new Error(`File not found: ${filePath}`), { code: "file-not-found" });
+  });
+  const analysis = await analyzeShader(code, {
+    filePath,
+    label: path.basename(filePath),
+    skipCompiler
+  });
+  const payload = { ok: true, mode: "single", ...analysis };
+  if (values.out) {
+    const outPath = path.resolve(values.out);
+    await mkdir(path.dirname(outPath), { recursive: true });
+    await writeFile(outPath, JSON.stringify(payload, null, 2));
+  }
+  if (values.json) {
+    console.log(JSON.stringify(payload, null, 2));
+  } else {
+    console.log(formatShaderDigest(analysis));
+  }
+}
+
+async function auditCommand(args) {
+  const { auditWebGPUPage, formatAuditDigest } = await import("./deep-audit.js");
+  const { values } = parseCommandArgs("audit", args);
+
+  const report = await auditWebGPUPage({
+    url: values.url,
+    file: values.file,
+    fileRoot: values["file-root"],
+    settleMs: values["settle-ms"] !== undefined ? numberOption(values["settle-ms"], 1500) : 1500,
+    waitCondition: values["wait-condition"],
+    waitConditionTimeoutMs: values["wait-condition-timeout"] !== undefined ? numberOption(values["wait-condition-timeout"], 15000) : 15000,
+    viewport: values.viewport || "1280x720",
+    deviceScaleFactor: values["device-scale-factor"] !== undefined ? numberOption(values["device-scale-factor"], 1) : 1,
+    cdp: values.cdp,
+    channel: values.channel,
+    executablePath: values["executable-path"],
+    chromiumArgs: values["chromium-arg"] || [],
+    headful: Boolean(values.headful)
+  });
+
+  if (values.out) {
+    const outPath = path.resolve(values.out);
+    await mkdir(path.dirname(outPath), { recursive: true });
+    await writeFile(outPath, JSON.stringify(report, null, 2));
+  }
+  if (values.json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatAuditDigest(report));
+  }
+}
+
+async function agxCommand(args) {
+  const { formatAgxDigest, sampleMacOSAgx } = await import("./native/macos-agx.js");
+  const { values } = parseCommandArgs("agx", args);
+  const durationMs = values["duration-ms"] !== undefined ? numberOption(values["duration-ms"], 1500) : 1500;
+  const intervalMs = values["interval-ms"] !== undefined ? numberOption(values["interval-ms"], 200) : 200;
+
+  const report = await sampleMacOSAgx({ durationMs, intervalMs });
+  if (values.out) {
+    const outPath = path.resolve(values.out);
+    await mkdir(path.dirname(outPath), { recursive: true });
+    await writeFile(outPath, JSON.stringify(report, null, 2));
+  }
+  if (values.json) {
+    console.log(JSON.stringify({ ok: Boolean(report.available), ...report }, null, 2));
+  } else {
+    console.log(formatAgxDigest(report));
+  }
 }
 
 async function serveCommand(args) {
@@ -1120,6 +1381,9 @@ Usage:
   gpu-perf-agent compare --base reports/base-1.json --candidate reports/cand-1.json
   gpu-perf-agent inspect --report reports/base-1.json --section overview
   gpu-perf-agent doctor [--quick] [--json]
+  gpu-perf-agent audit --url http://localhost:5173 [--json]
+  gpu-perf-agent shader --base old.wgsl --candidate new.wgsl
+  gpu-perf-agent agx [--duration-ms 1500] [--json]
   gpu-perf-agent serve --port 9099 --auto-instrument
   gpu-perf-agent mcp [--report-dir reports]
   gpu-perf-agent xctrace --url http://localhost:5173 --time-limit 15s

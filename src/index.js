@@ -37,7 +37,38 @@ export {
 } from "./daemon.js";
 export { runReport as runPlaywrightReport } from "./runner.js";
 export { startReportServer } from "./report-server.js";
-export { macOSProfilerStatus, recordMacOSXctrace } from "./native/macos-xctrace.js";
+export {
+  exportMacOSXctraceXpath,
+  macOSProfilerStatus,
+  parseXctraceTocXml,
+  recordMacOSXctrace,
+  summarizeMacOSXctrace
+} from "./native/macos-xctrace.js";
+export {
+  formatAgxDigest,
+  parseIoregAccelerator,
+  sampleMacOSAgx,
+  snapshotMacOSAgx,
+  summarizeAgxSamples
+} from "./native/macos-agx.js";
+export {
+  analyzeShader,
+  analyzeShaderStatic,
+  compareShaderAnalyses,
+  detectShaderLanguage,
+  extractAndAnalyzePageShaders,
+  formatShaderComparisonDigest,
+  formatShaderDigest,
+  normalizeNagaMslBindings,
+  parseMetalAirDisassembly
+} from "./shader-analyzer.js";
+export {
+  analyzeAuditSnapshot,
+  auditWebGPUPage,
+  deepAuditInitSource,
+  estimateTextureBytes,
+  formatAuditDigest
+} from "./deep-audit.js";
 export { autoInstrumentationSource, installAutoInstrumentation } from "./browser/auto-instrument.js";
 export {
   applyOptionPrecedence,

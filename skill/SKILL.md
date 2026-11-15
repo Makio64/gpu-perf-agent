@@ -92,13 +92,18 @@ Fetch details with `inspect` (2.2+) instead of loading the whole report:
 
 | Observed | Next useful evidence |
 | --- | --- |
-| `gpu-bound`, high GPU p50 | `Passes (excl p50)` line, `inspect --section gpu`; separate arithmetic, bandwidth, overdraw and dispatch costs |
-| `cpu-bound` / `submission-bound` | `CPU:` line, draws/f, `inspect --section cpu` |
-| Slow frames, high p95, `Hitch:` line | Reproduce the spike; look at uploads, pipeline creation and GC |
-| Growing allocations | Repeat the same load/unload cycle and check resources are released |
+| `gpu-bound`, high GPU p50 | `Passes (excl p50)` line, `inspect --section gpu`; on WebGPU/macOS run `audit` (TBDR `storeOp`/texture/vertex leaks), `agx` (Renderer% vs Tiler% & `SplitSceneCount`), and `shader` (Metal AIR / `applegpu` ISA & register ceiling) |
+| `cpu-bound` / `submission-bound` | `CPU:` line, draws/f, `inspect --section cpu`, `audit` (per-frame bind group churn, sync pipelines, `GPURenderBundle` / indirect opportunities) |
+| Slow frames, high p95, `Hitch:` line | Reproduce the spike; look at uploads, sync pipeline creation (`audit`) and GC |
+| Growing allocations | Repeat the same load/unload cycle; check WebGPU resources (`audit`) and OS wired GPU memory (`agx`) |
 
 Read [measurement.md](references/measurement.md) for GPU timing hooks, which changes to try
-for each kind of evidence, fixed-work compute, budgets and inconclusive results.
+for each kind of evidence, fixed-work compute, budgets and inconclusive results. On macOS /
+Apple Silicon, read [apple-silicon-optimization.md](references/apple-silicon-optimization.md)
+for TBDR `loadOp`/`storeOp`, WGSL `f16`/subgroups/math, ASTC/KTX2/`rg11b10ufloat` textures,
+and pipeline/vertex packing rules, and [deep-diagnostics-macos.md](references/deep-diagnostics-macos.md)
+for the 100 ms `shader --base/--candidate` compiler loop, live Dawn MSL dumps, `audit`,
+`agx`, and headless `xctrace`.
 
 **4. Change one thing**, then verify output: compare screenshots (`--screenshot-out`), read
 back results, or run the app's tests. Keep precision, sample counts and quality. If a gain

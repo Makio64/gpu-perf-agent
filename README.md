@@ -78,6 +78,9 @@ For more confidence, use [interleaved A/B runs](https://github.com/Makio64/gpu-p
 | --- | --- |
 | Inspect a visual report | `npx gpu-perf-agent agent --url http://localhost:5173 --html` |
 | Profile a static build | `npx gpu-perf-agent agent --file dist/index.html --file-root dist` |
+| Audit WebGPU TBDR bandwidth, textures & pipelines | `npx gpu-perf-agent audit --url http://localhost:5173` |
+| Diff WGSL/MSL shaders in ~80 ms on Apple Metal | `npx gpu-perf-agent shader --base old.wgsl --candidate new.wgsl` |
+| Sample macOS Apple AGX Renderer vs Tiler counters | `npx gpu-perf-agent agx --duration-ms 1500` |
 | Get machine-readable output | Add `--json` |
 | Connect an MCP client | `npx gpu-perf-agent mcp` |
 | Keep Chrome ready for repeated jobs | `npx gpu-perf-agent serve --port 9099 --auto-instrument` |

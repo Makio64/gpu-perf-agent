@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -68,14 +68,148 @@ export async function recordMacOSXctrace(options = {}) {
     ...chromeArgs
   ];
 
-  await run("xcrun", args, { inherit: true });
+  await run("xcrun", args, { inherit: options.inherit !== false });
+
+  let summary = null;
+  let summaryPath = null;
+  if (options.summarize !== false) {
+    summary = await summarizeMacOSXctrace(output).catch(() => null);
+    if (summary?.ok) {
+      summaryPath = `${output}.summary.json`;
+      await writeFile(summaryPath, JSON.stringify(summary, null, 2)).catch(() => {});
+    }
+  }
+
   return {
     app: chrome,
     command: ["xcrun", ...args],
     output,
+    summary,
+    summaryPath,
     target,
     template: options.template || "Metal System Trace"
   };
+}
+
+/**
+ * Parse `xcrun xctrace export --input <trace> --toc` XML into an agent-readable
+ * JSON summary of recorded Metal/GPU tables and ready-to-run XPath queries.
+ */
+export function parseXctraceTocXml(xml = "") {
+  if (typeof xml !== "string" || !xml.trim()) {
+    return { ok: false, reason: "Empty xctrace TOC XML." };
+  }
+  const attr = (tagSnippet, name) => {
+    const m = new RegExp(`${name}="([^"]*)"`).exec(tagSnippet);
+    return m ? decodeXmlEntities(m[1]) : null;
+  };
+
+  const deviceTag = /<device\b([^>]*)\/?>/.exec(xml)?.[1] || "";
+  const targetProcessTag = /<process\b[^>]*type="target"([^>]*)\/?>/.exec(xml)?.[0]
+    || /<target>\s*<process\b([^>]*)\/?>/.exec(xml)?.[0] || "";
+  const startMatch = /<start-date>([^<]+)<\/start-date>/.exec(xml);
+  const endMatch = /<end-date>([^<]+)<\/end-date>/.exec(xml);
+  const durationMatch = /<duration>([^<]+)<\/duration>/.exec(xml);
+
+  const tables = [];
+  const tableRegex = /<table\b([^>]*)\/?>/g;
+  let match;
+  while ((match = tableRegex.exec(xml)) !== null) {
+    const raw = match[1];
+    const schema = attr(raw, "schema");
+    if (!schema) continue;
+    const attributes = {};
+    const kv = /([A-Za-z0-9_-]+)="([^"]*)"/g;
+    let pair;
+    while ((pair = kv.exec(raw)) !== null) {
+      if (pair[1] !== "schema") attributes[pair[1]] = decodeXmlEntities(pair[2]);
+    }
+    const isGpuOrMetal = /metal|gpu|agx|shader|display|surface|frame/i.test(schema);
+    tables.push({
+      schema,
+      gpuRelated: isGpuOrMetal,
+      attributes,
+      xpath: `/trace-toc/run[@number="1"]/data/table[@schema="${schema}"]`
+    });
+  }
+
+  return {
+    ok: true,
+    device: deviceTag ? {
+      name: attr(deviceTag, "name"),
+      model: attr(deviceTag, "model"),
+      osVersion: attr(deviceTag, "os-version"),
+      platform: attr(deviceTag, "platform")
+    } : null,
+    targetProcess: targetProcessTag ? {
+      name: attr(targetProcessTag, "name"),
+      pid: attr(targetProcessTag, "pid") ? Number(attr(targetProcessTag, "pid")) : null
+    } : null,
+    timing: {
+      startDate: startMatch?.[1]?.trim() || null,
+      endDate: endMatch?.[1]?.trim() || null,
+      durationSeconds: durationMatch ? Number(durationMatch[1]) : null
+    },
+    tableCount: tables.length,
+    gpuTableCount: tables.filter((t) => t.gpuRelated).length,
+    gpuTables: tables.filter((t) => t.gpuRelated),
+    otherSchemas: [...new Set(tables.filter((t) => !t.gpuRelated).map((t) => t.schema))]
+  };
+}
+
+export async function summarizeMacOSXctrace(tracePath) {
+  if (process.platform !== "darwin") {
+    throw new Error("xctrace export is only supported on macOS.");
+  }
+  const resolved = path.resolve(tracePath);
+  const toc = await capture("xcrun", ["xctrace", "export", "--input", resolved, "--toc"]);
+  if (!toc.ok) {
+    return {
+      ok: false,
+      tracePath: resolved,
+      error: (toc.stderr || toc.stdout || "xctrace export --toc failed").trim()
+    };
+  }
+  const devTools = await capture("DevToolsSecurity", ["-status"]);
+  const devModeEnabled = /enabled/i.test(devTools.stdout) && !/disabled/i.test(devTools.stdout);
+  return {
+    tracePath: resolved,
+    developerModeEnabled: devModeEnabled,
+    ...parseXctraceTocXml(toc.stdout)
+  };
+}
+
+export async function exportMacOSXctraceXpath(tracePath, xpath, { maxBytes = 32768 } = {}) {
+  if (process.platform !== "darwin") {
+    throw new Error("xctrace export is only supported on macOS.");
+  }
+  const resolved = path.resolve(tracePath);
+  const res = await capture("xcrun", ["xctrace", "export", "--input", resolved, "--xpath", xpath]);
+  if (!res.ok) {
+    throw new Error((res.stderr || res.stdout || "xctrace export --xpath failed").trim());
+  }
+  const totalBytes = Buffer.byteLength(res.stdout, "utf8");
+  const truncated = totalBytes > maxBytes;
+  const xml = truncated ? res.stdout.slice(0, maxBytes) : res.stdout;
+  const rowCount = (res.stdout.match(/<row\b/g) || []).length;
+  return {
+    ok: true,
+    tracePath: resolved,
+    xpath,
+    rowCount,
+    totalBytes,
+    truncated,
+    xml
+  };
+}
+
+function decodeXmlEntities(str) {
+  return str
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }
 
 function defaultChromeBinary() {

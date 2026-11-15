@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.4.0
+
+Deep WebGPU structural auditing, ~80 ms offline Apple Metal shader compilation A/B, non-sudo Apple AGX hardware telemetry, and Apple Silicon optimization playbooks.
+
+- **`audit` command (`auditWebGPUPage`, `analyzeAuditSnapshot`):** live WebGPU structural and TBDR bandwidth auditor inspecting multisampled `resolveTarget` + `storeOp: "store"` leaks, transient depth `storeOp: "store"` leaks, non-sampled opaque Z-prepasses, consecutive single-draw full-screen post-FX chains, `>= 512x512` sampled textures missing mipmaps, uncompressed `rgba8unorm` static textures, `rgba16float` vs `rg11b10ufloat` render targets, unpacked `float32` secondary vertex attributes, synchronous pipeline creation, duplicate WGSL modules, and per-frame bind-group/resource churn.
+- **`shader` command (`analyzeShader`, `compareShaderAnalyses`, `extractAndAnalyzePageShaders`):** ~80 ms offline `--base`/`--candidate` shader compiler A/B loop combining WGSL/GLSL/MSL static hazard detection, `naga`/`spirv-cross` MSL transpilation, `xcrun metal -O2` AIR instruction breakdown (`f32`, `f16`, `fma`, `fpext`/`fptrunc` conversions, transcendentals, texture/device/threadgroup ops, branches, `alloca` register spills), and cached Swift `MTLBinaryArchive` native `applegpu` ISA byte size + `maxTotalThreadsPerThreadgroup` register ceiling, plus live Chrome Dawn MSL shader dumping (`--url` / `--file`).
+- **`agx` command (`sampleMacOSAgx`, `parseIoregAccelerator`):** non-sudo macOS `IOAccelerator` hardware counter sampler distinguishing `Renderer%` (fragment/compute) vs `Tiler%` (vertex/binning) bottlenecks, OS kernel-wired unified GPU memory (`MiB`), TBDR `TiledSceneKiB`, and `SplitSceneCount` parameter-buffer overflows.
+- **Headless `xctrace` inspection (`summarizeMacOSXctrace`, `exportMacOSXctraceXpath`):** automatic `.trace.summary.json` sidecar generation and `xctrace --input <trace> [--xpath ...]` table discovery/export without opening Xcode Instruments GUI.
+- **Bundled Apple Silicon & macOS deep-diagnostics skill playbooks:** added `skill/references/apple-silicon-optimization.md` and `skill/references/deep-diagnostics-macos.md`.
+
 ## 2.3.0
 
 Driven by running the agent skill end to end on two real WebGPU three.js projects.

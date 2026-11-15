@@ -469,17 +469,29 @@ Detailed `performance.measureUserAgentSpecificMemory()` calls are opt-in via `--
 
 Chrome trace summaries classify GPU, frame, memory-infra, scheduler, V8, and rendering events. Trace completion has a timeout, trace streams are closed on errors, and reads are capped at 128 MiB. Reduce sample duration or trace categories if a trace exceeds that limit. Screenshots provide a cheap guard against “optimizations” that stop rendering or materially change the scene.
 
-## Native Instruments on macOS
+## Deep WebGPU audit, offline Metal shader A/B, AGX counters, and Instruments on macOS
 
 ```bash
+# Structural WebGPU + TBDR bandwidth audit (MSAA/depth storeOp leaks, mipmaps, compression, vertex stride):
+npx gpu-perf-agent audit --url http://127.0.0.1:5173 --out reports/audit.json
+
+# Extract live compiled WGSL + Chrome Dawn MSL from a running app, then run ~80 ms compiler A/B:
+npx gpu-perf-agent shader --url http://127.0.0.1:5173 --dump-dir reports/shaders
+npx gpu-perf-agent shader --base reports/shaders/00-main.wgsl --candidate reports/shaders/00-cand.wgsl
+
+# Sample non-sudo Apple AGX hardware telemetry (Renderer% vs Tiler%, wired GPU MiB, SplitSceneCount):
+npx gpu-perf-agent agx --duration-ms 2000
+
+# Record and inspect Xcode Instruments Metal System Trace headlessly:
 npx gpu-perf-agent xctrace \
   --url http://127.0.0.1:5173 \
   --template "Metal System Trace" \
   --time-limit 15s \
   --out reports/metal.trace
+npx gpu-perf-agent xctrace --input reports/metal.trace
 ```
 
-Use Instruments for CPU/GPU overlap, driver stalls, and deeper Metal evidence. Xcode Simulator improves iOS Safari/WebKit compatibility coverage, but it uses the Mac’s hardware and must not be treated as iPhone performance truth. Confirm device frame time, thermals, power, and memory pressure on physical hardware.
+Use `audit`, `shader`, and `agx` to pinpoint shader register spills, `f16`/subgroup opportunities, texture bandwidth waste, and TBDR pass attachment leaks before confirming end-to-end speedups with `ab`. Use Instruments (`xctrace`) for sub-millisecond CPU/GPU overlap, driver stalls, and deeper Metal timeline evidence. Xcode Simulator improves iOS Safari/WebKit compatibility coverage, but it uses the Mac’s hardware and must not be treated as iPhone performance truth. Confirm device frame time, thermals, power, and memory pressure on physical hardware.
 
 ## Node API
 

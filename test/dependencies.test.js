@@ -29,12 +29,15 @@ test("public API and CLI load without packages and explain the optional runner",
     assert.equal(typeof api.summarizeCpuProfile, "function");
     assert.ok(api.DECISION_METRICS);
 
-    // Verify new v2.2.0 modules load cleanly in isolation without external packages.
+    // Verify new v2.2.0+ modules load cleanly in isolation without external packages.
     for (const relModule of [
       "src/measure-lock.js",
       "src/http-client.js",
       "src/daemon.js",
-      "src/cpu-profile.js"
+      "src/cpu-profile.js",
+      "src/native/macos-agx.js",
+      "src/shader-analyzer.js",
+      "src/deep-audit.js"
     ]) {
       const mod = await import(pathToFileURL(path.join(directory, relModule)));
       assert.ok(mod && typeof mod === "object", `expected ${relModule} to import cleanly`);
@@ -64,6 +67,10 @@ test("new modules and fixture-server use only Node builtins", async () => {
     new URL("../src/http-client.js", import.meta.url),
     new URL("../src/daemon.js", import.meta.url),
     new URL("../src/cpu-profile.js", import.meta.url),
+    new URL("../src/native/macos-agx.js", import.meta.url),
+    new URL("../src/native/macos-xctrace.js", import.meta.url),
+    new URL("../src/shader-analyzer.js", import.meta.url),
+    new URL("../src/deep-audit.js", import.meta.url),
     new URL("./fixtures/servers/fixture-server.mjs", import.meta.url)
   ];
   const importSpecifiers = /^(?:import\s+(?:[^"']+?\s+from\s+)?|(?:const|let|var)\s+[^=]+=\s*createRequire\([^)]+\)\(\s*)["']([^"']+)["']/gm;
