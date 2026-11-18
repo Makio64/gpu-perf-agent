@@ -298,6 +298,8 @@ test('A/B CLI waits for async scene readiness and custom hooks with compact evid
     assert.ok(result.stdout.length < 5000);
     const report = JSON.parse(await readFile(out, 'utf8'));
     assert.equal(report.comparison.validity.valid, true, JSON.stringify(report.comparison.validity));
+    assert.equal(report.tabMode, 'warm');
+    assert.equal(report.runs[2].report.timings.warmTabReused, true);
     assert.equal(report.comparison.compatibility.compatible, true, JSON.stringify(report.comparison.compatibility));
     assert.equal(report.runs.length, 6);
     for (const {report: run} of report.runs) {

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { requestJson } from "./http-client.js";
 import { processAlive } from "./measure-lock.js";
 
-const TOOL_VERSION = "2.4.0";
+const TOOL_VERSION = "2.5.0";
 
 const SRC_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
@@ -184,9 +184,8 @@ export async function connectOrStartDaemon(launchOptions = {}, {
   return null;
 }
 
-export async function runViaDaemon(options = {}, {
+async function postDaemonEndpoint(endpoint, options = {}, {
   launchOptions = {},
-  onProgress,
   onReuse,
   onDaemonUsed,
   stateDir,
@@ -195,7 +194,8 @@ export async function runViaDaemon(options = {}, {
   argv = process.argv,
   env = process.env,
   spawnImpl,
-  spawnFn
+  spawnFn,
+  timeoutMs
 } = {}) {
   if (daemonDisabled({ argv, env, noDaemon: options?.noDaemon })) return null;
   if (options?.server || options?.cdp || options?.cdpUrl || options?.webSocketUrl || options?.headful || options?.runner === "playwright") {
@@ -224,9 +224,8 @@ export async function runViaDaemon(options = {}, {
   const runBody = { ...options };
   for (const key of LAUNCH_OPTION_KEYS) delete runBody[key];
 
-  const timeoutMs = (Number(options.timeoutMs) || 60000) + (Number(options.lockTimeoutMs) || 30000) + 30000;
   try {
-    const { status, json } = await requestJson(`${daemon.url}/run`, {
+    const { status, json } = await requestJson(`${daemon.url}${endpoint}`, {
       method: "POST",
       body: runBody,
       timeoutMs,
@@ -237,30 +236,8 @@ export async function runViaDaemon(options = {}, {
       }
     });
     if (status >= 200 && status < 300 && json && typeof json === "object") {
-      if (typeof onProgress === "function") {
-        const warmup = Number(options.warmup ?? json.options?.warmup ?? 0) || 0;
-        const samples = Number(options.samples ?? json.options?.samples ?? 0) || 0;
-        for (let i = 0; i < warmup; i += 1) emitProgress(onProgress, { stage: "warmup", index: i, total: warmup });
-        for (let i = 0; i < samples; i += 1) emitProgress(onProgress, { stage: "sample", index: i, total: samples });
-      }
-      json.daemon = {
-        pid: daemon.pid,
-        port: daemon.port,
-        url: daemon.url,
-        startedAt: daemon.startedAt,
-        reused: daemon.reused,
-        key: daemon.key
-      };
-      try {
-        if (daemon.reused) onReuse?.(daemon);
-      } catch {
-        // Ignore callback errors.
-      }
-      return json;
+      return { daemon, json };
     }
-    // null lets the caller run the job in-process: only when the daemon could not take it,
-    // or its browser died. A page-level failure (navigation, readiness, hook exception)
-    // would fail the same way again, after loading the page a second time.
     if (DAEMON_UNAVAILABLE_CODES.has(json?.error?.code) || (status >= 500 && !(await daemonAlive(daemon)))) return null;
     if (status === 400 && /must be inside the server report directory/.test(json?.error?.message || "")) return null;
     throw Object.assign(new Error(json?.error?.message || `Daemon returned HTTP ${status}.`), {
@@ -271,6 +248,76 @@ export async function runViaDaemon(options = {}, {
     if (error?.code === "server-unreachable") return null;
     throw error;
   }
+}
+
+export async function runViaDaemon(options = {}, opts = {}) {
+  const timeoutMs = (Number(options.timeoutMs) || 60000) + (Number(options.lockTimeoutMs) || 30000) + 30000;
+  const res = await postDaemonEndpoint("/run", options, { ...opts, timeoutMs });
+  if (!res) return null;
+  const { daemon, json } = res;
+  if (typeof opts.onProgress === "function") {
+    const warmup = Number(options.warmup ?? json.options?.warmup ?? 0) || 0;
+    const samples = Number(options.samples ?? json.options?.samples ?? 0) || 0;
+    for (let i = 0; i < warmup; i += 1) emitProgress(opts.onProgress, { stage: "warmup", index: i, total: warmup });
+    for (let i = 0; i < samples; i += 1) emitProgress(opts.onProgress, { stage: "sample", index: i, total: samples });
+  }
+  json.daemon = {
+    pid: daemon.pid,
+    port: daemon.port,
+    url: daemon.url,
+    startedAt: daemon.startedAt,
+    reused: daemon.reused,
+    key: daemon.key
+  };
+  try {
+    if (daemon.reused) opts.onReuse?.(daemon);
+  } catch {
+    // Ignore callback errors.
+  }
+  return json;
+}
+
+export async function runAbViaDaemon(options = {}, opts = {}) {
+  const rounds = Number(options.rounds) || 4;
+  const timeoutMs = Math.max(120000, rounds * 2 * (Number(options.timeoutMs) || 60000) + 60000);
+  const res = await postDaemonEndpoint("/ab", options, { ...opts, timeoutMs });
+  if (!res) return null;
+  const { daemon, json } = res;
+  json.daemon = {
+    pid: daemon.pid,
+    port: daemon.port,
+    url: daemon.url,
+    startedAt: daemon.startedAt,
+    reused: daemon.reused,
+    key: daemon.key
+  };
+  try {
+    if (daemon.reused) opts.onReuse?.(daemon);
+  } catch {
+    // Ignore callback errors.
+  }
+  return json;
+}
+
+export async function runAuditViaDaemon(options = {}, opts = {}) {
+  const timeoutMs = Math.max(45000, (Number(options.settleMs) || 1500) + (Number(options.waitConditionTimeoutMs) || 15000) + 20000);
+  const res = await postDaemonEndpoint("/audit", options, { ...opts, timeoutMs });
+  if (!res) return null;
+  const { daemon, json } = res;
+  json.daemon = {
+    pid: daemon.pid,
+    port: daemon.port,
+    url: daemon.url,
+    startedAt: daemon.startedAt,
+    reused: daemon.reused,
+    key: daemon.key
+  };
+  try {
+    if (daemon.reused) opts.onReuse?.(daemon);
+  } catch {
+    // Ignore callback errors.
+  }
+  return json;
 }
 
 export const runWithDaemon = runViaDaemon;

@@ -86,7 +86,7 @@ export function getMcpToolDefinitions() {
         properties: {
           baseUrl: S, baseFile: S, candidateUrl: S, candidateFile: S, fileRoot: S,
           rounds: I, samples: I, durationMs: N, warmup: I, primaryMetric: S,
-          thresholdPercent: N, autoInstrument: B, gpuTiming: B
+          thresholdPercent: N, autoInstrument: B, gpuTiming: B, tabMode: S
         }
       },
       outputSchema: { type: "object", required: ["ok", "status"] }
@@ -539,7 +539,8 @@ export async function runMcpServer(options = {}) {
           primaryMetric: args.primaryMetric,
           autoInstrument,
           gpuTiming,
-          allowMismatch
+          allowMismatch,
+          ...(args.tabMode !== undefined ? { tabMode: args.tabMode } : {})
         }, {
           harness,
           onProgress: progress.onProgress,

@@ -19,6 +19,16 @@ export {
 } from "./analysis.js";
 export { aggregateReports, alternatingOrder, runABComparison } from "./ab-runner.js";
 export {
+  compareOutputBuffers,
+  f16ToNumber,
+  formatKernelDigest,
+  numberToF16Bits,
+  parseBufferOverrides,
+  parseWgslBindingsAndEntry,
+  parseWorkgroups,
+  runKernelBenchmark
+} from "./kernel-runner.js";
+export {
   closeAllHarnesses,
   FastCDPHarness,
   runFastReport,
@@ -33,6 +43,8 @@ export {
   daemonDisabled,
   daemonKey,
   pruneDirectory,
+  runAbViaDaemon,
+  runAuditViaDaemon,
   runViaDaemon
 } from "./daemon.js";
 export { runReport as runPlaywrightReport } from "./runner.js";
@@ -54,6 +66,7 @@ export {
 export {
   analyzeShader,
   analyzeShaderStatic,
+  closeShaderWorker,
   compareShaderAnalyses,
   detectShaderLanguage,
   extractAndAnalyzePageShaders,

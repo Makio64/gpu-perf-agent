@@ -1,6 +1,6 @@
 {
   "name": "gpu-perf-agent",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Agent-oriented WebGPU/WebGL performance, memory, trace, and regression diagnostics.",
   "type": "module",
   "bin": {
@@ -42,10 +42,14 @@
     "node": ">=22"
   },
   "peerDependencies": {
-    "playwright": "^1.60.0"
+    "playwright": "^1.60.0",
+    "webgpu": ">=0.3.0"
   },
   "peerDependenciesMeta": {
     "playwright": {
+      "optional": true
+    },
+    "webgpu": {
       "optional": true
     }
   },

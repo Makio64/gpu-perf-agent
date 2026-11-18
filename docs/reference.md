@@ -340,6 +340,8 @@ fresh comparison of the original captures to apply current checks.
 
 For asynchronous scenes, `ab` accepts `--wait-until domcontentloaded`, `--wait-condition 'window.ready === true'`, `--wait-condition-timeout`, `--wait-for-hook`, `--wait-for-hook-timeout`, `--hook`, `--timeout`, and `--device-scale-factor`. Both variants use the same readiness contract before every round. Use `--agent --metric health.gpuFrameMs.mean` instead of `--json` for a bounded digest focused on GPU timing. Full rounds and comparisons remain in `--out`; `--metric` does not exclude other regressions. `ab` accepts `--preset`; explicit `--samples`, `--duration-ms`, and `--warmup` override it.
 
+By default (`--tab-mode auto`), `ab` reuses the warm background Chrome daemon (`--no-daemon` to disable) and keeps Base and Candidate loaded in isolated contexts (`warm` dual-tab ping-pong), freezing/pausing the inactive tab between ABBA half-rounds so compiled pipelines and VRAM stay resident across rounds. When `--gc`, `--deep-memory`, `--trace`, or `--metric health.retainedHeapMiBPerSec` is used—or when `--tab-mode reload` / `--no-reuse-tabs` is passed—`ab` reloads a fresh context per half-round.
+
 ## Baseline and candidate reports
 
 Separate reports can also be compared:
@@ -478,6 +480,11 @@ npx gpu-perf-agent audit --url http://127.0.0.1:5173 --out reports/audit.json
 # Extract live compiled WGSL + Chrome Dawn MSL from a running app, then run ~80 ms compiler A/B:
 npx gpu-perf-agent shader --url http://127.0.0.1:5173 --dump-dir reports/shaders
 npx gpu-perf-agent shader --base reports/shaders/00-main.wgsl --candidate reports/shaders/00-cand.wgsl
+# Select WGSL-to-MSL compiler explicitly (`auto` prefers optional `webgpu`/Dawn, then `tint`, then `naga`):
+npx gpu-perf-agent shader --base old.wgsl --candidate new.wgsl --compiler dawn
+
+# Micro-benchmark & bit-verify isolated WGSL compute kernels via Dawn/Metal `timestamp-query` (or Chrome fallback):
+npx gpu-perf-agent kernel --base old.wgsl --candidate new.wgsl --workgroups 512,1,1
 
 # Sample non-sudo Apple AGX hardware telemetry (Renderer% vs Tiler%, wired GPU MiB, SplitSceneCount):
 npx gpu-perf-agent agx --duration-ms 2000
@@ -496,7 +503,7 @@ Use `audit`, `shader`, and `agx` to pinpoint shader register spills, `f16`/subgr
 ## Node API
 
 ```js
-import { FastCDPHarness, compareReports, runReport } from "gpu-perf-agent";
+import { FastCDPHarness, compareReports, runKernelBenchmark, runReport } from "gpu-perf-agent";
 
 const report = await runReport({
   url: "http://127.0.0.1:5173",

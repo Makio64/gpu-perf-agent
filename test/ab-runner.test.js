@@ -313,3 +313,47 @@ test('a side is auto-GPU saturated only when most of its rounds are; one unstabl
   assert.equal(unstable.autoGpu.stability.status, 'unstable');
   assert.deepEqual(unstable.autoGpu.stability.reasons, ['within-run-spread']);
 });
+
+test('tabMode selects runWarmAB when warm, falls back to reload for gc/trace/heap, and rejects invalid modes', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { runABComparison } = await import('../src/ab-runner.js');
+  const capture = JSON.parse(readFileSync(new URL('./fixtures/v3/report-capture.json', import.meta.url), 'utf8'));
+
+  let warmCalls = 0;
+  let reloadCalls = 0;
+  const harness = {
+    async run(options) {
+      reloadCalls += 1;
+      const report = structuredClone(capture);
+      report.options = { ...report.options, ...options };
+      return report;
+    },
+    async runWarmAB(baseOpts, candOpts, { order }) {
+      warmCalls += 1;
+      return order.map(entry => ({
+        durationMs: 10,
+        round: entry.round,
+        sequence: entry.sequence,
+        variant: entry.variant,
+        report: structuredClone(capture)
+      }));
+    }
+  };
+
+  const warmRes = await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: 2 }, { harness });
+  assert.equal(warmRes.tabMode, 'warm');
+  assert.equal(warmCalls, 1);
+  assert.equal(reloadCalls, 0);
+
+  const gcRes = await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: 2, gc: true }, { harness });
+  assert.equal(gcRes.tabMode, 'reload');
+  assert.equal(reloadCalls, 4);
+
+  const explicitReload = await runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', rounds: 2, tabMode: 'reload' }, { harness });
+  assert.equal(explicitReload.tabMode, 'reload');
+
+  await assert.rejects(
+    runABComparison({ base: 'http://127.0.0.1:1/a.html', candidate: 'http://127.0.0.1:1/b.html', tabMode: 'invalid' }, { harness }),
+    /tabMode must be/
+  );
+});

@@ -154,6 +154,21 @@ test("analyzeShader and CLI shader --base/--candidate compile real Metal AIR & A
     assert.equal(parsed.ok, true);
     assert.equal(parsed.mode, "compare");
     assert.equal(parsed.comparison.metrics.transcendentals.direction, "better");
+
+    // Verify explicit dawn vs naga compiler routing and prompt CLI exit.
+    const dawnOnly = await analyzeShader(candCode, { label: "cand.wgsl", compiler: "dawn" });
+    assert.equal(dawnOnly.msl.transpiler, "dawn-node");
+    assert.equal(dawnOnly.msl.available, true);
+    assert.match(dawnOnly.msl.source, /#include <metal_stdlib>/);
+
+    const nagaOnly = await analyzeShader(candCode, { label: "cand.wgsl", compiler: "naga" });
+    assert.equal(nagaOnly.msl.transpiler, "naga");
+    assert.equal(nagaOnly.msl.available, true);
+
+    const cliDawn = spawnSync(process.execPath, [cli, "shader", "--file", candFile, "--compiler", "dawn", "--json"], { encoding: "utf8", timeout: 10000 });
+    assert.equal(cliDawn.status, 0, cliDawn.stderr);
+    const parsedDawn = JSON.parse(cliDawn.stdout);
+    assert.equal(parsedDawn.msl.transpiler, "dawn-node");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

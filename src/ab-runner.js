@@ -1,6 +1,6 @@
 import { compareReports, compareReportOptions, compareReportEnvironments, DECISION_METRICS, PER_ROUND_MEDIAN, reportEnvironment,
   reportMetricSamples, reportMetricsWithGpuEvidence, validateBudget } from "./compare.js";
-import { normalizeOptions, numberOption, PROFILING_PRESETS } from "./options.js";
+import { invalidOption, normalizeOptions, numberOption, PROFILING_PRESETS } from "./options.js";
 import { median, numericStats } from "./stats.js";
 import { reportValidity } from "./validity.js";
 import { aggregateGpuTimingEvidence, collectAutoGpuEvidence, collectGpuTimingEvidence, gpuTimingMetadata } from "./gpu-timing.js";
@@ -16,11 +16,21 @@ export async function runABComparison(options = {}, { harness: sharedHarness = n
   const baseTarget = normalizeTarget(options.base, "base");
   const candidateTarget = normalizeTarget(options.candidate, "candidate");
   const rounds = numberOption(options.rounds ?? 4, "rounds", { min: 2, max: 1000, integer: true });
+  const requestedTabMode = options.tabMode ?? "auto";
+  if (!["auto", "warm", "reload"].includes(requestedTabMode)) {
+    throw invalidOption('tabMode must be "auto", "warm", or "reload".');
+  }
   // §2 precedence: explicit > preset > ab default. A named preset's values beat AB_DEFAULTS.
   const presetValues = typeof options.preset === "string" && Object.hasOwn(PROFILING_PRESETS, options.preset) ? PROFILING_PRESETS[options.preset] : {};
   options = normalizeOptions({ ...AB_DEFAULTS, ...presetValues, ...withoutUndefined(options) }, { requireTarget: false });
-  normalizeOptions({ ...options, ...baseTarget });
-  normalizeOptions({ ...options, ...candidateTarget });
+  const primaryMetric = options.primaryMetric ?? options.metric;
+  const effectiveTabMode = requestedTabMode !== "auto"
+    ? requestedTabMode
+    : (options.gc === true || options.deepMemory === true || options.trace === true || primaryMetric === "health.retainedHeapMiBPerSec")
+      ? "reload"
+      : "warm";
+  const baseRunOptions = normalizeOptions({ ...options, ...baseTarget });
+  const candidateRunOptions = normalizeOptions({ ...options, ...candidateTarget });
   numberOption(options.thresholdPercent ?? 5, "thresholdPercent");
   validateBudget(options.budget);
   let harness = sharedHarness;
@@ -28,29 +38,38 @@ export async function runABComparison(options = {}, { harness: sharedHarness = n
     const { FastCDPHarness } = await import("./fast-cdp-runner.js");
     harness = await FastCDPHarness.launch(options);
   }
-  const runs = [];
+  const order = alternatingOrder(rounds);
+  let runs = [];
 
   try {
-    for (const entry of alternatingOrder(rounds)) {
-      if (signal?.aborted) throw Object.assign(new Error("A/B comparison aborted."), { code: "aborted" });
-      const target = entry.variant === "base" ? baseTarget : candidateTarget;
-      const startedAt = performance.now();
-      const report = await harness.run({
-        ...options,
-        ...target,
-        samples: Number(options.samples ?? 1),
-        warmup: Number(options.warmup ?? 1)
-      }, {
-        signal,
-        onProgress: onProgress ? (event) => onProgress({ ...event, round: entry.round, variant: entry.variant, rounds }) : undefined
+    if (effectiveTabMode === "warm" && typeof harness.runWarmAB === "function") {
+      runs = await harness.runWarmAB(baseRunOptions, candidateRunOptions, {
+        order,
+        onProgress,
+        signal
       });
-      runs.push({
-        durationMs: performance.now() - startedAt,
-        report,
-        round: entry.round,
-        sequence: entry.sequence,
-        variant: entry.variant
-      });
+    } else {
+      for (const entry of order) {
+        if (signal?.aborted) throw Object.assign(new Error("A/B comparison aborted."), { code: "aborted" });
+        const target = entry.variant === "base" ? baseTarget : candidateTarget;
+        const startedAt = performance.now();
+        const report = await harness.run({
+          ...options,
+          ...target,
+          samples: Number(options.samples ?? 1),
+          warmup: Number(options.warmup ?? 1)
+        }, {
+          signal,
+          onProgress: onProgress ? (event) => onProgress({ ...event, round: entry.round, variant: entry.variant, rounds }) : undefined
+        });
+        runs.push({
+          durationMs: performance.now() - startedAt,
+          report,
+          round: entry.round,
+          sequence: entry.sequence,
+          variant: entry.variant
+        });
+      }
     }
   } finally {
     if (!sharedHarness) await harness.close();
@@ -71,6 +90,7 @@ export async function runABComparison(options = {}, { harness: sharedHarness = n
     candidate: aggregateSummary(candidateReport),
     comparison,
     createdAt: new Date().toISOString(),
+    tabMode: effectiveTabMode,
     order: runs.map(({ durationMs, report, round, sequence, variant }) => ({
       durationMs,
       round,

@@ -315,3 +315,56 @@ test("browser: second consecutive agent --file examples/webgpu-clear.html is >= 
   assert.match(second.stderr, /using warm profiler pid \d+/);
   assert.ok(wall2Ms <= wall1Ms - 300, `expected second wall (${Math.round(wall2Ms)} ms) <= first wall (${Math.round(wall1Ms)} ms) - 300 ms`);
 });
+
+test("runAbViaDaemon and runAuditViaDaemon post to /ab and /audit on a live daemon", async t => {
+  const { runAbViaDaemon, runAuditViaDaemon } = await import("../src/daemon.js");
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gpu-daemon-ab-audit-"));
+  await chmod(stateDir, 0o700);
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+
+  const seenPaths = [];
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/health") {
+      return res.end(JSON.stringify({ ok: true, alive: true, pid: process.pid }));
+    }
+    seenPaths.push(req.url);
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = 200;
+      if (req.url === "/ab") {
+        return res.end(JSON.stringify({ schemaVersion: 1, rounds: 4, tabMode: "warm", comparison: { status: "unchanged" } }));
+      }
+      if (req.url === "/audit") {
+        return res.end(JSON.stringify({ ok: true, findings: [] }));
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ ok: false }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+
+  const key = daemonKey({});
+  await writeFile(path.join(stateDir, `${key}.json`), JSON.stringify({
+    port: server.address().port,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    key
+  }), { mode: 0o600 });
+
+  const abRes = await runAbViaDaemon({ base: { url: "http://127.0.0.1:1/a" }, candidate: { url: "http://127.0.0.1:1/b" }, rounds: 4 }, {
+    stateDir, argv: [], env: {},
+    spawnFn() { throw new Error("should reuse daemon"); }
+  });
+  assert.equal(abRes.tabMode, "warm");
+  assert.equal(abRes.daemon.reused, true);
+
+  const auditRes = await runAuditViaDaemon({ url: "http://127.0.0.1:1/a" }, {
+    stateDir, argv: [], env: {},
+    spawnFn() { throw new Error("should reuse daemon"); }
+  });
+  assert.equal(auditRes.ok, true);
+  assert.equal(auditRes.daemon.reused, true);
+  assert.deepEqual(seenPaths, ["/ab", "/audit"]);
+});

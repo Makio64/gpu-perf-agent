@@ -12,6 +12,7 @@ Use these deep diagnostic commands alongside the standard `gpu-perf-agent agent`
 | Are MSAA/depth `storeOp`s leaking bandwidth, textures unmipped/uncompressed, or bind groups churning? | `npx gpu-perf-agent audit --url <URL>` | ~2 s | No |
 | Is Apple GPU limited by **Renderer** (fragment/compute) or **Tiler** (vertex/geometry), or overflowing `SplitSceneCount`? | `npx gpu-perf-agent agx --duration-ms 2000` | 2 s | No |
 | Did my WGSL/MSL edit reduce post-optimization Metal AIR ops, `f32->f16` conversions, stack spills, or `applegpu` ISA bytes / occupancy ceiling? | `npx gpu-perf-agent shader --base old.wgsl --candidate new.wgsl` | **~80–150 ms** | No |
+| Did my WGSL compute kernel run faster on GPU hardware while matching output buffers? | `npx gpu-perf-agent kernel --base old.wgsl --candidate new.wgsl` | **~80–250 ms** | No |
 | What exact WGSL & Dawn-generated MSL is a live Three.js/TSL or WebGPU app compiling? | `npx gpu-perf-agent shader --url <URL> --dump-dir reports/shaders` | ~3 s | No |
 | Did the end-to-end change genuinely speed up the GPU in Chrome? | `npx gpu-perf-agent ab --base-url <A> --candidate-url <B> --metric health.autoGpuFrameMs.p50` | ~15–30 s | No |
 | What are the sub-millisecond hardware command buffer & GPU interval timelines in Metal? | `npx gpu-perf-agent xctrace --url <URL> --time-limit 8s --out reports/capture.trace` | ~10 s | No |
@@ -35,9 +36,16 @@ What `audit` inspects automatically:
 
 ---
 
-## 3. Inner-Loop Shader Compiler Verification (`shader`)
+## 3. Inner-Loop Shader Compiler Verification (`shader`) & Kernel Micro-Bench (`kernel`)
 
-Browser A/B runs take 15–30 s. When iterating on WGSL math, `f16` conversions, loop unrolling, or register pressure, verify your shader edits in **~100 ms** against Apple's real Metal compiler (`naga` -> `xcrun metal -O2` AIR disassembly + `MTLDevice` / `MTLBinaryArchive` native `applegpu` machine code):
+Browser A/B runs take several seconds. When iterating on WGSL math, `f16` conversions, loop unrolling, or register pressure, verify your shader edits against Chromium's real Dawn/Tint MSL (`--compiler auto` uses optional `webgpu`/Dawn first, then `tint`, then `naga`) compiled through Apple's Metal compiler (`xcrun metal -O2` AIR disassembly + `MTLDevice` / `MTLBinaryArchive` native `applegpu` machine code), and time isolated compute kernels directly in `~100–250 ms` with `kernel`:
+
+```bash
+# Offline Dawn/Tint -> Metal AIR + applegpu ISA diff:
+npx gpu-perf-agent shader --base reports/shaders/02-shader-2.wgsl --candidate reports/shaders/cand.wgsl
+# Hardware timestamp-query ABBA micro-benchmark + readback output equivalence check:
+npx gpu-perf-agent kernel --base reports/shaders/02-shader-2.wgsl --candidate reports/shaders/cand.wgsl --workgroups 512,1,1
+```
 
 ### Workflow A: Extract Live Shaders from Three.js / TSL / Bundled WebGPU Apps
 Three.js `WebGPURenderer` (TSL / `NodeMaterial`) generates WGSL dynamically at runtime. Dump both the exact WGSL and Chrome Dawn's generated Metal Shading Language (`.metal`) directly to disk:

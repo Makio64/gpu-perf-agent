@@ -574,7 +574,7 @@ export function parseMetalAirDisassembly(disassembly = "") {
       if (/\balloca\b/.test(line)) stackAllocas += 1;
       if (/\b(?:fpext|fptrunc)\b/.test(line)) fpConversions += 1;
       if (/@air\.fma\b/.test(line)) fmaOps += 1;
-      if (/@air\.(?:fast_)?(?:sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|pow|sqrt|rsqrt|div)\b/.test(line)) {
+      if (/@air\.(?:fast_)?(?:sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|powr?|sqrt|rsqrt|div)\b/.test(line)) {
         transcendentals += 1;
       }
       if (/@air\.(?:sample_|gather_|read_|write_|get_width|get_height|get_num_mip_levels|sample\b|gather\b|read\b|write\b)/.test(line)) {
@@ -646,6 +646,10 @@ export function parseMetalAirDisassembly(disassembly = "") {
  * macOS `xcrun metal` AIR disassembly + native Apple GPU (`MTLBinaryArchive`) hardware stats.
  */
 export async function analyzeShader(code, options = {}) {
+  const compiler = options.compiler || "auto";
+  if (!["auto", "dawn", "tint", "naga"].includes(compiler)) {
+    throw Object.assign(new TypeError('compiler must be "auto", "dawn", "tint", or "naga".'), { code: "invalid-options" });
+  }
   const staticAnalysis = analyzeShaderStatic(code, options);
   const result = {
     label: options.label || (options.filePath ? path.basename(options.filePath) : "inline"),
@@ -664,8 +668,12 @@ export async function analyzeShader(code, options = {}) {
   } else if (options.mslSource) {
     result.msl = { available: true, source: options.mslSource, transpiler: "dawn-dump", error: null };
   } else {
-    const transpiled = await transpileToMsl(code, staticAnalysis.language);
-    result.msl = transpiled;
+    const transpiled = await transpileToMsl(code, staticAnalysis.language, { compiler, staticAnalysis });
+    if (Array.isArray(transpiled.compilationMessages) && transpiled.compilationMessages.length) {
+      result.compilationMessages = transpiled.compilationMessages;
+    }
+    const { compilationMessages: _msgs, ...mslInfo } = transpiled;
+    result.msl = mslInfo;
   }
 
   if (!result.msl.available || process.platform !== "darwin") {
@@ -922,6 +930,7 @@ export async function extractAndAnalyzePageShaders(options = {}) {
       const analysis = await analyzeShader(mod.code, {
         label: mod.label || `shader#${mod.index}`,
         language: "wgsl",
+        compiler: options.compiler || "auto",
         skipCompiler: Boolean(options.skipCompiler)
       });
       analysis.compilationMessages = mod.messages || [];
@@ -946,8 +955,9 @@ export async function extractAndAnalyzePageShaders(options = {}) {
 export function formatShaderDigest(analysis) {
   const s = analysis.static;
   const eps = s.entryPoints.map((ep) => `${ep.stage}:${ep.name}${ep.workgroupSize ? `(${ep.workgroupSize.join("x")})` : ""}`).join(", ") || "none";
+  const transpilerTag = analysis.msl?.transpiler ? ` -> ${analysis.msl.transpiler}` : "";
   const lines = [
-    `SHADER ${analysis.label} (${s.language.toUpperCase()}, ${s.counts.lines} lines, f16=${s.usesF16 ? "on" : "off"}, subgroups=${s.usesSubgroups ? "on" : "off"})`,
+    `SHADER ${analysis.label} (${s.language.toUpperCase()}${transpilerTag}, ${s.counts.lines} lines, f16=${s.usesF16 ? "on" : "off"}, subgroups=${s.usesSubgroups ? "on" : "off"})`,
     `Entries: ${eps}`
   ];
 
@@ -1039,31 +1049,437 @@ function minThreadsCeiling(entries) {
   return nums.length ? Math.min(...nums) : null;
 }
 
-async function transpileToMsl(code, language) {
+const DAWN_SHADER_WORKER_SOURCE = `
+import readline from "node:readline";
+
+const pkgName = "webgpu";
+const { create, globals } = await import(pkgName);
+Object.assign(globalThis, globals);
+
+const gpu = create(["enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming"]);
+const adapter = await gpu.requestAdapter();
+const wantedFeatures = ["shader-f16", "subgroups", "subgroup-size-control"].filter(f => adapter?.features?.has?.(f));
+const device = await adapter.requestDevice({ requiredFeatures: wantedFeatures });
+
+function stripWgslComments(code) {
+  return String(code).replace(/\\/\\*[\\s\\S]*?\\*\\//g, " ").replace(/\\/\\/[^\\n]*/g, " ");
+}
+
+function vertexFormatForWgslType(wgslType) {
+  const t = wgslType.replace(/\\s+/g, "");
+  if (/^vec4<f32>$|^vec4f$/.test(t)) return { format: "float32x4", stride: 16 };
+  if (/^vec3<f32>$|^vec3f$/.test(t)) return { format: "float32x3", stride: 16 };
+  if (/^vec2<f32>$|^vec2f$/.test(t)) return { format: "float32x2", stride: 8 };
+  if (/^f32$/.test(t)) return { format: "float32", stride: 4 };
+  if (/^vec4<f16>$|^vec4h$/.test(t)) return { format: "float16x4", stride: 8 };
+  if (/^vec2<f16>$|^vec2h$/.test(t)) return { format: "float16x2", stride: 4 };
+  if (/^vec4<u32>$|^vec4u$/.test(t)) return { format: "uint32x4", stride: 16 };
+  if (/^vec2<u32>$|^vec2u$/.test(t)) return { format: "uint32x2", stride: 8 };
+  if (/^u32$/.test(t)) return { format: "uint32", stride: 4 };
+  if (/^vec4<i32>$|^vec4i$/.test(t)) return { format: "sint32x4", stride: 16 };
+  if (/^i32$/.test(t)) return { format: "sint32", stride: 4 };
+  return { format: "float32x4", stride: 16 };
+}
+
+function parseEntryDetails(code, entryName) {
+  const stripped = stripWgslComments(code);
+  const escaped = entryName.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
+  const fnRe = new RegExp("fn\\\\s+" + escaped + "\\\\s*\\\\(([\\\\s\\\\S]*?)\\\\)(?:\\\\s*->\\\\s*([\\\\s\\\\S]*?))?\\\\s*\\\\{");
+  const m = fnRe.exec(stripped);
+  const params = m?.[1] || "";
+  const ret = m?.[2] || "";
+
+  const locations = [];
+  const locRe = /@location\\(\\s*(\\d+)\\s*\\)\\s*[A-Za-z_][A-Za-z0-9_]*\\s*:\\s*([^,)]+)/g;
+  let lm;
+  while ((lm = locRe.exec(params)) !== null) {
+    locations.push({ location: Number(lm[1]), type: lm[2].trim() });
+  }
+  // Also check struct parameters used as @stage inputs.
+  const structParamRe = /\\b([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  let sp;
+  while ((sp = structParamRe.exec(params)) !== null) {
+    const structName = sp[2];
+    const stRe = new RegExp("struct\\\\s+" + structName + "\\\\s*\\\\{([\\\\s\\\\S]*?)\\\\}");
+    const stMatch = stRe.exec(stripped);
+    if (stMatch) {
+      const memberRe = /@location\\(\\s*(\\d+)\\s*\\)\\s*[A-Za-z_][A-Za-z0-9_]*\\s*:\\s*([^,;\\n]+)/g;
+      let mm;
+      while ((mm = memberRe.exec(stMatch[1])) !== null) {
+        locations.push({ location: Number(mm[1]), type: mm[2].trim() });
+      }
+    }
+  }
+
+  const outLocations = [];
+  const retLocMatch = /@location\\(\\s*(\\d+)\\s*\\)/.exec(ret);
+  if (retLocMatch) {
+    outLocations.push(Number(retLocMatch[1]));
+  } else {
+    const retStruct = ret.trim().replace(/^([A-Za-z_][A-Za-z0-9_]*)[\\s\\S]*$/, "$1");
+    if (retStruct) {
+      const stRe = new RegExp("struct\\\\s+" + retStruct + "\\\\s*\\\\{([\\\\s\\\\S]*?)\\\\}");
+      const stMatch = stRe.exec(stripped);
+      if (stMatch) {
+        const memberRe = /@location\\(\\s*(\\d+)\\s*\\)/g;
+        let mm;
+        while ((mm = memberRe.exec(stMatch[1])) !== null) outLocations.push(Number(mm[1]));
+      }
+    }
+  }
+  return { locations, outLocations };
+}
+
+function buildVertexStub(locations) {
+  const needsF16 = locations.some(loc => /\\bf16\\b|\\bvec[234]h\\b/.test(loc.type));
+  const f16Header = needsF16 ? "enable f16;\\n" : "";
+  const fields = locations.map(loc => "  @location(" + loc.location + ") f" + loc.location + ": " + loc.type + ",").join("\\n");
+  const assigns = locations.map(loc => "  out.f" + loc.location + " = " + loc.type + "();").join("\\n");
+  return \`\${f16Header}
+    struct VsStubOut {
+      @builtin(position) pos: vec4<f32>,
+    \${fields}
+    };
+    @vertex fn vs_stub() -> VsStubOut {
+      var out: VsStubOut;
+      out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    \${assigns}
+      return out;
+    }
+  \`;
+}
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of rl) {
+  if (!line.trim()) continue;
+  let req;
+  try {
+    req = JSON.parse(line);
+  } catch {
+    continue;
+  }
+  const { id, code, entryPoints = [] } = req;
+  const errors = [];
+  let compilationMessages = [];
+  try {
+    const module = device.createShaderModule({ code });
+    const info = await module.getCompilationInfo();
+    compilationMessages = (info?.messages || []).map(m => ({
+      type: m.type,
+      lineNum: m.lineNum,
+      linePos: m.linePos,
+      message: m.message
+    }));
+    if (compilationMessages.some(m => m.type === "error")) {
+      const firstErr = compilationMessages.find(m => m.type === "error");
+      errors.push(\`line \${firstErr.lineNum}: \${firstErr.message}\`);
+    } else {
+      const computeEps = entryPoints.filter(ep => ep.stage === "compute");
+      const vertexEps = entryPoints.filter(ep => ep.stage === "vertex");
+      const fragmentEps = entryPoints.filter(ep => ep.stage === "fragment");
+
+      for (const ep of computeEps) {
+        try {
+          await device.createComputePipelineAsync({ layout: "auto", compute: { module, entryPoint: ep.name } });
+        } catch (err) {
+          errors.push(\`compute \${ep.name}: \${err.message}\`);
+        }
+      }
+      for (const ep of vertexEps) {
+        try {
+          const { locations } = parseEntryDetails(code, ep.name);
+          const buffers = locations.map(loc => {
+            const vf = vertexFormatForWgslType(loc.type);
+            return { arrayStride: vf.stride, attributes: [{ shaderLocation: loc.location, offset: 0, format: vf.format }] };
+          });
+          await device.createRenderPipelineAsync({
+            layout: "auto",
+            vertex: { module, entryPoint: ep.name, buffers },
+            depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" }
+          });
+        } catch (err) {
+          errors.push(\`vertex \${ep.name}: \${err.message}\`);
+        }
+      }
+      for (const ep of fragmentEps) {
+        try {
+          const { locations, outLocations } = parseEntryDetails(code, ep.name);
+          const stubMod = device.createShaderModule({ code: buildVertexStub(locations) });
+          const maxOut = outLocations.length ? Math.max(...outLocations) : 0;
+          const writesDepth = /@builtin\\(\\s*frag_depth\\s*\\)/.test(code);
+          const targets = Array.from({ length: maxOut + 1 }, (_, idx) =>
+            outLocations.includes(idx)
+              ? { format: "rgba16float" }
+              : (outLocations.length === 0 && idx === 0)
+                ? { format: "rgba16float", ...(writesDepth ? { writeMask: 0 } : {}) }
+                : null
+          );
+          await device.createRenderPipelineAsync({
+            layout: "auto",
+            vertex: { module: stubMod, entryPoint: "vs_stub" },
+            fragment: { module, entryPoint: ep.name, targets },
+            ...(writesDepth ? { depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" } } : {})
+          });
+        } catch (err) {
+          errors.push(\`fragment \${ep.name}: \${err.message}\`);
+        }
+      }
+      // Give Dawn C++ stdout flushes a microtask tick to arrive before the marker.
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  } catch (err) {
+    errors.push(err?.message || String(err));
+  }
+  process.stdout.write("\\n__DAWN_SHADER_RES__" + JSON.stringify({ id, errors, compilationMessages }) + "\\n");
+}
+`;
+
+let shaderWorker = null;
+
+export async function closeShaderWorker() {
+  if (!shaderWorker) return;
+  const w = shaderWorker;
+  shaderWorker = null;
+  try { w.child.kill("SIGTERM"); } catch {}
+}
+
+function isDawnNodeAvailable() {
+  try {
+    const pkgName = "webgpu";
+    return Boolean(import.meta.resolve(pkgName));
+  } catch {
+    return false;
+  }
+}
+
+function getDawnShaderWorker() {
+  if (shaderWorker && shaderWorker.alive) return shaderWorker;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", DAWN_SHADER_WORKER_SOURCE], {
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  // Never keep the parent CLI process alive once commands finish.
+  child.unref();
+  child.stdin?.unref?.();
+  child.stdout?.unref?.();
+  child.stderr?.unref?.();
+
+  let buffer = "";
+  let rawDump = "";
+  let stderrTail = "";
+  let nextId = 1;
+  let queue = Promise.resolve();
+  const pending = new Map();
+
+  const state = {
+    child,
+    alive: true,
+    compile(code, entryPoints) {
+      const run = queue.then(() => new Promise((resolve, reject) => {
+        if (!state.alive) return reject(new Error("Dawn shader worker exited."));
+        const id = nextId++;
+        rawDump = "";
+        stderrTail = "";
+        const timer = setTimeout(() => {
+          if (pending.delete(id)) reject(new Error("Timed out compiling WGSL via dawn-node."));
+        }, 15000);
+        timer.unref?.();
+        pending.set(id, {
+          resolve: (res) => { clearTimeout(timer); resolve(res); },
+          reject: (err) => { clearTimeout(timer); reject(err); }
+        });
+        child.stdin.write(JSON.stringify({ id, code, entryPoints }) + "\n");
+      }));
+      queue = run.catch(() => {});
+      return run;
+    }
+  };
+
+  child.stdout.on("data", (chunk) => {
+    const text = String(chunk);
+    buffer += text;
+    let idx;
+    while ((idx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (line.startsWith("__DAWN_SHADER_RES__")) {
+        try {
+          const payload = JSON.parse(line.slice("__DAWN_SHADER_RES__".length));
+          const entry = pending.get(payload.id);
+          if (entry) {
+            pending.delete(payload.id);
+            const msl = extractDawnMslBlocks(rawDump);
+            entry.resolve({ ...payload, msl, stderr: stderrTail });
+          }
+        } catch {
+          // Ignore malformed marker line.
+        }
+        rawDump = "";
+      } else {
+        rawDump += line + "\n";
+      }
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    const text = String(chunk);
+    stderrTail += text;
+    if (text.includes("#include <metal_stdlib>") || rawDump.includes("/* Dumped generated MSL */")) {
+      rawDump += text;
+    }
+  });
+  const onExit = (code) => {
+    state.alive = false;
+    if (shaderWorker === state) shaderWorker = null;
+    for (const entry of pending.values()) {
+      entry.reject(new Error(`Dawn shader worker exited (code=${code})${stderrTail ? `: ${stderrTail.trim()}` : ""}`));
+    }
+    pending.clear();
+  };
+  child.once("exit", onExit);
+  child.once("error", onExit);
+  shaderWorker = state;
+  return state;
+}
+
+function extractDawnMslBlocks(dumpText = "") {
+  const marker = "/* Dumped generated MSL */";
+  const parts = String(dumpText).split(marker);
+  if (parts.length <= 1) {
+    const idx = dumpText.indexOf("#include <metal_stdlib>");
+    return idx >= 0 ? dumpText.slice(idx).trim() : "";
+  }
+  const blocks = [];
+  for (let i = 1; i < parts.length; i += 1) {
+    // Strip trailing `info:` / `// Dumped WGSL:` sections from subsequent dumps.
+    const nextWgsl = parts[i].indexOf("// Dumped WGSL:");
+    let body = nextWgsl >= 0 ? parts[i].slice(0, nextWgsl) : parts[i];
+    body = body.replace(/\ninfo:\s*$/, "").trim();
+    if (body) blocks.push(body);
+  }
+  if (blocks.length === 0) return "";
+  if (blocks.length === 1) return blocks[0];
+  // Multiple entry points: keep the full first MSL unit and append distinct kernel/vertex/fragment bodies.
+  const seenFns = new Set();
+  const merged = [blocks[0]];
+  for (const m of blocks[0].matchAll(/\b(?:kernel|vertex|fragment)\s+[\w:<>]+\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    seenFns.add(m[1]);
+  }
+  for (let i = 1; i < blocks.length; i += 1) {
+    // Rename duplicate `dawn_entry_point` symbols across separate pipeline dumps so Metal can compile them together.
+    let block = blocks[i].replace(/\bdawn_entry_point\b/g, `dawn_entry_point_${i}`);
+    const incIdx = block.indexOf("using namespace metal;");
+    if (incIdx >= 0) block = block.slice(incIdx + "using namespace metal;".length).trim();
+    if (block) merged.push(block);
+  }
+  return merged.join("\n\n");
+}
+
+async function transpileWgslViaDawnNode(code, staticAnalysis) {
+  if (!isDawnNodeAvailable()) {
+    return { available: false, source: null, transpiler: "dawn-node", error: 'Optional peer dependency "webgpu" is not installed.' };
+  }
+  try {
+    // Ref stdout/stderr briefly during active request, then unref again so CLI exits immediately.
+    const worker = getDawnShaderWorker();
+    worker.child.stdout?.ref?.();
+    worker.child.stderr?.ref?.();
+    try {
+      const res = await worker.compile(code, staticAnalysis?.entryPoints || []);
+      if (res.msl && res.msl.includes("#include <metal_stdlib>")) {
+        return {
+          available: true,
+          source: res.msl,
+          transpiler: "dawn-node",
+          compilationMessages: res.compilationMessages || [],
+          error: null
+        };
+      }
+      const errText = (res.errors || []).join("; ") || res.stderr?.trim() || "Dawn did not emit MSL (no valid pipeline compiled).";
+      return {
+        available: false,
+        source: null,
+        transpiler: "dawn-node",
+        compilationMessages: res.compilationMessages || [],
+        error: errText
+      };
+    } finally {
+      worker.child.stdout?.unref?.();
+      worker.child.stderr?.unref?.();
+    }
+  } catch (err) {
+    return { available: false, source: null, transpiler: "dawn-node", error: err?.message || String(err) };
+  }
+}
+
+async function transpileWgslViaTintCli(code, tmpDir) {
+  const tintBin = await findExecutable("tint", [
+    path.join(os.homedir(), ".cargo", "bin", "tint"),
+    "/opt/homebrew/bin/tint",
+    "/usr/local/bin/tint"
+  ]);
+  if (!tintBin) {
+    return { available: false, source: null, transpiler: "tint", error: "tint CLI not found" };
+  }
+  const inPath = path.join(tmpDir, "input.wgsl");
+  const outPath = path.join(tmpDir, "output.metal");
+  await writeFile(inPath, code, "utf8");
+  const res = await captureExec(tintBin, ["--format", "msl", inPath, "-o", outPath]);
+  if (!res.ok) {
+    return { available: false, source: null, transpiler: "tint", error: (res.stderr || res.stdout).trim() };
+  }
+  const source = await readFile(outPath, "utf8");
+  return { available: true, source, transpiler: "tint", error: null };
+}
+
+async function transpileWgslViaNagaCli(code, tmpDir) {
+  const nagaBin = await findExecutable("naga", [
+    path.join(os.homedir(), ".cargo", "bin", "naga"),
+    "/opt/homebrew/bin/naga",
+    "/usr/local/bin/naga"
+  ]);
+  if (!nagaBin) {
+    return { available: false, source: null, transpiler: null, error: "naga CLI not found (install via cargo install naga-cli)" };
+  }
+  const inPath = path.join(tmpDir, "input.wgsl");
+  const outPath = path.join(tmpDir, "output.metal");
+  await writeFile(inPath, code, "utf8");
+  const res = await captureExec(nagaBin, [inPath, outPath]);
+  if (!res.ok) {
+    return { available: false, source: null, transpiler: "naga", error: (res.stderr || res.stdout).trim() };
+  }
+  const rawMsl = await readFile(outPath, "utf8");
+  return {
+    available: true,
+    source: normalizeNagaMslBindings(rawMsl),
+    transpiler: "naga",
+    error: null
+  };
+}
+
+async function transpileToMsl(code, language, { compiler = "auto", staticAnalysis = null } = {}) {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "gpu-perf-transpile-"));
   try {
     if (language === "wgsl") {
-      const nagaBin = await findExecutable("naga", [
-        path.join(os.homedir(), ".cargo", "bin", "naga"),
-        "/opt/homebrew/bin/naga",
-        "/usr/local/bin/naga"
-      ]);
-      if (!nagaBin) {
-        return { available: false, source: null, transpiler: null, error: "naga CLI not found (install via cargo install naga-cli)" };
-      }
-      const inPath = path.join(tmpDir, "input.wgsl");
-      const outPath = path.join(tmpDir, "output.metal");
-      await writeFile(inPath, code, "utf8");
-      const res = await captureExec(nagaBin, [inPath, outPath]);
-      if (!res.ok) {
-        return { available: false, source: null, transpiler: "naga", error: (res.stderr || res.stdout).trim() };
-      }
-      const rawMsl = await readFile(outPath, "utf8");
+      if (compiler === "dawn") return await transpileWgslViaDawnNode(code, staticAnalysis);
+      if (compiler === "tint") return await transpileWgslViaTintCli(code, tmpDir);
+      if (compiler === "naga") return await transpileWgslViaNagaCli(code, tmpDir);
+
+      // Auto priority: Chromium Dawn/Tint (node-webgpu) -> tint CLI -> naga CLI
+      const dawnRes = await transpileWgslViaDawnNode(code, staticAnalysis);
+      if (dawnRes.available) return dawnRes;
+      // Preserve WGSL syntax/validation errors from Dawn instead of masking them with naga.
+      if (dawnRes.compilationMessages?.some((m) => m.type === "error")) return dawnRes;
+
+      const tintRes = await transpileWgslViaTintCli(code, tmpDir);
+      if (tintRes.available) return tintRes;
+
+      const nagaRes = await transpileWgslViaNagaCli(code, tmpDir);
+      if (nagaRes.available) return nagaRes;
+
       return {
-        available: true,
-        source: normalizeNagaMslBindings(rawMsl),
-        transpiler: "naga",
-        error: null
+        available: false,
+        source: null,
+        transpiler: null,
+        error: [dawnRes.error, tintRes.error, nagaRes.error].filter(Boolean).join(" | ")
       };
     }
 

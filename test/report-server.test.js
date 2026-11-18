@@ -246,3 +246,61 @@ test('idle servers close Chrome; the state file is written 0600 and removed on c
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('POST /ab and POST /audit reuse the server harness cleanly', { skip: !enabled }, async t => {
+  const { readFileSync } = await import('node:fs');
+  const capture = JSON.parse(readFileSync(new URL('./fixtures/v3/report-capture.json', import.meta.url), 'utf8'));
+  let abRuns = 0;
+  let auditCalls = 0;
+  t.mock.method(FastCDPHarness, 'launch', async () => ({
+    alive: true,
+    close: async () => {},
+    run: async () => {
+      abRuns += 1;
+      return structuredClone(capture);
+    },
+    browserSession: {
+      async send(method) {
+        if (method === 'Target.createBrowserContext') return { browserContextId: 'ctx-1' };
+        if (method === 'Target.createTarget') return { targetId: 't-1' };
+        if (method === 'Target.attachToTarget') return { sessionId: 's-1' };
+        return {};
+      },
+      session() {
+        return {
+          dispose() {},
+          once() { return () => {}; },
+          async send(method, params) {
+            if (method === 'Runtime.evaluate' && params?.expression?.includes('__gpuPerfDeepAudit')) {
+              auditCalls += 1;
+              return { result: { value: JSON.stringify({ passes: [], shaders: [], textures: [], buffers: [], samplers: [], pipelines: [] }) } };
+            }
+            return {};
+          }
+        };
+      }
+    }
+  }));
+  const server = await startReportServer({ port: 0 });
+  try {
+    const abRes = await post(`${server.url}/ab`, {
+      base: { url: 'http://127.0.0.1:1/a.html' },
+      candidate: { url: 'http://127.0.0.1:1/b.html' },
+      rounds: 2,
+      tabMode: 'reload'
+    });
+    assert.equal(abRes.status, 200);
+    assert.equal(abRes.json.rounds, 2);
+    assert.equal(abRuns, 4);
+
+    const auditRes = await post(`${server.url}/audit`, {
+      url: 'http://127.0.0.1:1/a.html',
+      settleMs: 200
+    });
+    assert.equal(auditRes.status, 200);
+    assert.equal(auditRes.json.ok, true);
+    assert.equal(auditCalls, 1);
+  } finally {
+    await server.close();
+  }
+});

@@ -141,6 +141,52 @@ export async function startReportServer(options = {}) {
           touch();
         }
       }
+      if (request.method === "POST" && url.pathname === "/ab") {
+        if (closing) return sendJson(response, 503, { ok: false, error: { code: 'CLOSING', message: 'Server is closing.' } });
+        if (harness.cleanupError) return sendJson(response, 503, { ok: false, error: { code: 'CAPTURE_CLEANUP_FAILED', message: harness.cleanupError.message } });
+        if (pending >= maxQueue) {
+          response.setHeader('Retry-After', '1');
+          return sendJson(response, 429, { ok: false, error: { code: 'QUEUE_FULL', message: 'Profiler queue is full; retry later.' } });
+        }
+        pending += 1;
+        try {
+          const body = await readJson(request);
+          const { runABComparison } = await import("./ab-runner.js");
+          const current = await liveHarness();
+          const abResult = await runABComparison({ ...serverOptions, ...body }, { harness: current });
+          completed += 1;
+          return sendJson(response, 200, abResult);
+        } catch (error) {
+          failed += 1;
+          throw error;
+        } finally {
+          pending -= 1;
+          touch();
+        }
+      }
+      if (request.method === "POST" && url.pathname === "/audit") {
+        if (closing) return sendJson(response, 503, { ok: false, error: { code: 'CLOSING', message: 'Server is closing.' } });
+        if (harness.cleanupError) return sendJson(response, 503, { ok: false, error: { code: 'CAPTURE_CLEANUP_FAILED', message: harness.cleanupError.message } });
+        if (pending >= maxQueue) {
+          response.setHeader('Retry-After', '1');
+          return sendJson(response, 429, { ok: false, error: { code: 'QUEUE_FULL', message: 'Profiler queue is full; retry later.' } });
+        }
+        pending += 1;
+        try {
+          const body = await readJson(request);
+          const { auditWebGPUPage } = await import("./deep-audit.js");
+          const current = await liveHarness();
+          const auditResult = await auditWebGPUPage({ ...serverOptions, ...body }, { harness: current });
+          completed += 1;
+          return sendJson(response, 200, auditResult);
+        } catch (error) {
+          failed += 1;
+          throw error;
+        } finally {
+          pending -= 1;
+          touch();
+        }
+      }
       if (request.method === "POST" && url.pathname === "/close") {
         sendJson(response, 200, { ok: true });
         setImmediate(() => close().catch(() => {}));

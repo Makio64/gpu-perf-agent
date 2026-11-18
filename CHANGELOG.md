@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.0
+
+Warm dual-tab ping-pong A/B, authentic Chromium Dawn/Tint shader compilation, and sub-200 ms WGSL compute kernel micro-benchmarks (`webgpu` optional peer).
+
+- **Warm dual-tab `ab` & daemon reuse (`runWarmAB`, `runAbViaDaemon`, `runAuditViaDaemon`, `POST /ab`, `POST /audit`):** keeps Base and Candidate loaded in isolated contexts across ABBA rounds while pausing/freezing the inactive tab (`--tab-mode auto|warm|reload`, `--no-reuse-tabs`), and routes `ab` and `audit` through the warm background Chrome daemon automatically.
+- **Authentic Chromium Dawn/Tint shader compilation (`shader --compiler auto|dawn|tint|naga`):** transpiles WGSL to MSL using optional `webgpu` (`dawn-gpu/node-webgpu` with `dump_shaders,disable_symbol_renaming`) or `tint` CLI ahead of `naga`, feeding exact Dawn MSL and `getCompilationInfo()` diagnostics into `xcrun metal -O2` AIR and native `applegpu` ISA analysis; adds optional `dawnNode` status to `doctor`.
+- **`kernel` command (`runKernelBenchmark`, `parseWgslBindingsAndEntry`, `formatKernelDigest`):** sub-200 ms hardware `timestamp-query` ABBA compute kernel micro-benchmarker (`--runner auto|dawn-node|chrome`) with automatic WGSL `@group/@binding` buffer inference, deterministic GPU seed-buffer resets, serialized non-overlapping pass execution, paired Student-t 95% CIs, and `f32`/`f16`/`i32`/`u32` output readback verification (`exactBitMatch`, `maxAbsDiff`).
+
 ## 2.4.0
 
 Deep WebGPU structural auditing, ~80 ms offline Apple Metal shader compilation A/B, non-sudo Apple AGX hardware telemetry, and Apple Silicon optimization playbooks.

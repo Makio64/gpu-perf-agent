@@ -37,13 +37,18 @@ test("public API and CLI load without packages and explain the optional runner",
       "src/cpu-profile.js",
       "src/native/macos-agx.js",
       "src/shader-analyzer.js",
-      "src/deep-audit.js"
+      "src/deep-audit.js",
+      "src/kernel-runner.js"
     ]) {
       const mod = await import(pathToFileURL(path.join(directory, relModule)));
       assert.ok(mod && typeof mod === "object", `expected ${relModule} to import cleanly`);
     }
 
     await assert.rejects(api.runPlaywrightReport({ url: "http://127.0.0.1:5173" }), /npm install --save-dev playwright/);
+    await assert.rejects(
+      api.runKernelBenchmark({ code: "@compute @workgroup_size(64) fn main() {}", runner: "dawn-node" }),
+      /Optional peer dependency "webgpu"|webgpu/
+    );
 
     const cli = path.join(directory, "src/cli.js");
     const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8", timeout: 5000 });
@@ -71,6 +76,7 @@ test("new modules and fixture-server use only Node builtins", async () => {
     new URL("../src/native/macos-xctrace.js", import.meta.url),
     new URL("../src/shader-analyzer.js", import.meta.url),
     new URL("../src/deep-audit.js", import.meta.url),
+    new URL("../src/kernel-runner.js", import.meta.url),
     new URL("./fixtures/servers/fixture-server.mjs", import.meta.url)
   ];
   const importSpecifiers = /^(?:import\s+(?:[^"']+?\s+from\s+)?|(?:const|let|var)\s+[^=]+=\s*createRequire\([^)]+\)\(\s*)["']([^"']+)["']/gm;

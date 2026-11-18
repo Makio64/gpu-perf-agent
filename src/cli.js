@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.4.0" });
+const TOOL = Object.freeze({ name: "gpu-perf-agent", version: "2.5.0" });
 
 function relPath(targetPath, cwd = process.cwd()) {
   if (!targetPath || typeof targetPath !== "string") return "";
@@ -139,6 +139,10 @@ const COMMAND_OPTIONS = {
     threshold: { type: "string", desc: "Allowed relative regression percent (default: 5)." },
     metric: { type: "string", desc: "Primary metric key override." },
     "allow-mismatch": { type: "boolean", desc: "Allow capture/environment differences." },
+    "tab-mode": { type: "string", desc: "auto|warm|reload tab reuse mode for A/B rounds (default: auto)." },
+    "no-reuse-tabs": { type: "boolean", desc: "Alias for --tab-mode reload (fresh context per round)." },
+    server: { type: "string", desc: "Reuse a running profiler HTTP service (--server URL)." },
+    "no-daemon": { type: "boolean", desc: "Disable automatic warm background daemon reuse." },
     agent: { type: "boolean", desc: "Print concise agent comparison digest." },
     json: { type: "boolean", desc: "Print bounded machine-readable JSON (<=2 KB)." },
     "json-full": { type: "boolean", desc: "Print complete A/B artifact JSON." }
@@ -223,7 +227,8 @@ const COMMAND_OPTIONS = {
     "dump-dir": { type: "string", desc: "Directory to save extracted .wgsl and Dawn .metal shader sources." },
     limit: { type: "string", desc: "Max live shaders to compile-analyze (default: 8)." },
     "settle-ms": { type: "string", desc: "Wait duration in ms before collecting live shaders (default: 1500)." },
-    "no-compiler": { type: "boolean", desc: "Run fast static hazard analysis only (skip naga / xcrun metal)." },
+    compiler: { type: "string", desc: "auto|dawn|tint|naga WGSL-to-MSL transpiler (default: auto)." },
+    "no-compiler": { type: "boolean", desc: "Run fast static hazard analysis only (skip Dawn / tint / naga / xcrun metal)." },
     channel: { type: "string", desc: "Chrome channel when extracting live shaders." },
     "executable-path": { type: "string", desc: "Explicit Chrome binary path when extracting live shaders." },
     headful: { type: "boolean", desc: "Launch visible browser when extracting live shaders." },
@@ -244,6 +249,8 @@ const COMMAND_OPTIONS = {
     "executable-path": { type: "string", desc: "Explicit Chrome binary path." },
     "chromium-arg": { type: "string", multiple: true, desc: "Additional Chromium launch flag." },
     headful: { type: "boolean", desc: "Launch a visible browser window." },
+    server: { type: "string", desc: "Reuse a running profiler HTTP service (--server URL)." },
+    "no-daemon": { type: "boolean", desc: "Disable automatic warm background daemon reuse." },
     out: { type: "string", desc: "Write full audit JSON report to file." },
     json: { type: "boolean", desc: "Emit machine-readable JSON output." }
   },
@@ -252,13 +259,38 @@ const COMMAND_OPTIONS = {
     "interval-ms": { type: "string", desc: "Polling interval in ms (default: 200)." },
     out: { type: "string", desc: "Write AGX hardware telemetry JSON to file." },
     json: { type: "boolean", desc: "Emit machine-readable JSON output." }
+  },
+  kernel: {
+    file: { type: "string", desc: "Single WGSL compute shader file to benchmark." },
+    base: { type: "string", desc: "Baseline WGSL compute shader file for interleaved A/B." },
+    candidate: { type: "string", desc: "Candidate WGSL compute shader file for interleaved A/B." },
+    entry: { type: "string", desc: "@compute entry point name override." },
+    "base-entry": { type: "string", desc: "Baseline @compute entry point name." },
+    "candidate-entry": { type: "string", desc: "Candidate @compute entry point name." },
+    workgroups: { type: "string", desc: "Workgroup dispatch counts X or X,Y,Z (default: 256,1,1)." },
+    "storage-bytes": { type: "string", desc: "Default storage buffer byte size (default: 4194304)." },
+    buffer: { type: "string", multiple: true, desc: "Override buffer bytes per binding G:B=BYTES (repeatable)." },
+    warmup: { type: "string", desc: "Warmup passes before timed measurement (default: 8)." },
+    rounds: { type: "string", desc: "Timed passes / ABBA rounds (default: 16)." },
+    dispatches: { type: "string", desc: "Compute dispatches per timed pass (default: 4)." },
+    threshold: { type: "string", desc: "Relative improvement/regression boundary % (default: 5)." },
+    tolerance: { type: "string", desc: "Max abs output diff tolerance for A/B readback check (default: 1e-5)." },
+    "no-verify": { type: "boolean", desc: "Skip readback output buffer equivalence check." },
+    runner: { type: "string", desc: "auto|dawn-node|chrome WebGPU backend (default: auto)." },
+    "no-lock": { type: "boolean", desc: "Disable cross-process GPU measurement lock." },
+    "lock-timeout": { type: "string", desc: "Max ms to wait for GPU measurement lock." },
+    channel: { type: "string", desc: "Chrome channel when using --runner chrome." },
+    "executable-path": { type: "string", desc: "Explicit Chrome binary path when using --runner chrome." },
+    headful: { type: "boolean", desc: "Launch visible Chrome when using --runner chrome." },
+    out: { type: "string", desc: "Write kernel benchmark JSON report to file." },
+    json: { type: "boolean", desc: "Emit machine-readable JSON output." }
   }
 };
 
 const rawArgv = process.argv.slice(2);
 const command = rawArgv[0] || "help";
 const wantsJson = rawArgv.includes("--json") || rawArgv.includes("--json-full") || command === "inspect";
-if (["agent", "run", "ab", "doctor", "audit", "shader"].includes(command)) installSignalHandlers();
+if (["agent", "run", "ab", "doctor", "audit", "shader", "kernel"].includes(command)) installSignalHandlers();
 
 try {
   if (command === "--version" || command === "-v" || (rawArgv.includes("--version") && !rawArgv.some((a) => a.startsWith("--url") || a.startsWith("--file")))) {
@@ -294,6 +326,8 @@ try {
     await auditCommand(rawArgv.slice(1));
   } else if (command === "agx") {
     await agxCommand(rawArgv.slice(1));
+  } else if (command === "kernel") {
+    await kernelCommand(rawArgv.slice(1));
   } else {
     throw Object.assign(new Error(`Unknown command "${command}". Run --help for usage.`), {
       code: "invalid-options",
@@ -609,8 +643,9 @@ async function abCommand(args) {
   const allowMismatch = Boolean(values["allow-mismatch"]);
   const autoInstrument = values["no-auto-instrument"] ? false : values["auto-instrument"] !== false;
   const gpuTiming = values["no-gpu-timing"] ? false : values["gpu-timing"] !== false;
+  const tabMode = values["no-reuse-tabs"] ? "reload" : values["tab-mode"];
 
-  const result = await runABComparison({
+  const abOptions = {
     api: values.api || "auto",
     autoInstrument,
     gpuTiming,
@@ -632,6 +667,7 @@ async function abCommand(args) {
     ...(values.samples !== undefined ? { samples: numberOption(values.samples, 1) } : {}),
     samplingMode: values["sampling-mode"],
     slowFrameThresholdMs: values["slow-frame-threshold"] !== undefined ? numberOption(values["slow-frame-threshold"], 20) : 20,
+    ...(tabMode !== undefined ? { tabMode } : {}),
     thresholdPercent: values.threshold !== undefined ? numberOption(values.threshold, 5) : 5,
     timeoutMs: values.timeout,
     viewport: values.viewport || "1280x720",
@@ -647,7 +683,27 @@ async function abCommand(args) {
     measureLock: values["no-lock"] ? false : undefined,
     lockTimeoutMs: values["lock-timeout"],
     label: values.label
-  });
+  };
+
+  let result = null;
+  if (values.server) {
+    result = await runRemoteEndpoint(values.server, "/ab", abOptions);
+  } else {
+    const skipDaemon = daemonDisabled({ noDaemon: values["no-daemon"] }) || Boolean(values.headful);
+    if (!skipDaemon) {
+      const { runAbViaDaemon } = await import("./daemon.js");
+      result = await runAbViaDaemon(abOptions, {
+        onReuse(info) {
+          if (info?.pid) {
+            const ageS = info.startedAt ? Math.max(0, Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)) : null;
+            const ageText = ageS != null ? (ageS >= 60 ? `${Math.round(ageS / 60)}m` : `${ageS}s`) : "warm";
+            process.stderr.write(`using warm profiler pid ${info.pid} (started ${ageText} ago)\n`);
+          }
+        }
+      });
+    }
+    if (!result) result = await runABComparison(abOptions);
+  }
 
   const out = values.out
     ? path.resolve(values.out)
@@ -775,11 +831,19 @@ async function doctorCommand(args) {
   if (nodeUseSystemCa) {
     warnings.push("NODE_USE_SYSTEM_CA is set; TLS/keychain access may stall Node or Chrome startup.");
   }
+  let dawnNodeAvailable = false;
+  try {
+    const pkg = "webgpu";
+    dawnNodeAvailable = Boolean(import.meta.resolve(pkg));
+  } catch {
+    dawnNodeAvailable = false;
+  }
 
   const status = {
     node: process.version,
     platform: `${process.platform} ${process.arch}`,
     chrome,
+    dawnNode: { available: dawnNodeAvailable },
     nodeUseSystemCa,
     ...(warnings.length ? { warnings } : {}),
     xctrace: await macOSProfilerStatus({ includeTemplates: !values.quick })
@@ -814,6 +878,7 @@ async function doctorCommand(args) {
   } else {
     console.log("Chrome: unavailable");
   }
+  console.log(`Dawn Node (webgpu): ${status.dawnNode.available ? "available" : "not installed (optional)"}`);
   if (nodeUseSystemCa) {
     console.log(`Warning: ${warnings[0]}`);
   }
@@ -925,6 +990,7 @@ async function shaderCommand(args) {
   } = await import("./shader-analyzer.js");
   const { values } = parseCommandArgs("shader", args);
   const skipCompiler = Boolean(values["no-compiler"]);
+  const compiler = values.compiler || "auto";
 
   // 1. Offline compiler A/B comparison mode: --base <file> --candidate <file>
   if (values.base || values.candidate) {
@@ -942,8 +1008,8 @@ async function shaderCommand(args) {
       })
     ]);
     const [baseRes, candRes] = await Promise.all([
-      analyzeShader(baseCode, { filePath: basePath, label: path.basename(basePath), skipCompiler }),
-      analyzeShader(candCode, { filePath: candPath, label: path.basename(candPath), skipCompiler })
+      analyzeShader(baseCode, { filePath: basePath, label: path.basename(basePath), compiler, skipCompiler }),
+      analyzeShader(candCode, { filePath: candPath, label: path.basename(candPath), compiler, skipCompiler })
     ]);
     const comparison = compareShaderAnalyses(baseRes, candRes);
     const payload = { ok: true, mode: "compare", comparison, base: baseRes, candidate: candRes };
@@ -974,6 +1040,7 @@ async function shaderCommand(args) {
       dumpDir: values["dump-dir"],
       limit: values.limit !== undefined ? numberOption(values.limit, 8) : 8,
       settleMs: values["settle-ms"] !== undefined ? numberOption(values["settle-ms"], 1500) : 1500,
+      compiler,
       skipCompiler,
       channel: values.channel,
       executablePath: values["executable-path"],
@@ -1011,6 +1078,7 @@ async function shaderCommand(args) {
   const analysis = await analyzeShader(code, {
     filePath,
     label: path.basename(filePath),
+    compiler,
     skipCompiler
   });
   const payload = { ok: true, mode: "single", ...analysis };
@@ -1030,10 +1098,10 @@ async function auditCommand(args) {
   const { auditWebGPUPage, formatAuditDigest } = await import("./deep-audit.js");
   const { values } = parseCommandArgs("audit", args);
 
-  const report = await auditWebGPUPage({
+  const auditOptions = {
     url: values.url,
-    file: values.file,
-    fileRoot: values["file-root"],
+    file: values.file ? path.resolve(values.file) : undefined,
+    fileRoot: values["file-root"] ? path.resolve(values["file-root"]) : undefined,
     settleMs: values["settle-ms"] !== undefined ? numberOption(values["settle-ms"], 1500) : 1500,
     waitCondition: values["wait-condition"],
     waitConditionTimeoutMs: values["wait-condition-timeout"] !== undefined ? numberOption(values["wait-condition-timeout"], 15000) : 15000,
@@ -1044,7 +1112,27 @@ async function auditCommand(args) {
     executablePath: values["executable-path"],
     chromiumArgs: values["chromium-arg"] || [],
     headful: Boolean(values.headful)
-  });
+  };
+
+  let report = null;
+  if (values.server) {
+    report = await runRemoteEndpoint(values.server, "/audit", auditOptions);
+  } else {
+    const skipDaemon = daemonDisabled({ noDaemon: values["no-daemon"] }) || Boolean(values.cdp || values.headful);
+    if (!skipDaemon) {
+      const { runAuditViaDaemon } = await import("./daemon.js");
+      report = await runAuditViaDaemon(auditOptions, {
+        onReuse(info) {
+          if (info?.pid) {
+            const ageS = info.startedAt ? Math.max(0, Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)) : null;
+            const ageText = ageS != null ? (ageS >= 60 ? `${Math.round(ageS / 60)}m` : `${ageS}s`) : "warm";
+            process.stderr.write(`using warm profiler pid ${info.pid} (started ${ageText} ago)\n`);
+          }
+        }
+      });
+    }
+    if (!report) report = await auditWebGPUPage(auditOptions);
+  }
 
   if (values.out) {
     const outPath = path.resolve(values.out);
@@ -1074,6 +1162,54 @@ async function agxCommand(args) {
     console.log(JSON.stringify({ ok: Boolean(report.available), ...report }, null, 2));
   } else {
     console.log(formatAgxDigest(report));
+  }
+}
+
+async function kernelCommand(args) {
+  const { formatKernelDigest, runKernelBenchmark } = await import("./kernel-runner.js");
+  const { values } = parseCommandArgs("kernel", args);
+  const result = await runKernelBenchmark({
+    file: values.file,
+    base: values.base,
+    candidate: values.candidate,
+    entryPoint: values.entry,
+    baseEntry: values["base-entry"],
+    candidateEntry: values["candidate-entry"],
+    workgroups: values.workgroups,
+    storageBytes: values["storage-bytes"] !== undefined ? numberOption(values["storage-bytes"], 4194304) : undefined,
+    buffers: values.buffer,
+    warmup: values.warmup !== undefined ? numberOption(values.warmup, 8) : undefined,
+    rounds: values.rounds !== undefined ? numberOption(values.rounds, 16) : undefined,
+    dispatches: values.dispatches !== undefined ? numberOption(values.dispatches, 4) : undefined,
+    thresholdPercent: values.threshold !== undefined ? numberOption(values.threshold, 5) : undefined,
+    tolerance: values.tolerance !== undefined ? numberOption(values.tolerance, 1e-5) : undefined,
+    verify: !values["no-verify"],
+    runner: values.runner || "auto",
+    measureLock: values["no-lock"] ? false : undefined,
+    lockTimeoutMs: values["lock-timeout"] !== undefined ? numberOption(values["lock-timeout"], 30000) : undefined,
+    channel: values.channel,
+    executablePath: values["executable-path"],
+    headful: Boolean(values.headful)
+  });
+
+  if (values.out) {
+    const outPath = path.resolve(values.out);
+    await mkdir(path.dirname(outPath), { recursive: true });
+    await writeFile(outPath, JSON.stringify(result, null, 2));
+  }
+
+  if (result.mode === "ab") {
+    if (result.comparison.status === "different-output") process.exitCode = 2;
+    else if (result.comparison.status === "regression") process.exitCode = 1;
+    else process.exitCode = 0;
+  } else {
+    process.exitCode = 0;
+  }
+
+  if (values.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(formatKernelDigest(result));
   }
 }
 
@@ -1383,6 +1519,7 @@ Usage:
   gpu-perf-agent doctor [--quick] [--json]
   gpu-perf-agent audit --url http://localhost:5173 [--json]
   gpu-perf-agent shader --base old.wgsl --candidate new.wgsl
+  gpu-perf-agent kernel --base old.wgsl --candidate new.wgsl
   gpu-perf-agent agx [--duration-ms 1500] [--json]
   gpu-perf-agent serve --port 9099 --auto-instrument
   gpu-perf-agent mcp [--report-dir reports]
@@ -1414,7 +1551,7 @@ Cross-project usage:
 function targetOption(url, file, fileRoot) {
   if (url && file) throw Object.assign(new Error("Choose a URL or file for each target, not both."), { code: "invalid-options" });
   if (url) return { url };
-  if (file) return { file, ...(fileRoot ? { fileRoot } : {}) };
+  if (file) return { file: path.resolve(file), ...(fileRoot ? { fileRoot: path.resolve(fileRoot) } : {}) };
   return null;
 }
 
@@ -1431,14 +1568,20 @@ function artifactPath(out, extension) {
 }
 
 async function runRemote(serverUrl, payload) {
+  return runRemoteEndpoint(serverUrl, "/run", payload);
+}
+
+async function runRemoteEndpoint(serverUrl, pathname, payload) {
   const { requestJson } = await import("./http-client.js");
   const url = new URL(serverUrl);
   if (!["http:", "https:"].includes(url.protocol)) {
     throw Object.assign(new Error("--server must be an HTTP(S) URL."), { code: "invalid-options" });
   }
-  url.pathname = "/run";
+  url.pathname = pathname;
   url.search = "";
-  const timeoutMs = Number(payload.timeoutMs ?? 60000) + Number(payload.lockTimeoutMs ?? 60000) + 30000;
+  const rounds = Number(payload?.rounds ?? 4) || 4;
+  const baseTimeout = Number(payload?.timeoutMs ?? 60000) + Number(payload?.lockTimeoutMs ?? 60000) + 30000;
+  const timeoutMs = pathname === "/ab" ? Math.max(120000, rounds * 2 * baseTimeout) : baseTimeout;
   const { status, json: result } = await requestJson(url, {
     method: "POST",
     body: JSON.stringify(payload),

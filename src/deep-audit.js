@@ -989,7 +989,7 @@ export function analyzeAuditSnapshot(snapshot = {}) {
  * Launch Chrome via FastCDPHarness, run the target WebGPU page to steady state,
  * and return a structural + Apple TBDR optimization audit.
  */
-export async function auditWebGPUPage(options = {}) {
+export async function auditWebGPUPage(options = {}, { harness: sharedHarness = null } = {}) {
   if (!options.url && !options.file) {
     throw Object.assign(new Error("Pass --url <URL> or --file <HTML> to audit."), { code: "invalid-options" });
   }
@@ -1007,7 +1007,8 @@ export async function auditWebGPUPage(options = {}) {
 
   const viewport = parseViewport(options.viewport || "1280x720");
   const dpr = Number(options.deviceScaleFactor ?? 1) || 1;
-  const harness = await FastCDPHarness.launch({
+  const externalHarness = sharedHarness || options.harness || null;
+  const harness = externalHarness || await FastCDPHarness.launch({
     channel: options.channel,
     executablePath: options.executablePath,
     headful: Boolean(options.headful),
@@ -1019,11 +1020,15 @@ export async function auditWebGPUPage(options = {}) {
     ]
   });
 
+  let browserContextId = null;
+  let pageSession = null;
   try {
     const browserSession = harness.browserSession;
-    const { targetId } = await browserSession.send("Target.createTarget", { url: "about:blank" });
+    const context = await browserSession.send("Target.createBrowserContext", { disposeOnDetach: true });
+    browserContextId = context.browserContextId;
+    const { targetId } = await browserSession.send("Target.createTarget", { browserContextId, url: "about:blank" });
     const { sessionId } = await browserSession.send("Target.attachToTarget", { targetId, flatten: true });
-    const pageSession = browserSession.session(sessionId);
+    pageSession = browserSession.session(sessionId);
 
     await pageSession.send("Page.enable");
     await pageSession.send("Runtime.enable");
@@ -1059,7 +1064,6 @@ export async function auditWebGPUPage(options = {}) {
       expression: "JSON.stringify(globalThis.__gpuPerfDeepAudit ? globalThis.__gpuPerfDeepAudit.collect() : null)",
       returnByValue: true
     });
-    await browserSession.send("Target.closeTarget", { targetId }).catch(() => {});
 
     const rawSnapshot = evalRes?.result?.value ? JSON.parse(evalRes.result.value) : {};
     const audit = analyzeAuditSnapshot(rawSnapshot);
@@ -1070,7 +1074,11 @@ export async function auditWebGPUPage(options = {}) {
       ...audit
     };
   } finally {
-    await harness.close().catch(() => {});
+    pageSession?.dispose?.();
+    if (browserContextId) {
+      await harness.browserSession.send("Target.disposeBrowserContext", { browserContextId }).catch(() => {});
+    }
+    if (!externalHarness) await harness.close().catch(() => {});
     if (fileTarget) await fileTarget.close().catch(() => {});
   }
 }

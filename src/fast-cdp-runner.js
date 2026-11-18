@@ -150,7 +150,27 @@ export class FastCDPHarness {
           throw Object.assign(new TypeError(`${key} is a launch option; create a new harness to change it.`), { code: "invalid-options" });
         }
       }
-      return this.runJob(normalizeOptions(merged), { onProgress, signal });
+    // Hook into the active queue to run an isolated single-page job.
+    return this.runJob(normalizeOptions(merged), { onProgress, signal });
+    });
+    this.queue = job.catch(() => {});
+    return job;
+  }
+
+  /**
+   * Interleaved warm dual-tab A/B execution: loads base and candidate once into isolated
+   * browser contexts, keeps both steady-state pages in VRAM, and pauses/freezes the
+   * inactive tab between ABBA half-rounds so assets and pipelines never reload.
+   */
+  runWarmAB(baseOptions = {}, candidateOptions = {}, { order = [], onProgress, signal } = {}) {
+    if (this.closed) return Promise.reject(new Error("FastCDPHarness is already closed."));
+    const job = this.queue.then(() => {
+      if (this.aborted) throw Object.assign(harnessClosedError("The profiler is shutting down."), { samplingStarted: false });
+      if (this.cleanupError) throw this.cleanupError;
+      if (signal?.aborted) throw abortedError();
+      const baseMerged = normalizeOptions({ ...this.options, ...baseOptions });
+      const candMerged = normalizeOptions({ ...this.options, ...candidateOptions });
+      return this.runWarmABJob(baseMerged, candMerged, { order, onProgress, signal });
     });
     this.queue = job.catch(() => {});
     return job;
@@ -452,6 +472,272 @@ export class FastCDPHarness {
     }
   }
 
+  async runWarmABJob(baseOptions, candidateOptions, { order = [], onProgress, signal } = {}) {
+    const startedAt = performance.now();
+    const emit = event => emitProgress(onProgress, event);
+    const controller = new AbortController();
+    const job = { aborted: false, sampling: false, dispose: null, abort: null };
+    const cleanups = [];
+    job.abort = () => {
+      controller.abort();
+      for (const fn of cleanups) {
+        try { fn(); } catch {}
+      }
+    };
+    const onAbort = () => {
+      job.aborted = true;
+      job.abort();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    this.activeJob = job;
+
+    let baseTarget = null;
+    let candTarget = null;
+    let basePage = null;
+    let candPage = null;
+    let lock = null;
+
+    try {
+      baseTarget = await createFastTarget(baseOptions);
+      candTarget = await createFastTarget(candidateOptions);
+      const baseViewport = parseViewport(baseOptions.viewport);
+      const candViewport = parseViewport(candidateOptions.viewport);
+
+      const loadVariantPage = async (target, viewport, opts) => {
+        const subJob = { aborted: false, dispose: null };
+        cleanups.push(() => { subJob.aborted = true; subJob.dispose?.(); });
+        const p = await createPage(this.browserSession, target.url, viewport, opts, this.sharedContextId, {
+          job: subJob,
+          emit: () => {},
+          startedAt,
+          pauseControl: opts.samplingMode !== "hook"
+        });
+        // Wait for any overlapped network-idle briefly before freezing so assets finish cleanly.
+        if (p.overlapNetworkIdle && p.network) {
+          await p.network.waitForIdle({ budgetMs: Math.min(3000, Number(opts.networkIdleBudgetMs ?? 10000)), deadline: startedAt + Number(opts.timeoutMs ?? 60000) }).catch(() => {});
+        }
+        p.progress?.dispose();
+        p.progress = null;
+        return p;
+      };
+
+      emit({ stage: "navigate", message: baseTarget.url });
+      basePage = await loadVariantPage(baseTarget, baseViewport, baseOptions);
+      if (controller.signal.aborted) throw abortedError();
+      if (baseOptions.samplingMode !== "hook") await pauseWarmPage(basePage);
+
+      emit({ stage: "navigate", message: candTarget.url });
+      candPage = await loadVariantPage(candTarget, candViewport, candidateOptions);
+      if (controller.signal.aborted) throw abortedError();
+      if (candidateOptions.samplingMode !== "hook") await pauseWarmPage(candPage);
+
+      const browserInfo = await this.getBrowserInfo();
+      let measurementLock = null;
+      let lockWaitMs = 0;
+      if (baseOptions.measureLock !== false && candidateOptions.measureLock !== false) {
+        const lockStartedAt = performance.now();
+        lock = await acquireMeasurementLock({
+          timeoutMs: baseOptions.lockTimeoutMs,
+          label: `ab:${baseOptions.label ?? baseTarget.url}`,
+          signal: controller.signal,
+          onWait: () => emit({ stage: "lock-wait" })
+        });
+        lockWaitMs = performance.now() - lockStartedAt;
+        measurementLock = {
+          acquired: lock.acquired,
+          waitedMs: round(lock.waitedMs),
+          timedOut: lock.timedOut,
+          holder: lock.holder,
+          path: lock.path,
+          frozenWhileWaiting: true,
+          ...(lock.unavailable ? { unavailable: lock.unavailable } : {})
+        };
+      }
+
+      const runs = [];
+      const totalRounds = order.reduce((m, e) => Math.max(m, e.round + 1), 0);
+      for (let i = 0; i < order.length; i += 1) {
+        const entry = order[i];
+        if (controller.signal.aborted || this.aborted) throw abortedError();
+        const roundStartedAt = performance.now();
+        const isBase = entry.variant === "base";
+        const page = isBase ? basePage : candPage;
+        const target = isBase ? baseTarget : candTarget;
+        const opts = isBase ? baseOptions : candidateOptions;
+        const roundEmit = event => emit({ ...event, round: entry.round, variant: entry.variant, rounds: totalRounds });
+
+        // Keep per-round timings explicit while assets stay resident in VRAM.
+        const harnessReused = this.launchConsumed || i > 0;
+        const launchMs = harnessReused ? 0 : this.launchMs;
+        this.launchConsumed = true;
+
+        if (opts.samplingMode !== "hook") {
+          await activateWarmPage(page);
+          // Allow 1-2 animation frames to settle after waking up before sampling.
+          await safeSend(page.session, "Runtime.evaluate", {
+            expression: "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))",
+            awaitPromise: true
+          }, 5000);
+        }
+
+        const progress = createProgressRelay(page.session, roundEmit);
+        try {
+          const cdpBefore = await cdpSnapshot(page.session, opts);
+          const samplingStartedAt = performance.now();
+          job.sampling = true;
+          const inPageOptions = {
+            adaptive: Boolean(opts.adaptive),
+            api: opts.api,
+            durationMs: Number(opts.durationMs ?? 250),
+            gc: Boolean(opts.gc),
+            deepMemory: Boolean(opts.deepMemory),
+            hookName: opts.hookName,
+            samples: Number(opts.samples ?? 1),
+            samplingMode: opts.samplingMode,
+            slowFrameThresholdMs: Number(opts.slowFrameThresholdMs ?? 20),
+            warmup: Number(opts.warmup ?? 1),
+            readyTimeoutMs: i < 2 ? opts.readyTimeoutMs : 0,
+            waitNetworkIdle: false,
+            networkIdleBudgetMs: opts.networkIdleBudgetMs,
+            progress: true
+          };
+          const inPage = await evaluateInPage(page.session, inPageOptions, Number(opts.timeoutMs ?? 60000));
+          const samplingMs = performance.now() - samplingStartedAt;
+          const cdpSamples = await progress.samples();
+          const cdpAfter = await cdpSnapshot(page.session, opts);
+
+          let cpuProfile = null;
+          let cpuProfileMs = 0;
+          if (opts.cpuProfile !== false) {
+            const rawBottleneck = classifyBottleneck({
+              inPage,
+              cdp: { before: cdpBefore, after: cdpAfter, samples: cdpSamples },
+              options: reportOptions(opts, this.launch.args)
+            });
+            const requested = opts.cpuProfile === true;
+            const autoTrigger = opts.cpuProfile === "auto"
+              && (rawBottleneck.class === "cpu-bound"
+                || (rawBottleneck.class === "mixed" && Number.isFinite(rawBottleneck.mainThreadBusy) && rawBottleneck.mainThreadBusy >= 0.6));
+            if (requested || autoTrigger) {
+              roundEmit({ stage: "cpu-profile" });
+              const profileStartedAt = performance.now();
+              await startCpuProfile(page.session, { intervalUs: 100 });
+              const profiledInPage = await evaluateInPage(page.session, {
+                ...inPageOptions,
+                samples: 1,
+                warmup: 0,
+                readyTimeoutMs: 0,
+                waitNetworkIdle: false,
+                progress: false
+              }, Number(opts.timeoutMs ?? 60000));
+              const stopStartedAt = performance.now();
+              const rawProfile = await stopCpuProfile(page.session);
+              const extraSample = profiledInPage?.samples?.[0];
+              const extraFrames = extraSample?.measurement?.observedFrames?.frameCount
+                ?? extraSample?.measurement?.frameCount
+                ?? extraSample?.activity?.activeTicks
+                ?? extraSample?.activity?.ticks
+                ?? profiledInPage?.summary?.observedFrameCount
+                ?? 1;
+              const extraWindowMs = extraSample?.elapsedMs ?? ((rawProfile.endTime - rawProfile.startTime) / 1000);
+              const extraFps = extraSample?.activity?.activeFrameRatio < 0.9 && Number.isFinite(extraSample?.activity?.pageFps)
+                ? extraSample.activity.pageFps
+                : (extraSample?.measurement?.observedFrames?.fps ?? extraSample?.measurement?.fps ?? rawBottleneck.fps);
+              cpuProfile = summarizeCpuProfile(rawProfile, {
+                trigger: requested ? "requested" : "auto",
+                frames: Math.max(1, extraFrames || 1),
+                windowMs: extraWindowMs,
+                budgetMs: rawBottleneck.budgetMs ?? 16.67,
+                hz: rawBottleneck.hz ?? 60,
+                fps: extraFps,
+                intervalUs: 100,
+                overheadMs: performance.now() - stopStartedAt
+              });
+              cpuProfile.overheadMs = round(performance.now() - stopStartedAt);
+              cpuProfileMs = performance.now() - profileStartedAt;
+            }
+          }
+
+          if (opts.samplingMode !== "hook") await pauseWarmPage(page);
+
+          const timings = {
+            launchMs: round(launchMs),
+            harnessReused,
+            pageSetupMs: i < 2 ? round(page.timings.pageSetupMs) : 0,
+            navigationMs: i < 2 ? round(page.timings.navigationMs) : 0,
+            networkIdleWaitMs: 0,
+            networkIdle: page.network.idleResult(),
+            lockWaitMs: i === 0 ? round(lockWaitMs) : 0,
+            readyWaitMs: round(Number(inPage?.ready?.waitedMs ?? 0)),
+            warmupMs: inPage?.warmup?.durationMs == null ? null : round(inPage.warmup.durationMs),
+            samplingMs: round(samplingMs),
+            cpuProfileMs: round(cpuProfileMs),
+            totalMs: round(performance.now() - roundStartedAt),
+            warmTabReused: i >= 2
+          };
+          timings.anomalies = timingAnomalies(timings, page.network.slowestTls());
+
+          const report = finalizeReport({
+            tool: TOOL,
+            screenshotSize: null,
+            artifacts: { screenshotPath: null },
+            timings,
+            measurementLock,
+            ...(cpuProfile ? { cpuProfile } : {}),
+            browser: browserInfo,
+            cdp: { after: cdpAfter, before: cdpBefore, samples: cdpSamples },
+            createdAt: new Date().toISOString(),
+            host: hostInfo(),
+            inPage,
+            options: reportOptions(opts, this.launch.args),
+            ...page.events.snapshot(),
+            schemaVersion: 3,
+            target: {
+              file: target.file || null,
+              root: target.root || null,
+              source: opts.file ? "file-server" : "url",
+              url: target.url,
+              ...page.network.documentInfo()
+            },
+            trace: { captured: false, error: null, rawTracePath: null, summary: null }
+          }, opts);
+
+          runs.push({
+            durationMs: performance.now() - roundStartedAt,
+            report,
+            round: entry.round,
+            sequence: entry.sequence,
+            variant: entry.variant
+          });
+        } finally {
+          progress.dispose();
+        }
+      }
+
+      return runs;
+    } catch (error) {
+      if (error?.code === "capture-cleanup-failed") this.cleanupError = error;
+      const failure = job.aborted ? abortedError(undefined, error)
+        : this.aborted ? harnessClosedError(undefined, error) : error;
+      if (failure && typeof failure === "object") failure.samplingStarted = job.sampling;
+      throw failure;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      if (this.activeJob === job) this.activeJob = null;
+      try {
+        await lock?.release();
+        await Promise.allSettled([basePage?.close?.(), candPage?.close?.()]);
+      } catch (error) {
+        if (!this.aborted && !job.aborted && !this.connectionClosed) {
+          this.cleanupError = captureCleanupError(error);
+          throw this.cleanupError;
+        }
+      } finally {
+        await Promise.allSettled([baseTarget?.close?.(), candTarget?.close?.()]);
+      }
+    }
+  }
+
   /** Quick capability check for doctor: one http://127.0.0.1 page in a throwaway context. */
   probe() {
     if (this.closed) return Promise.reject(new Error("FastCDPHarness is already closed."));
@@ -743,7 +1029,7 @@ function createRingBuffer(limit) {
   };
 }
 
-async function createPage(browserSession, url, viewport, options, sharedContextId, { job = {}, emit = () => {}, startedAt = performance.now() } = {}) {
+async function createPage(browserSession, url, viewport, options, sharedContextId, { job = {}, emit = () => {}, startedAt = performance.now(), pauseControl = false } = {}) {
   const events = createPageEventCollector();
   const timings = { pageSetupMs: 0, navigationMs: 0, networkIdleWaitMs: 0 };
   const setupStartedAt = performance.now();
@@ -832,6 +1118,11 @@ async function createPage(browserSession, url, viewport, options, sharedContextI
       })
     ]);
 
+    if (pauseControl) {
+      await session.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: pauseControllerSource()
+      });
+    }
     if (options.autoInstrument) {
       await session.send("Page.addScriptToEvaluateOnNewDocument", {
         source: autoInstrumentationSource({ gpuTiming: options.gpuTiming !== false, callSites: true })
@@ -1282,6 +1573,71 @@ async function resumeFrozenPage(session) {
   if (state?.result?.value === "hidden") {
     throw new Error("The page did not resume after waiting for the measurement lock (still hidden); recapture, or pass --no-lock.");
   }
+}
+
+function pauseControllerSource() {
+  return `(() => {
+    if (globalThis.__gpuPerfSetPaused) return;
+    let paused = false;
+    const held = new Map();
+    const origRaf = globalThis.requestAnimationFrame;
+    const origCaf = globalThis.cancelAnimationFrame;
+    let nextVirtualId = 1000000000;
+    if (typeof origRaf === "function") {
+      globalThis.requestAnimationFrame = function gpuPerfRafGate(cb) {
+        if (paused) {
+          const vid = ++nextVirtualId;
+          held.set(vid, cb);
+          return vid;
+        }
+        let vid;
+        const wrapped = function(ts) {
+          if (paused) {
+            held.set(vid, cb);
+            return;
+          }
+          return cb(ts);
+        };
+        vid = origRaf.call(this, wrapped);
+        return vid;
+      };
+      globalThis.cancelAnimationFrame = function gpuPerfCafGate(id) {
+        if (held.delete(id)) return;
+        return origCaf.call(this, id);
+      };
+    }
+    globalThis.__gpuPerfSetPaused = function(next) {
+      const was = paused;
+      paused = Boolean(next);
+      if (was && !paused && held.size > 0 && typeof origRaf === "function") {
+        const queued = Array.from(held.values());
+        held.clear();
+        for (const cb of queued) globalThis.requestAnimationFrame(cb);
+      }
+      return { paused, held: held.size };
+    };
+  })();`;
+}
+
+async function pauseWarmPage(page) {
+  await safeSend(page.session, "Runtime.evaluate", {
+    expression: `(() => {
+      globalThis.__gpuPerfSetPaused?.(true);
+      return globalThis.__gpuPerfAutoInstrumentation?.frames?.flush?.(250)?.catch?.(() => {});
+    })()`,
+    awaitPromise: true,
+    returnByValue: true
+  }, 3000);
+  await safeSend(page.session, "Emulation.setFocusEmulationEnabled", { enabled: false }, 2000);
+  await safeSend(page.session, "Page.setWebLifecycleState", { state: "frozen" }, 2000);
+}
+
+async function activateWarmPage(page) {
+  await resumeFrozenPage(page.session);
+  await safeSend(page.session, "Runtime.evaluate", {
+    expression: "globalThis.__gpuPerfSetPaused?.(false)",
+    returnByValue: true
+  }, 3000);
 }
 
 async function evaluateInPage(session, options, timeoutMs) {

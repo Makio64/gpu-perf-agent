@@ -102,8 +102,7 @@ for each kind of evidence, fixed-work compute, budgets and inconclusive results.
 Apple Silicon, read [apple-silicon-optimization.md](references/apple-silicon-optimization.md)
 for TBDR `loadOp`/`storeOp`, WGSL `f16`/subgroups/math, ASTC/KTX2/`rg11b10ufloat` textures,
 and pipeline/vertex packing rules, and [deep-diagnostics-macos.md](references/deep-diagnostics-macos.md)
-for the 100 ms `shader --base/--candidate` compiler loop, live Dawn MSL dumps, `audit`,
-`agx`, and headless `xctrace`.
+for the 100 ms `shader --base/--candidate` Dawn/Metal compiler loop, `kernel` compute micro-benchmarks, live Dawn MSL dumps, `audit`, `agx`, and headless `xctrace`.
 
 **4. Change one thing**, then verify output: compare screenshots (`--screenshot-out`), read
 back results, or run the app's tests. Keep precision, sample counts and quality. If a gain
@@ -134,8 +133,10 @@ npx gpu-perf-agent ab --base-url http://localhost:5174 --candidate-url http://lo
 ```
 
 `ab` alternates baseline and candidate inside one browser, which is what makes GPU-time
-deltas trustworthy; separate captures can differ just because GPU clocks changed. Use at
-least 4 rounds (the default) and the same readiness, `--api`, viewport, `--metric` and
+deltas trustworthy; separate captures can differ just because GPU clocks changed. On 2.4+,
+`ab` reuses the warm daemon and keeps both tabs loaded in isolated contexts (`--tab-mode warm`,
+pausing the inactive tab; pass `--no-reuse-tabs` when testing startup, GC, or leak checks).
+Use at least 4 rounds (the default) and the same readiness, `--api`, viewport, `--metric` and
 `--sampling-mode` flags as the baseline. 2.2+ enables instrumentation and GPU timing in `ab`
 by default. Before `ab`, stop other GPU work (other browsers, other profiling agents,
 headless Chromes your own scripts started); on a busy machine add `--samples 3` so a round
